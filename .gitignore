@@ -1,0 +1,120 @@
+# ---------------------------------------------------------------------------
+# Secrets and environment files — never commit real values.
+# Only the placeholder template is tracked.
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+.envrc
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.jks
+*.keystore
+.secrets/
+secrets/
+.vercel/.env*
+
+# ---------------------------------------------------------------------------
+# Node / TypeScript
+# ---------------------------------------------------------------------------
+node_modules/
+.pnpm-store/
+.npm/
+.yarn/*
+!.yarn/patches
+!.yarn/releases
+*.tsbuildinfo
+next-env.d.ts
+.next/
+out/
+dist/
+build/
+.turbo/
+.vite/
+.eslintcache
+.stylelintcache
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+venv/
+env/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.pyright/
+.ruff_cache/
+.hypothesis/
+.tox/
+.nox/
+pip-wheel-metadata/
+
+# ---------------------------------------------------------------------------
+# Platform and local service state
+# ---------------------------------------------------------------------------
+.vercel/
+supabase/.branches/
+supabase/.temp/
+supabase/.env
+
+# ---------------------------------------------------------------------------
+# Test, coverage, and performance artifacts
+# Raw outputs can contain tokens or identifiers; summaries belong in
+# dev-docs/evidence/ after review.
+# ---------------------------------------------------------------------------
+coverage/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+junit*.xml
+playwright-report/
+test-results/
+blob-report/
+playwright/.cache/
+perf/results/
+*.har
+*.trace.zip
+
+# ---------------------------------------------------------------------------
+# Logs and temporary files
+# ---------------------------------------------------------------------------
+*.log
+logs/
+tmp/
+.tmp/
+*.tmp
+*.swp
+*.swo
+*~
+
+# ---------------------------------------------------------------------------
+# OS and editor files
+# ---------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+*.code-workspace
+
+# ---------------------------------------------------------------------------
+# Local AI/agent tooling state (personal; not part of the template)
+# ---------------------------------------------------------------------------
+.remember/
+.claude/settings.local.json
+.claude/worktrees/
