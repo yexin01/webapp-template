@@ -125,12 +125,12 @@ These decisions are confirmed. A confirmed technology choice is not evidence tha
 | DEC-004 | Data retention, export, and deletion | OPEN | Account deletion/export features; any deletion-completeness claim | Owner policy plus provider verification |
 | DEC-005 | Backup and recovery | OPEN | Recovery-readiness claims; Gate E | Owner objectives plus restore test |
 | DEC-006 | External integration verification | OPEN until verified | Any "sandbox-tested" or "live-tested" claim; Gate E | Owner provides authorized sandbox accounts |
-| DEC-007 | Frontend framework, repository layout, toolchain, and API contracts | OPEN — recommendation provided | Scaffolding (P2) | Owner choice |
-| DEC-008 | Data access path and RLS enforcement model | OPEN — recommendation provided | Schema, RLS, data access (P3) | Owner choice; validated in the DEC-001 proof |
-| DEC-009 | Organization membership source of truth and staleness bound | OPEN — recommendation provided | Tenancy implementation (P3) | Owner choice |
-| DEC-010 | Billing state and plan-change policy | OPEN — recommendation provided | Billing transitions (P4) | Owner policy |
-| DEC-011 | Rate limiting and shared counters | OPEN — recommendation provided | Rate limiting and LLM cost caps (P5) | Owner choice |
-| DEC-012 | License and community contacts | OPEN | License and community files; Gate A | Owner choice |
+| DEC-007 | Frontend framework, repository layout, toolchain, and API contracts | RESOLVED 2026-10-14 — recommendation approved ([ADR-0001](adr/0001-approved-recommendations.md)) | — | — |
+| DEC-008 | Data access path and RLS enforcement model | RESOLVED 2026-10-14 — option A approved (ADR-0001) | — | Validate on Vercel in DEC-001 |
+| DEC-009 | Organization membership source of truth and staleness bound | RESOLVED 2026-10-14 — option A approved (ADR-0001); staleness bound value still needs owner confirmation | — | Owner confirms `MEMBERSHIP_MAX_STALENESS_SECONDS` (proposed 300 s) |
+| DEC-010 | Billing state and plan-change policy | RESOLVED 2026-10-14 — recommendation approved (ADR-0001) | — | — |
+| DEC-011 | Rate limiting and shared counters | RESOLVED 2026-10-14 — option A approved (ADR-0001) | — | Configure platform rate-limit rules at deployment time |
+| DEC-012 | License and community contacts | License RESOLVED 2026-10-14 — Apache-2.0; contacts OPEN | Contact details in `SECURITY.md` / `CODE_OF_CONDUCT.md` | Owner chooses reporting channel and enforcement contact |
 
 ### 3.3 Decision entries
 
@@ -323,7 +323,7 @@ These decisions are confirmed. A confirmed technology choice is not evidence tha
 
 #### DEC-007 — Frontend Framework, Repository Layout, Toolchain, and API Contracts
 
-- **Status:** OPEN — recommendation provided.
+- **Status:** RESOLVED 2026-10-14 — the owner approved the recommendation; see [ADR-0001](adr/0001-approved-recommendations.md). The text below is kept as the decision record.
 - **Owner:** Repository owner.
 - **Blocks:** scaffolding (P2).
 - **Rationale:** strict TypeScript is approved, but the framework is not. That choice determines routing, rendering, Clerk integration, Vercel topology, and where server-side code may run.
@@ -359,7 +359,7 @@ These decisions are confirmed. A confirmed technology choice is not evidence tha
 
 #### DEC-008 — Data Access Path and RLS Enforcement Model
 
-- **Status:** OPEN — recommendation provided.
+- **Status:** RESOLVED 2026-10-14 — the owner approved the recommendation; see [ADR-0001](adr/0001-approved-recommendations.md). The text below is kept as the decision record.
 - **Owner:** Repository owner.
 - **Blocks:** schema, RLS policies, and repository implementation (P3).
 - **Options:**
@@ -382,7 +382,7 @@ These decisions are confirmed. A confirmed technology choice is not evidence tha
 
 #### DEC-009 — Organization Membership Source of Truth and Staleness Bound
 
-- **Status:** OPEN — recommendation provided.
+- **Status:** RESOLVED 2026-10-14 — the owner approved the recommendation; see [ADR-0001](adr/0001-approved-recommendations.md). The text below is kept as the decision record.
 - **Owner:** Repository owner.
 - **Blocks:** tenancy implementation (P3).
 - **Options:**
@@ -401,7 +401,7 @@ These decisions are confirmed. A confirmed technology choice is not evidence tha
 
 #### DEC-010 — Billing State and Plan-Change Policy
 
-- **Status:** OPEN — recommendation provided.
+- **Status:** RESOLVED 2026-10-14 — the owner approved the recommendation; see [ADR-0001](adr/0001-approved-recommendations.md). The text below is kept as the decision record.
 - **Owner:** Repository owner.
 - **Blocks:** the billing transitions marked "DEC-010" in §9.5, and plan-change implementation (P4).
 - **Questions:**
@@ -426,7 +426,7 @@ These decisions are confirmed. A confirmed technology choice is not evidence tha
 
 #### DEC-011 — Rate Limiting and Shared Counters
 
-- **Status:** OPEN — recommendation provided.
+- **Status:** RESOLVED 2026-10-14 — the owner approved the recommendation; see [ADR-0001](adr/0001-approved-recommendations.md). The text below is kept as the decision record.
 - **Owner:** Repository owner.
 - **Blocks:** rate limiting (SEC-09), LLM budget enforcement (LLM-06), and P5.
 - **Rationale:** serverless instances do not share memory, so per-instance counters cannot bound global usage or spend.
@@ -445,7 +445,7 @@ These decisions are confirmed. A confirmed technology choice is not evidence tha
 
 #### DEC-012 — License and Community Contacts
 
-- **Status:** OPEN.
+- **Status:** PARTIALLY RESOLVED 2026-10-14 — license is **Apache-2.0** (ADR-0001). The vulnerability-reporting channel and Code of Conduct enforcement contact remain OPEN.
 - **Owner:** Repository owner.
 - **Blocks:** `LICENSE`, `SECURITY.md`, and `CODE_OF_CONDUCT.md` content; Gate A.
 - **Questions:**

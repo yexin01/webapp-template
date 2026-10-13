@@ -1,0 +1,97 @@
+[project]
+name = "app-api"
+version = "0.1.0"
+description = "Python API for the SaaS template"
+requires-python = ">=3.12,<3.13"
+license = "Apache-2.0"
+dependencies = [
+  "fastapi>=0.143,<0.144",
+  "pydantic>=2.14,<3",
+  "pydantic-settings>=2.15,<3",
+  "psycopg[binary]>=3.3,<3.4",
+  "psycopg-pool>=3.3,<3.4",
+  "pyjwt[crypto]>=2.15,<3",
+  "httpx>=0.28,<0.29",
+  "stripe>=16,<17",
+  "sentry-sdk[fastapi]>=2.72,<3",
+  "posthog>=7.68,<8",
+  "svix>=2.8,<3",
+]
+
+[dependency-groups]
+dev = [
+  "uvicorn[standard]>=0.54,<0.55",
+  "pytest>=9.1,<10",
+  "ruff>=0.17,<0.18",
+  "mypy>=2.4,<3",
+  "import-linter>=2.15,<3",
+  "pip-audit>=2.10,<3",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+  "db: requires a PostgreSQL test database (TEST_DATABASE_URL)",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "BLE", "SIM", "RUF", "N", "C4", "PT", "RET"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106", "S311", "S608", "E501"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["app"]
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["svix.*", "posthog.*"]
+ignore_missing_imports = true
+
+[tool.importlinter]
+root_package = "app"
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Domain is independent of every other layer and of vendor SDKs"
+type = "forbidden"
+source_modules = ["app.domain"]
+forbidden_modules = ["app.application", "app.infrastructure", "app.http", "app.composition", "app.ports", "fastapi", "starlette", "psycopg", "stripe", "httpx", "sentry_sdk", "posthog", "jwt", "svix", "pydantic"]
+
+[[tool.importlinter.contracts]]
+name = "Application and ports depend only on the domain"
+type = "forbidden"
+source_modules = ["app.application", "app.ports"]
+forbidden_modules = ["app.infrastructure", "app.http", "app.composition", "fastapi", "starlette", "psycopg", "stripe", "httpx", "sentry_sdk", "posthog", "jwt", "svix"]
+
+[[tool.importlinter.contracts]]
+name = "Infrastructure does not depend on application services or HTTP"
+type = "forbidden"
+source_modules = ["app.infrastructure"]
+forbidden_modules = ["app.application", "app.http", "app.composition"]
+
+[[tool.importlinter.contracts]]
+name = "HTTP layer does not use vendor SDKs or adapters directly"
+type = "forbidden"
+source_modules = ["app.http"]
+forbidden_modules = ["stripe", "psycopg", "posthog", "svix", "jwt", "sentry_sdk", "app.infrastructure"]
+allow_indirect_imports = true
+
+[tool.uv]
+# Flat layout imported from the project directory; no build or install step.
+package = false

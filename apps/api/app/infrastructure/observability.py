@@ -1,0 +1,194 @@
+"""Structured logging, request correlation, Sentry, and PostHog (spec §11).
+
+Telemetry never blocks or breaks request handling (OBS-06): every exporter is
+wrapped so its failures are logged and swallowed.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import sys
+from collections.abc import Mapping
+from datetime import UTC, datetime
+from typing import Any
+from uuid import UUID
+
+import sentry_sdk
+from posthog import Posthog
+
+from app.infrastructure.config import Mode, Settings
+from app.infrastructure.redaction import REDACTED, SENSITIVE_KEYS, redact, redact_text
+from app.request_context import request_id_var
+
+_STANDARD_RECORD_FIELDS = frozenset(vars(logging.LogRecord("", 0, "", 0, "", None, None)).keys()) | {
+    "message",
+    "asctime",
+}
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+
+
+class JsonFormatter(logging.Formatter):
+    """One JSON object per line; message and extra fields are redacted."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload: dict[str, Any] = {
+            "ts": datetime.fromtimestamp(record.created, UTC).isoformat(),
+            "level": record.levelname,
+            "logger": record.name,
+            "msg": redact_text(record.getMessage()),
+        }
+        request_id = request_id_var.get()
+        if request_id:
+            payload["request_id"] = request_id
+        extras = {k: v for k, v in vars(record).items() if k not in _STANDARD_RECORD_FIELDS}
+        if extras:
+            payload.update(redact(extras))
+        if record.exc_info and record.exc_info[0] is not None:
+            payload["exc_type"] = record.exc_info[0].__name__
+        return json.dumps(payload, default=str)
+
+
+def configure_logging(level: str) -> None:
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(JsonFormatter())
+    root = logging.getLogger()
+    root.handlers[:] = [handler]
+    root.setLevel(level.upper())
+    # Third-party request logs can include URLs with identifiers; keep them quiet.
+    for noisy in ("httpx", "httpcore", "stripe", "posthog", "urllib3"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
+
+# ---------------------------------------------------------------------------
+# Sentry
+# ---------------------------------------------------------------------------
+
+
+def _scrub_request(request: dict[str, Any]) -> None:
+    headers = request.get("headers")
+    if isinstance(headers, dict):
+        request["headers"] = {
+            k: (REDACTED if k.lower() in SENSITIVE_KEYS else redact_text(str(v))) for k, v in headers.items()
+        }
+    for key in ("cookies", "data", "env"):
+        if key in request:
+            request[key] = REDACTED
+    if isinstance(request.get("query_string"), str):
+        request["query_string"] = redact_text(request["query_string"])
+    if isinstance(request.get("url"), str):
+        request["url"] = redact_text(request["url"])
+
+
+def scrub_event(event: Any, _hint: Any) -> Any:
+    """Sentry ``before_send``: remove secrets, bodies, and personal data."""
+    request = event.get("request")
+    if isinstance(request, dict):
+        _scrub_request(request)
+    event.pop("user", None)
+    for key in ("extra", "contexts", "tags"):
+        if key in event:
+            event[key] = redact(event[key])
+    for exc in (event.get("exception") or {}).get("values", []) or []:
+        if isinstance(exc.get("value"), str):
+            exc["value"] = redact_text(exc["value"])
+        for frame in (exc.get("stacktrace") or {}).get("frames", []) or []:
+            frame.pop("vars", None)
+    if isinstance(event.get("message"), str):
+        event["message"] = redact_text(event["message"])
+    logentry = event.get("logentry")
+    if isinstance(logentry, dict) and isinstance(logentry.get("message"), str):
+        logentry["message"] = redact_text(logentry["message"])
+        logentry.pop("params", None)
+    return event
+
+
+def scrub_breadcrumb(crumb: Any, _hint: Any) -> Any:
+    if isinstance(crumb.get("message"), str):
+        crumb["message"] = redact_text(crumb["message"])
+    if "data" in crumb:
+        crumb["data"] = redact(crumb["data"])
+    return crumb
+
+
+def init_error_reporting(settings: Settings) -> bool:
+    if settings.error_reporting_mode not in (Mode.SANDBOX, Mode.LIVE) or settings.sentry_dsn is None:
+        return False
+    sentry_sdk.init(
+        dsn=settings.sentry_dsn.get_secret_value(),
+        environment=settings.app_env.value,
+        send_default_pii=False,
+        max_request_body_size="never",
+        include_local_variables=False,
+        traces_sample_rate=settings.sentry_traces_sample_rate,
+        before_send=scrub_event,
+        before_breadcrumb=scrub_breadcrumb,
+        max_breadcrumbs=50,
+    )
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Product analytics
+# ---------------------------------------------------------------------------
+
+# OBS-03: only these events, with only these properties, are ever sent.
+ANALYTICS_ALLOWLIST: Mapping[str, frozenset[str]] = {
+    "project_created": frozenset({"context"}),
+    "checkout_started": frozenset({"plan"}),
+    "billing_portal_opened": frozenset(),
+    "llm_check_run": frozenset({"ok", "provider"}),
+}
+
+logger = logging.getLogger(__name__)
+
+
+def _filter(event: str, properties: Mapping[str, str | int | bool]) -> dict[str, str | int | bool] | None:
+    allowed = ANALYTICS_ALLOWLIST.get(event)
+    if allowed is None:
+        logger.warning("analytics_event_not_allowlisted", extra={"analytics_event": event})
+        return None
+    return {k: v for k, v in properties.items() if k in allowed}
+
+
+class NoopAnalytics:
+    def capture(self, user_id: UUID, event: str, properties: Mapping[str, str | int | bool]) -> None:
+        _filter(event, properties)
+
+    def shutdown(self) -> None:
+        return None
+
+
+class PostHogAnalytics:
+    """Batched, non-blocking PostHog client identified by internal user ID only."""
+
+    def __init__(self, *, api_key: str, host: str) -> None:
+        self._client = Posthog(
+            api_key,
+            host=host,
+            disable_geoip=True,
+            max_retries=1,
+            timeout=3,
+            max_queue_size=1_000,
+            on_error=lambda error, _items: logger.warning(
+                "analytics_export_failed", extra={"error_type": type(error).__name__}
+            ),
+        )
+
+    def capture(self, user_id: UUID, event: str, properties: Mapping[str, str | int | bool]) -> None:
+        filtered = _filter(event, properties)
+        if filtered is None:
+            return
+        try:
+            self._client.capture(event, distinct_id=str(user_id), properties=filtered)
+        except Exception:  # noqa: BLE001 - telemetry must never break requests
+            logger.warning("analytics_capture_failed")
+
+    def shutdown(self) -> None:
+        try:
+            self._client.shutdown()
+        except Exception:  # noqa: BLE001
+            logger.warning("analytics_shutdown_failed")
