@@ -165,7 +165,10 @@ class StripeWebhookVerifier:
             raise WebhookSignatureError()
         try:
             event = stripe.Webhook.construct_event(
-                payload, signature_header, self._secret, tolerance=_SIGNATURE_TOLERANCE_SECONDS
+                payload,
+                signature_header,
+                self._secret,
+                tolerance=_SIGNATURE_TOLERANCE_SECONDS,  # gitleaks:allow (variable reference, not a secret)
             )
         except (stripe.SignatureVerificationError, ValueError) as exc:
             raise WebhookSignatureError() from exc

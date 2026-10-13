@@ -1,0 +1,37 @@
+{
+  "name": "saas-template",
+  "private": true,
+  "license": "Apache-2.0",
+  "packageManager": "pnpm@9.15.0",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "bootstrap": "pnpm install --frozen-lockfile && pnpm api:sync",
+    "dev": "node scripts/dev.mjs",
+    "dev:web": "pnpm --filter web dev",
+    "dev:api": "cd apps/api && uv run uvicorn index:app --reload --host 127.0.0.1 --port 8000",
+    "api:sync": "cd apps/api && uv sync --frozen",
+    "build": "pnpm --filter web build",
+    "lint": "pnpm --filter web lint && pnpm api:lint",
+    "api:lint": "cd apps/api && uv run ruff check app tests index.py && uv run ruff format --check app tests index.py && uv run lint-imports",
+    "format": "pnpm --filter web format && cd apps/api && uv run ruff format app tests index.py",
+    "typecheck": "pnpm --filter web typecheck && cd apps/api && uv run mypy",
+    "test": "pnpm test:api && pnpm test:web",
+    "test:api": "cd apps/api && uv run pytest",
+    "test:web": "pnpm --filter web test",
+    "test:e2e": "pnpm --filter web test:e2e",
+    "contracts": "cd apps/api && uv run python -m app.cli openapi --output ../../packages/contracts/openapi.json && cd ../.. && pnpm --filter web contracts",
+    "contracts:check": "node scripts/check-contracts.mjs",
+    "db:up": "docker compose up -d --wait postgres",
+    "db:down": "docker compose down",
+    "db:migrate": "cd apps/api && uv run python -m app.cli migrate",
+    "db:seed": "cd apps/api && uv run python -m app.cli seed",
+    "db:reset": "cd apps/api && uv run python -m app.cli reset --yes --seed",
+    "billing:reconcile": "cd apps/api && uv run python -m app.cli reconcile",
+    "security:audit": "node scripts/security-audit.mjs",
+    "check:bundle-secrets": "node scripts/check-bundle-secrets.mjs",
+    "init-template": "node scripts/init-template.mjs",
+    "security:licenses": "node scripts/check-licenses.mjs"
+  }
+}

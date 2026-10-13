@@ -73,7 +73,7 @@ class BillingStatus(BaseModel):
     plan_key: PlanKey | None
     current_period_end: datetime | None
     cancels_at: datetime | None
-    available_plans: list[PlanKey]
+    available_plans: list[Literal[PlanKey.PRO_MONTHLY, PlanKey.PRO_YEARLY]]
 
 
 class CheckoutRequest(StrictInput):

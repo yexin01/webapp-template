@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+from pathlib import Path
 
 import pytest
 
@@ -91,3 +92,20 @@ def test_type_errors_do_not_echo_input() -> None:
         make_settings(database_pool_max_size=SECRET_MARKER)
     assert SECRET_MARKER not in str(excinfo.value)
     assert "DATABASE_POOL_MAX_SIZE" in str(excinfo.value)
+
+
+def test_empty_values_mean_unset() -> None:
+    settings = make_settings(clerk_jwt_key="", clerk_webhook_signing_secret="  ", llm_api_key="", sentry_dsn="")
+    assert settings.clerk_jwt_key is None
+    assert settings.clerk_webhook_signing_secret is None
+    assert settings.llm_api_key is None
+    assert settings.sentry_dsn is None
+
+
+def test_env_example_placeholders_fail_clearly(tmp_path: Path) -> None:
+    """A fresh copy of .env.example must fail fast with names, not run with placeholders."""
+    from app.infrastructure.config import REPO_ROOT, load_settings
+
+    with pytest.raises(ConfigError) as excinfo:
+        load_settings(_env_file=REPO_ROOT / ".env.example")
+    assert "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY is malformed" in str(excinfo.value)

@@ -109,9 +109,13 @@ class Settings(BaseSettings):
 
     @model_validator(mode="before")
     @classmethod
-    def _split_lists(cls, data: object) -> object:
+    def _normalize(cls, data: object) -> object:
         if isinstance(data, dict):
             for key in list(data):
+                # `KEY=` in .env means "not set", never an empty secret.
+                if isinstance(data[key], str) and not data[key].strip():
+                    del data[key]
+                    continue
                 if key.lower() == "clerk_authorized_parties" and isinstance(data[key], str):
                     data[key] = [p.strip().rstrip("/") for p in data[key].split(",") if p.strip()]
         return data
@@ -254,6 +258,23 @@ def clerk_issuer_from_publishable_key(key: str) -> str | None:
     return f"https://{host}"
 
 
+class DatabaseSettings(BaseSettings):
+    """Only what database maintenance commands need."""
+
+    model_config = SettingsConfigDict(
+        env_file=REPO_ROOT / ".env", env_file_encoding="utf-8", extra="ignore", hide_input_in_errors=True
+    )
+
+    database_url: SecretStr | None = None
+
+
+def load_database_url() -> str:
+    url = DatabaseSettings().database_url
+    if url is None or not url.get_secret_value().strip():
+        raise ConfigError("Invalid configuration: DATABASE_URL is required")
+    return url.get_secret_value()
+
+
 def load_settings(**overrides: object) -> Settings:
     """Load settings, converting validation errors into name-only messages."""
     try:
@@ -262,6 +283,6 @@ def load_settings(**overrides: object) -> Settings:
         details: list[str] = []
         for err in exc.errors(include_input=False, include_url=False):
             loc = ".".join(str(part) for part in err["loc"]).upper()
-            msg = err["msg"]
+            msg = str(err["msg"]).removeprefix("Value error, ")
             details.append(f"{loc}: {msg}" if loc else msg)
         raise ConfigError("Invalid configuration: " + " | ".join(details)) from None

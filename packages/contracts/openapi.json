@@ -19,7 +19,11 @@
         "properties": {
           "available_plans": {
             "items": {
-              "$ref": "#/components/schemas/PlanKey"
+              "enum": [
+                "pro_monthly",
+                "pro_yearly"
+              ],
+              "type": "string"
             },
             "title": "Available Plans",
             "type": "array"

@@ -200,3 +200,21 @@ class TestRedaction:
         scrubbed = json.dumps(scrub_event(sentry_event, None))
         for canary in CANARIES:
             assert canary not in scrubbed
+
+
+def test_sentry_collects_no_personal_or_request_data() -> None:
+    from app.infrastructure.observability import scrub_breadcrumb, sentry_options
+    from tests.conftest import make_settings
+
+    options = sentry_options(
+        make_settings(error_reporting_mode="sandbox", sentry_dsn="https://public@o0.ingest.example/0")
+    )
+    collection = options["data_collection"]
+    assert collection["user_info"] is False
+    assert collection["http_bodies"] == []
+    for key in ("cookies", "url_query_params"):
+        assert collection[key] == {"mode": "off"}
+    assert collection["http_headers"] == {"request": {"mode": "off"}}
+    assert collection["stack_frame_variables"] is False
+    assert options["before_send"] is scrub_event
+    assert options["before_breadcrumb"] is scrub_breadcrumb

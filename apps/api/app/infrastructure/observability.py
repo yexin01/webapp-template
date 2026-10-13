@@ -114,20 +114,37 @@ def scrub_breadcrumb(crumb: Any, _hint: Any) -> Any:
     return crumb
 
 
+def sentry_options(settings: Settings) -> dict[str, Any]:
+    if settings.sentry_dsn is None:
+        raise ValueError("SENTRY_DSN is required")
+    return {
+        "dsn": settings.sentry_dsn.get_secret_value(),
+        "environment": settings.app_env.value,
+        # Collect nothing personal or request-derived by default; the
+        # before_send scrubber is a second line of defense.
+        "data_collection": {
+            "user_info": False,
+            "cookies": {"mode": "off"},
+            "http_headers": {"request": {"mode": "off"}},
+            "http_bodies": [],
+            "url_query_params": {"mode": "off"},
+            "graphql": {"document": False, "variables": False},
+            "gen_ai": {"inputs": False, "outputs": False},
+            "database_query_data": False,
+            "queues": False,
+            "stack_frame_variables": False,
+        },
+        "traces_sample_rate": settings.sentry_traces_sample_rate,
+        "before_send": scrub_event,
+        "before_breadcrumb": scrub_breadcrumb,
+        "max_breadcrumbs": 50,
+    }
+
+
 def init_error_reporting(settings: Settings) -> bool:
     if settings.error_reporting_mode not in (Mode.SANDBOX, Mode.LIVE) or settings.sentry_dsn is None:
         return False
-    sentry_sdk.init(
-        dsn=settings.sentry_dsn.get_secret_value(),
-        environment=settings.app_env.value,
-        send_default_pii=False,
-        max_request_body_size="never",
-        include_local_variables=False,
-        traces_sample_rate=settings.sentry_traces_sample_rate,
-        before_send=scrub_event,
-        before_breadcrumb=scrub_breadcrumb,
-        max_breadcrumbs=50,
-    )
+    sentry_sdk.init(**sentry_options(settings))
     return True
 
 

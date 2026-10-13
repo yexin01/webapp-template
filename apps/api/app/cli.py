@@ -14,14 +14,11 @@ from pathlib import Path
 from uuid import UUID
 
 from app.infrastructure import migrations
-from app.infrastructure.config import ConfigError, load_settings
+from app.infrastructure.config import ConfigError, load_database_url, load_settings
 
 
 def _database_url(args: argparse.Namespace) -> str:
-    settings = load_settings()
-    if settings.database_url is None:  # pragma: no cover - validated in Settings
-        raise ConfigError("DATABASE_URL is required")
-    url = settings.database_url.get_secret_value()
+    url = load_database_url()
     if not migrations.is_local_database(url) and not getattr(args, "allow_remote", False):
         raise migrations.UnsafeTargetError(
             "DATABASE_URL is not local. Re-run with --allow-remote only with explicit owner authorization."

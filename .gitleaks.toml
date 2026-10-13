@@ -1,0 +1,16 @@
+# Secret scanning configuration (SEC-05). Extends the default rules.
+# The allowlist is deliberately narrow: test fixtures whose values are
+# synthetic canaries or placeholders that never grant access.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Synthetic test fixtures and documented placeholders"
+paths = [
+  '''apps/api/tests/.*''',
+  '''apps/web/src/.*\.test\.tsx?''',
+  '''apps/web/e2e/.*''',
+]
+regexes = [
+  '''(?i)(placeholder|replace_me|canary|not_a_real_secret|test_only)''',
+]
