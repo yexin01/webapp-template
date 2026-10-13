@@ -43,10 +43,10 @@ Requirements carry stable identifiers (for example `AUTH-03`). Identifiers are n
 | Threat model | §13.2 of this document | Initial version. If it outgrows this document it moves to `dev-docs/threat-model.md`, and §13.2 becomes a link. |
 | Performance test plan | §15.2 of this document | Maintained here |
 | Requirements traceability matrix | §21 of this document | Maintained here |
-| Architecture Decision Records | `dev-docs/adr/NNNN-short-title.md` | None yet; created when a decision is resolved |
-| Evidence records | `dev-docs/evidence/` | None yet (see §20) |
-| Adopter-facing documentation | `README.md`, `docs/` | Not started (Phase P2 onward) |
-| Community files | `LICENSE`, `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, `.github/` | Not started (Phase P2, license blocked by DEC-012) |
+| Architecture Decision Records | `dev-docs/adr/NNNN-short-title.md` | ADR-0001 (approved recommendations for DEC-007 to DEC-012) |
+| Evidence records | `dev-docs/evidence/` | `2026-10-14-local-verification.md` (mocked integrations, local only) |
+| Adopter-facing documentation | `README.md`, `docs/integrations.md`, `docs/operations.md` | Exists |
+| Community files | `LICENSE`, `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, `.github/` | Exist; reporting and enforcement contacts pending (DEC-012) |
 
 ---
 
@@ -561,7 +561,7 @@ These decisions are confirmed. A confirmed technology choice is not evidence tha
   - Real `.env*` files are git-ignored.
   - Secret scanning runs in pre-commit and in CI.
 - **ENV-07** A CI check scans built frontend assets for server-only variable names and secret patterns.
-- **ENV-08** Any test-only authentication or provider path:
+- **ENV-08** The application contains **no** test-only authentication path. Tests replace adapters through the composition root (`build_container(..., verifier=...)`) from test code only. If a test-only path is ever added, it:
   - is excluded from production builds;
   - refuses to activate unless `APP_ENV=test`;
   - is covered by a CI check that asserts it is absent from production artifacts.
@@ -1164,19 +1164,32 @@ Work proceeds in small, reviewable, test-backed increments. Each increment:
 - records evidence;
 - may be committed locally.
 
-Broad implementation does not begin while a decision that blocks it remains open.
+Broad implementation does not begin while a decision that blocks it remains open, unless the owner explicitly directs otherwise and the deviation is recorded below.
 
-| Phase | Scope | Entry criteria | Exit evidence |
-|---|---|---|---|
-| P0 | Repository inspection, specification consolidation, decision register, `.gitignore`, `AGENTS.md` | — | This revision committed locally; owner review |
-| P1 | DEC-001 proof (local, then authorized preview deployment) | Owner authorizes the Vercel project and preview deployment; non-production Supabase project; Stripe sandbox | `dev-docs/evidence/dec-001-vercel-python.md`; DEC-001 resolved or escalated |
-| P2 | Scaffold: layout, toolchain, configuration validation, CI skeleton, README, `.env.example`, community files, template initialization | DEC-001, DEC-007 resolved; DEC-012 for license files | Gate A checks (except those blocked by DEC-012) |
-| P3 | Identity, tenancy, schema, migrations, RLS, authorization, audit | DEC-008, DEC-009 resolved | AUTH, TEN, ADM, DB, MIG requirements; NT-01 to NT-09, NT-11 |
-| P4 | Billing: checkout, webhooks, synchronization, entitlements, reconciliation, paywall API | DEC-010 resolved; DEC-002 for organization scope | BILL requirements; §9.10 tests; sandbox evidence (DEC-006) |
-| P5 | LLM port and adapter, observability, rate limiting | DEC-011 resolved; LLM provider selected (DEC-006) | LLM, OBS, SEC-09 requirements |
-| P6 | Frontend flows, paywall, error and loading states, accessibility | P3 to P5 APIs available | FE requirements; end-to-end and accessibility evidence |
-| P7 | Resilience, security hardening, performance baseline and stress; propose targets | Authorized performance environment | Resilience and security evidence; performance reports; DEC-003 target proposal |
-| P8 | Operations documentation, backup and restore, deletion and export, integration classification, handoff | DEC-003, DEC-004, DEC-005, DEC-006 resolved, or explicitly accepted by the owner | Gates D and E; handoff report (§22) |
+**Recorded deviations**
+
+- **D-001 (2026-10-14).** On the owner's explicit instruction, P2–P6 were implemented before the DEC-001 Vercel proof (P1), with local-only verification.
+  - **Risk:** Vercel runtime findings may require changes to the ASGI entrypoint (`apps/api/index.py`), connection pooling, webhook raw-body handling, or project topology.
+  - **Mitigations:**
+    - a thin entrypoint;
+    - standard ASGI;
+    - pooler-compatible driver settings (prepared statements disabled);
+    - a lazily opened, concurrency-safe pool;
+    - raw-body webhook handlers.
+
+  DEC-001 remains OPEN and Gate E remains BLOCKED.
+
+| Phase | Scope | Entry criteria | Exit evidence | Status (2026-10-14) |
+|---|---|---|---|---|
+| P0 | Repository inspection, specification consolidation, decision register, `.gitignore`, `AGENTS.md` | — | This revision committed locally; owner review | Done |
+| P1 | DEC-001 proof (local, then authorized preview deployment) | Owner authorizes the Vercel project and preview deployment; non-production Supabase project; Stripe sandbox | `dev-docs/evidence/dec-001-vercel-python.md`; DEC-001 resolved or escalated | BLOCKED — owner chose local-only for now |
+| P2 | Scaffold: layout, toolchain, configuration validation, CI skeleton, README, `.env.example`, community files, template initialization | DEC-001, DEC-007 resolved; DEC-012 for license files | Gate A checks (except those blocked by DEC-012) | Implemented locally (deviation D-001); remote CI never run |
+| P3 | Identity, tenancy, schema, migrations, RLS, authorization, audit | DEC-008, DEC-009 resolved | AUTH, TEN, ADM, DB, MIG requirements; NT-01 to NT-09, NT-11 | Implemented; tests PASS (mocked) |
+| P4 | Billing: checkout, webhooks, synchronization, entitlements, reconciliation, paywall API | DEC-010 resolved; DEC-002 for organization scope | BILL requirements; §9.10 tests; sandbox evidence (DEC-006) | Implemented; tests PASS (mocked Stripe API); sandbox NOT VERIFIED |
+| P5 | LLM port and adapter, observability, rate limiting | DEC-011 resolved; LLM provider selected (DEC-006) | LLM, OBS, SEC-09 requirements | Implemented; tests PASS (mocked); providers NOT VERIFIED |
+| P6 | Frontend flows, paywall, error and loading states, accessibility | P3 to P5 APIs available | FE requirements; end-to-end and accessibility evidence | Implemented; unit and account-free e2e PASS; browser and accessibility e2e NOT VERIFIED (needs Clerk sandbox) |
+| P7 | Resilience, security hardening, performance baseline and stress; propose targets | Authorized performance environment | Resilience and security evidence; performance reports; DEC-003 target proposal | Resilience and security tests done locally; performance not started |
+| P8 | Operations documentation, backup and restore, deletion and export, integration classification, handoff | DEC-003, DEC-004, DEC-005, DEC-006 resolved, or explicitly accepted by the owner | Gates D and E; handoff report (§22) | Operations docs drafted; backup, deletion, integration classification pending |
 
 ---
 
@@ -1252,44 +1265,54 @@ Evidence records never contain secrets, tokens, or personal data.
 
 ## 21. Requirements Traceability Matrix
 
-Current as of revision 2. Nothing has been implemented yet, so no requirement has been verified.
+Status as of 2026-10-14. Evidence: [`dev-docs/evidence/2026-10-14-local-verification.md`](evidence/2026-10-14-local-verification.md).
 
-| Requirements | Summary | Verification method | Gate | Blocked by | Status |
+`PASS` here means the check was **executed locally** with **mocked** external integrations and met its criteria. It is not sandbox or live verification (TEST-04).
+
+| Requirements | Summary | Verification | Gate | Blocked by | Status |
 |---|---|---|---|---|---|
-| ARCH-01 to ARCH-12 | Layering, boundaries, bounded resources | Import-boundary checks, query-count tests, review | B | DEC-001, DEC-007 | BLOCKED |
-| API-01 to API-06 | API conventions, error contract, health | Contract tests | B | DEC-001, DEC-007 | BLOCKED |
-| ENV-01 to ENV-08 | Environments, configuration validation, production guards | Unit tests, CI checks | A, C | DEC-007 | BLOCKED |
-| REPO-01 to REPO-11 | Bootstrap, documentation, templates, clean clone | Clean-clone test, init-script test, review | A | DEC-007, DEC-012 | BLOCKED |
-| REPO-12 | `.gitignore` coverage | Review | A | — | NOT VERIFIED |
-| AUTH-01 to AUTH-06 | Token verification, session expiry | Unit, integration, NT-11 | C | DEC-001, DEC-006 | BLOCKED |
-| TEN-01 to TEN-06, TEN-08 | Tenant context and authorization | NT-01 to NT-04, NT-08, NT-09, route-manifest test | C | DEC-008, DEC-009 | BLOCKED |
-| TEN-07 | Membership change enforcement | NT-05, NT-06 | C | DEC-009 | BLOCKED |
-| ADM-01, ADM-02 | Administrative authorization and audit | NT-07, audit tests | C | DEC-009 | BLOCKED |
-| DB-01 to DB-09 | Integrity, RLS, isolation, fixtures | Integration and RLS tests | B, C | DEC-008 | BLOCKED |
+| ARCH-01, ARCH-02 | Layering, no cycles | `lint-imports` (4 contracts), ESLint import bans | B | — | PASS |
+| ARCH-03 to ARCH-07, ARCH-09 to ARCH-12 | Single rules, adapters, no global state, bounded calls, ADRs | Review; LLM retry tests; timeouts configured | B | — | PASS (review) |
+| ARCH-08 | No N+1 queries | Query-count tests | B | — | NOT VERIFIED (tests not written) |
+| API-01 to API-06 | Versioning, problem details, pagination, bearer-only, idempotency, health | Contract and platform tests; account-free e2e | B | — | PASS |
+| ENV-01 | Separate credentials per environment | Operational | E | DEC-006 | NOT VERIFIED |
+| ENV-02 to ENV-06 | Modes, validation, key/mode consistency, production guards, `.env.example` | Config tests; migration guard tests | A, C | — | PASS |
+| ENV-07 | No server-only values in the bundle | `check:bundle-secrets` (plus negative test) | C | — | PASS |
+| ENV-08 | No test-only auth path in the application | Review | C | — | PASS (review) |
+| REPO-01 to REPO-08, REPO-10, REPO-12 | Docs, commands, lockfiles, migrations, seed, reset, init, mock-mode tests, no credentials | Clean clone; init test; gitleaks | A | — | PASS |
+| REPO-09 | Community files and policies | Files exist | A | DEC-012 (contacts) | BLOCKED |
+| REPO-11 | Clean-clone onboarding | Fresh clone (shared caches; see limitations) | A | — | PASS |
+| AUTH-01 to AUTH-05 | Server-side token verification | Unit tests with generated keys; end-to-end through the app | C | — | PASS (mocked IdP) |
+| AUTH-06 | Session expiry UX | Component test; real Clerk flow | B | DEC-006 | NOT VERIFIED (sandbox) |
+| TEN-01 to TEN-06, TEN-08 | Tenant context, deny-by-default, scoping, RLS, 404/403 | NT-01 to NT-04, NT-08, NT-09, route manifest, RLS tests | C | — | PASS |
+| TEN-07 | Membership change enforcement | NT-05 (bound, webhook, outage), NT-06 (re-check, serialization) | C | DEC-009 bound confirmation | PASS (against proposed 300 s) |
+| ADM-01, ADM-02 | Admin authorization and audit | NT-07; audit assertions | C | — | PASS |
+| DB-01 to DB-09 | Integrity, indexes, transactions, bounds, pooling, RLS, isolation, fixtures | RLS and integration tests | B, C | — | PASS |
 | DB-10 | Backup and restore | Restore test | E | DEC-005 | BLOCKED |
-| MIG-01 to MIG-05 | Migration safety | CI migration stage, guard tests | B, C | DEC-008 | BLOCKED |
-| BILL-01 to BILL-09, BILL-11 to BILL-14 | Entitlements, checkout, webhooks | Unit matrix, webhook and concurrency tests, sandbox tests | B, C | DEC-001, DEC-010 | BLOCKED |
-| BILL-10 | Out-of-order handling | Ordering tests | C | DEC-001 | BLOCKED |
-| BILL-15 to BILL-21 | Plan changes, reconciliation, presentation | Transition tests, end-to-end, sandbox test clocks | B | DEC-010 | BLOCKED |
-| BILL-ORG-01 | Interim organization gating | NT-12 | C | — (interim rule defined) | NOT VERIFIED |
+| MIG-01 to MIG-05 | Migration safety | Checksum tamper test; non-local refusal; idempotent apply | B, C | — | PASS (CI stage not yet executed remotely) |
+| BILL-01 to BILL-21 | Entitlements, checkout, webhooks, transitions, reconciliation, presentation | Unit matrix; billing integration tests; web unit tests | B, C | — | PASS (mocked Stripe API; real signature verification) |
+| BILL-* sandbox | Real Stripe test-mode behavior (test clocks, portal) | Sandbox procedure in docs/integrations.md | E | DEC-006 | NOT VERIFIED |
+| BILL-ORG-01 | Interim organization gating | NT-12 | C | — | PASS |
 | BILL-ORG-02 | Organization entitlement policy | Truth-table tests | C | DEC-002 | BLOCKED |
-| LLM-01 to LLM-04, LLM-07 to LLM-10 | LLM abstraction, limits, privacy | Unit and resilience tests | B, D | DEC-006 | BLOCKED |
-| LLM-05, LLM-06 | LLM rate and cost limits | Budget and rate tests | C, D | DEC-011 | BLOCKED |
-| OBS-01 to OBS-08 | Telemetry configuration, redaction, independence | OBS-08 leakage tests, outage tests | C, D | DEC-006 | BLOCKED |
-| OBS-09 | Telemetry retention | Documentation review | E | DEC-004 | BLOCKED |
-| FE-01 to FE-11 | UI quality, states, accessibility | Component, end-to-end, accessibility tests | B | DEC-007 | BLOCKED |
+| LLM-01 to LLM-10 | Port, normalization, bounded retries, limits, budget, privacy, mock, isolation, docs | Adapter and platform tests | B, C, D | — | PASS (mocked provider) |
+| LLM real provider | Connectivity with a real key | Sandbox check | E | DEC-006 | NOT VERIFIED |
+| OBS-01 to OBS-08 | Telemetry configuration, redaction, allowlists, non-blocking, leakage | Unit and leakage tests; outage tests | C, D | — | PASS (mocked transports) |
+| OBS real services | PostHog and Sentry capture without personal data | Sandbox inspection | E | DEC-006 | NOT VERIFIED |
+| OBS-09 | Telemetry retention | Documentation | E | DEC-004 | BLOCKED |
+| FE-02, FE-03, FE-05 to FE-07, FE-10 | Boundaries, states, protected routes, paywall, 404, error mapping | ESLint bans; Vitest; account-free e2e | B | — | PASS |
+| FE-01, FE-04, FE-08, FE-09, FE-11 | Accessibility, session UX, error boundaries, keyboard, browser flows | axe and Playwright page and authenticated suites | B | DEC-006 (Clerk sandbox) | NOT VERIFIED |
 | FE-12 | Frontend performance budgets | Measurements | D | DEC-003 | BLOCKED |
-| SEC-01 to SEC-08, SEC-10 to SEC-15 | Security controls | CI scans, security tests, review | C | DEC-007, DEC-012 (SEC-10) | BLOCKED |
-| SEC-09 | Rate limiting | Rate-limit tests | C | DEC-011 | BLOCKED |
-| TEST-01 to TEST-05 | Test discipline | Review, CI | B | DEC-007 | BLOCKED |
-| PERF-01 to PERF-07 | Performance scenarios | Reports per §15.2 | D | P7 authorization | BLOCKED |
-| Performance acceptance | Approved targets met | Comparison against §15.4 | D | DEC-003 | BLOCKED |
-| CI-SEC-01 to CI-SEC-05 | CI security | Workflow review | A, C | DEC-007 | BLOCKED |
-| OPS-01 to OPS-03, §16.4, §16.5 | Deployment, rollback, operations | Documentation review, authorized drills | E | DEC-001, DEC-005 | BLOCKED |
-| Account deletion and export | Deletion and export behavior | Deletion and export tests | E | DEC-004 | BLOCKED |
-| Integration classification | Mocked, sandbox, or live per provider | Evidence records | E | DEC-006 | BLOCKED |
-
----
+| SEC-01 to SEC-05, SEC-07 to SEC-10, SEC-13 to SEC-15 | Validation, headers, secrets, audits, lockfiles, errors, limits, licenses, webhooks, redirects | Tests; audits; gitleaks; license check | C | — | PASS (as of 2026-10-14) |
+| SEC-06 | Static analysis (CodeQL) | Workflow defined | C | Remote CI not authorized | NOT VERIFIED |
+| SEC-11 | Vulnerability reporting | SECURITY.md | A | DEC-012 (contacts) | BLOCKED |
+| SEC-12 | Required review of migrations and workflows | CODEOWNERS and branch protection | A | Remote settings not authorized | NOT VERIFIED |
+| TEST-01 to TEST-05 | Test discipline | Review; deterministic clocks; labeled evidence | B | — | PASS |
+| PERF-01 to PERF-07 | Performance scenarios | Reports per §15.2 | D | Authorized environment | NOT VERIFIED (not started) |
+| Performance acceptance | Approved targets met | §15.4 | D | DEC-003 | BLOCKED |
+| CI-SEC-01 to CI-SEC-05 | CI security | Workflow review; first remote run | A, C | Remote CI not authorized | NOT VERIFIED (implemented) |
+| OPS-01 to OPS-03, §16.4, §16.5 | Deployment, rollback, operations | docs/operations.md | E | DEC-001, DEC-005 | BLOCKED |
+| Account deletion and export | Deletion and export behavior | Tests | E | DEC-004 | BLOCKED |
+| Integration classification | Mocked, sandbox, or live per provider | Evidence records | E | DEC-006 | All providers **mocked** |
 
 ## 22. Required Handoff Report
 
@@ -1312,12 +1335,32 @@ The report clearly distinguishes verified behavior from assumptions, mocks, and 
 
 ## 23. Current Status (2026-10-14)
 
-- **Phase:** P0 complete, pending owner review.
-- **Implemented:** nothing. The repository contains this specification, `AGENTS.md`, and `.gitignore`.
-- **Gates A–E:** all `NOT VERIFIED` or `BLOCKED` (§21).
-- **Decisions:** DEC-001 through DEC-012 are all `OPEN`.
-- **Integrations:** none exercised. Nothing is mocked, sandbox-tested, or live-tested yet.
+- **Implemented:**
+  - Python API: domain, application, infrastructure, HTTP; migrations with forced RLS.
+  - Next.js web app.
+  - Repository tooling, CI definitions, and community files.
+- **Integrations:** all **mocked**. No sandbox or live service has been contacted.
+- **Local evidence:** API 167 tests, web 37 unit tests, and 16 account-free e2e checks pass, along with lint, strict type checks, build, contract-drift, bundle-secret, audit, license, and secret scans. Details: `dev-docs/evidence/2026-10-14-local-verification.md`.
+- **Gates:**
+
+  | Gate | Status | Reason |
+  |---|---|---|
+  | A | NOT VERIFIED | Remote CI never run; DEC-012 contacts pending |
+  | B | NOT VERIFIED | Browser and signed-in e2e need Clerk sandbox keys |
+  | C | NOT VERIFIED | CodeQL and sandbox verification pending; local security tests PASS |
+  | D | BLOCKED | Performance not started; DEC-003 |
+  | E | BLOCKED | DEC-001, DEC-005, DEC-006 |
+
+- **Decisions:**
+  - DEC-007 to DEC-011: RESOLVED (ADR-0001). The DEC-009 staleness value still needs confirmation.
+  - DEC-012: license resolved; contacts OPEN.
+  - DEC-001 to DEC-006: OPEN.
+- **Deviation:** D-001 (§18).
 - **Remote actions:** none. No push, publication, deployment, or release has occurred.
-- **Next step:** owner review of this revision, then authorization and inputs for P1 (DEC-001 proof) and decisions on DEC-007 to DEC-012.
+- **Next steps:**
+  1. Owner adds sandbox keys to `.env`.
+  2. Run the sandbox e2e suites and the integration procedures in `docs/integrations.md`, and record the evidence.
+  3. Owner authorizes the DEC-001 preview proof.
+  4. Owner decides DEC-002 to DEC-005 and the DEC-012 contacts.
 
 **Final principle:** build a template that is secure by default, modular by design, reproducible from a clean clone, and honest about its verified limits. Do not trade correctness, security, or maintainability for superficial completion.
