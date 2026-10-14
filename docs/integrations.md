@@ -104,7 +104,7 @@ Sign-in and sign-up pages live at `/sign-in` and `/sign-up`.
      `DATABASE_URL=<direct-connection-string> pnpm db:migrate --allow-remote`.
      Only run this against a database you are authorized to change.
   4. Tables live in the `app` schema, which is **not** exposed through Supabase's Data API. The browser never connects to the database (DEC-008). Do not grant the `anon` or `authenticated` roles access to `app`.
-- The migration creates two `NOLOGIN` roles, `app_api` and `app_worker`, and grants them to the connecting role. Every API transaction switches into one of them with `SET LOCAL ROLE`.
+- The migration creates two `NOLOGIN` roles, `app_api` and `app_worker`, and grants them to the connecting role. Every API transaction switches into one of them transaction-locally, setting the role, statement timeout, and tenant context in a single `set_config` statement.
 
 ## PostHog
 

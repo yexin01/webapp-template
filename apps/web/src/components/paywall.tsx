@@ -18,8 +18,8 @@ export function Paywall({ feature, inOrganization = false }: Props) {
       <h2 id="paywall-title">Upgrade to Pro</h2>
       {inOrganization ? (
         <p>
-          This feature needs your own Pro plan. Pro covers your actions in every organization you belong to and
-          is not shared with other members.
+          This feature needs your own Pro plan. Pro covers your actions in every organization you belong to
+          and is not shared with other members.
         </p>
       ) : (
         <p>This feature is part of the Pro plan. Upgrade monthly or yearly; you can cancel anytime.</p>
