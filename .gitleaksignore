@@ -1,0 +1,7 @@
+# Reviewed false positives only. Each entry needs a justification.
+#
+# 2026-10-14: `self._secret, tolerance=_SIGNATURE_TOLERANCE_SECONDS` is a
+# variable reference, not a secret. The line was annotated with
+# gitleaks:allow in the following commit (9834791); this entry covers the
+# original commit in history scans.
+cdaaa7d8a9f6278ffa8e6decbef19db8899bdbbb:apps/api/app/infrastructure/stripe_billing.py:generic-api-key:168

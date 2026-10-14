@@ -10,6 +10,8 @@ paths = [
   '''apps/api/tests/.*''',
   '''apps/web/src/.*\.test\.tsx?''',
   '''apps/web/e2e/.*''',
+  # Lists fingerprints of reviewed findings; contains no secrets.
+  '''(^|/)\.gitleaksignore$''',
 ]
 regexes = [
   '''(?i)(placeholder|replace_me|canary|not_a_real_secret|test_only)''',
