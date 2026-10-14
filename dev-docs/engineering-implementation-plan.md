@@ -43,10 +43,10 @@ Requirements carry stable identifiers (for example `AUTH-03`). Identifiers are n
 | Threat model | §13.2 of this document | Initial version. If it outgrows this document it moves to `dev-docs/threat-model.md`, and §13.2 becomes a link. |
 | Performance test plan | §15.2 of this document | Maintained here |
 | Requirements traceability matrix | §21 of this document | Maintained here |
-| Architecture Decision Records | `dev-docs/adr/NNNN-short-title.md` | ADR-0001 (approved recommendations for DEC-007 to DEC-012) |
-| Evidence records | `dev-docs/evidence/` | `2026-10-14-local-verification.md` and `2026-10-14-diagnostics-perf-local.md` (mocked integrations, local only) |
-| Adopter-facing documentation | `README.md`, `docs/integrations.md`, `docs/operations.md`, `docs/data-inventory.md`, `perf/README.md` | Exists |
-| Community files | `LICENSE`, `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, `.github/` | Exist; reporting and enforcement contacts pending (DEC-012) |
+| Architecture Decision Records | `dev-docs/adr/NNNN-short-title.md` | ADR-0001 (approved recommendations for DEC-007 to DEC-012); ADR-0002 (DEC-002 option (b), DEC-009 value, DEC-012 contacts, DEC-003 to DEC-005 adopter-owned) |
+| Evidence records | `dev-docs/evidence/` | `2026-10-14-local-verification.md`, `2026-10-14-diagnostics-perf-local.md`, and `2026-10-14-adr-0002-perf07-local.md` (mocked integrations, local only) |
+| Adopter-facing documentation | `README.md`, `docs/integrations.md`, `docs/operations.md`, `docs/data-inventory.md`, `perf/README.md`, `perf/run-plan-template.md` | Exists |
+| Community files | `LICENSE`, `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, `.github/` | Exist. Contacts are adopter placeholders that `init-template` fills in and `check:placeholders` enforces (DEC-012, ADR-0002) |
 
 ---
 
@@ -120,17 +120,17 @@ These decisions are confirmed. A confirmed technology choice is not evidence tha
 | ID | Decision | Status | Blocks | Next action |
 |---|---|---|---|---|
 | DEC-001 | Python backend on Vercel | OPEN — mandatory technical validation | All backend implementation beyond the proof | Owner authorizes the proof deployment (§18, P1) |
-| DEC-002 | Individual billing vs. organization entitlements | OPEN | Organization-level paid authorization | Owner policy decision |
-| DEC-003 | Performance targets | OPEN — targets follow baseline measurement | Quantitative acceptance in Gate D | Local baseline recorded (not deployment evidence); preview baseline and stress need an authorized run plan (P7) |
-| DEC-004 | Data retention, export, and deletion | OPEN | Account deletion/export features; any deletion-completeness claim | Owner answers the questions in `docs/data-inventory.md` (inventory drafted); provider verification |
-| DEC-005 | Backup and recovery | OPEN | Recovery-readiness claims; Gate E | Owner objectives plus a hosted restore test (a local restore drill exists) |
+| DEC-002 | Individual billing vs. organization entitlements | RESOLVED 2026-10-14 — option (b) ([ADR-0002](adr/0002-organization-entitlements-contacts-adopter-decisions.md)) | — | — |
+| DEC-003 | Performance targets | RESOLVED 2026-10-14 — adopter-owned (ADR-0002) | — (the template claims no targets) | Each adopter sets targets from its own preview baseline (`perf/run-plan-template.md`) |
+| DEC-004 | Data retention, export, and deletion | RESOLVED 2026-10-14 — adopter-owned (ADR-0002) | Deletion and export features remain out of the template; no deletion-completeness claim | Each adopter completes the checklist in `docs/data-inventory.md` |
+| DEC-005 | Backup and recovery | RESOLVED 2026-10-14 — adopter-owned (ADR-0002) | No recovery-readiness claim | Each adopter follows the checklist in `docs/operations.md` (a local restore drill exists) |
 | DEC-006 | External integration verification | OPEN until verified | Any "sandbox-tested" or "live-tested" claim; Gate E | Owner provides sandbox keys in `.env`; then run the `/integrations` checks and sandbox e2e |
 | DEC-007 | Frontend framework, repository layout, toolchain, and API contracts | RESOLVED 2026-10-14 — recommendation approved ([ADR-0001](adr/0001-approved-recommendations.md)) | — | — |
 | DEC-008 | Data access path and RLS enforcement model | RESOLVED 2026-10-14 — option A approved (ADR-0001) | — | Validate on Vercel in DEC-001 |
-| DEC-009 | Organization membership source of truth and staleness bound | RESOLVED 2026-10-14 — option A approved (ADR-0001); staleness bound value still needs owner confirmation | — | Owner confirms `MEMBERSHIP_MAX_STALENESS_SECONDS` (proposed 300 s) |
+| DEC-009 | Organization membership source of truth and staleness bound | RESOLVED 2026-10-14 — option A approved (ADR-0001); bound 300 s confirmed (ADR-0002) | — | — |
 | DEC-010 | Billing state and plan-change policy | RESOLVED 2026-10-14 — recommendation approved (ADR-0001) | — | — |
 | DEC-011 | Rate limiting and shared counters | RESOLVED 2026-10-14 — option A approved (ADR-0001) | — | Configure platform rate-limit rules at deployment time |
-| DEC-012 | License and community contacts | License RESOLVED 2026-10-14 — Apache-2.0; contacts OPEN | Contact details in `SECURITY.md` / `CODE_OF_CONDUCT.md` | Owner chooses reporting channel and enforcement contact |
+| DEC-012 | License and community contacts | RESOLVED 2026-10-14 — Apache-2.0 (ADR-0001); contacts are adopter placeholders (ADR-0002) | — | — |
 
 ### 3.3 Decision entries
 
@@ -203,7 +203,7 @@ These decisions are confirmed. A confirmed technology choice is not evidence tha
 
 #### DEC-002 — Individual Billing and Organization Entitlements
 
-- **Status:** OPEN — resolve before implementing organization-level paid authorization.
+- **Status:** RESOLVED 2026-10-14 — option (b): an individual's Pro applies to their own actions in every organization they belong to and is never shared. See [ADR-0002](adr/0002-organization-entitlements-contacts-adopter-decisions.md) and §9.9. The text below is kept as the decision record.
 - **Owner:** Repository owner.
 - **Blocks:** `BILL-ORG-*` requirements and any feature that is paid within an organization context.
 - **Rationale:** the subscription owner is the individual user. Organization membership and isolation are also required, but the relationship between an individual's Pro subscription and organization access is undefined. A wrong guess either leaks paid features to non-payers or locks payers out, and it shapes the schema.
@@ -232,7 +232,7 @@ These decisions are confirmed. A confirmed technology choice is not evidence tha
 
 #### DEC-003 — Performance Targets
 
-- **Status:** OPEN — targets must be approved after baseline measurements.
+- **Status:** RESOLVED 2026-10-14 — accepted as **adopter-owned** (ADR-0002). The template ships the harness, local reference results, and `perf/run-plan-template.md`, and claims no targets. The text below is kept as the decision record, and each adopter follows its sequence.
 - **Owner:** Repository owner.
 - **Blocks:** quantitative performance acceptance (Gate D).
 - **Rationale:** targets set before measurement are arbitrary. Targets must reflect observed behavior, expected usage, and platform limits.
@@ -254,7 +254,7 @@ These decisions are confirmed. A confirmed technology choice is not evidence tha
 
 #### DEC-004 — Data Retention, Export, and Deletion
 
-- **Status:** OPEN.
+- **Status:** RESOLVED 2026-10-14 — accepted as **adopter-owned** (ADR-0002). The template ships the data inventory and an adopter checklist (`docs/data-inventory.md`). It has no deletion or export feature and makes no deletion-completeness claim. The interim rule below stays in force for template code.
 - **Owner:** Repository owner.
 - **Blocks:** account deletion and data export features, and any claim that deletion is complete.
 - **Rationale:** personal data lives in the application database, Clerk, Stripe, PostHog, Sentry, logs, and backups. Each has different deletion capabilities and retention obligations.
@@ -282,7 +282,7 @@ These decisions are confirmed. A confirmed technology choice is not evidence tha
 
 #### DEC-005 — Backup and Recovery
 
-- **Status:** OPEN.
+- **Status:** RESOLVED 2026-10-14 — accepted as **adopter-owned** (ADR-0002). The template ships the local restore drill and an adopter checklist with a hosted restore-test procedure (`docs/operations.md`). It makes no recovery-readiness claim.
 - **Owner:** Repository owner.
 - **Blocks:** recovery-readiness claims and Gate E.
 - **Questions:**
@@ -382,7 +382,7 @@ These decisions are confirmed. A confirmed technology choice is not evidence tha
 
 #### DEC-009 — Organization Membership Source of Truth and Staleness Bound
 
-- **Status:** RESOLVED 2026-10-14 — the owner approved the recommendation; see [ADR-0001](adr/0001-approved-recommendations.md). The text below is kept as the decision record.
+- **Status:** RESOLVED 2026-10-14 — the owner approved the recommendation; see [ADR-0001](adr/0001-approved-recommendations.md). Staleness bound confirmed at 300 s ([ADR-0002](adr/0002-organization-entitlements-contacts-adopter-decisions.md)). The text below is kept as the decision record.
 - **Owner:** Repository owner.
 - **Blocks:** tenancy implementation (P3).
 - **Options:**
@@ -445,7 +445,7 @@ These decisions are confirmed. A confirmed technology choice is not evidence tha
 
 #### DEC-012 — License and Community Contacts
 
-- **Status:** PARTIALLY RESOLVED 2026-10-14 — license is **Apache-2.0** (ADR-0001). The vulnerability-reporting channel and Code of Conduct enforcement contact remain OPEN.
+- **Status:** RESOLVED 2026-10-14 — license is **Apache-2.0** (ADR-0001). The vulnerability-reporting channel and Code of Conduct enforcement contact are **adopter placeholders** (`{{SECURITY_CONTACT}}`, `{{CONDUCT_CONTACT}}`). `init-template` fills them in, and `check:placeholders` fails in a renamed project that still has them (ADR-0002).
 - **Owner:** Repository owner.
 - **Blocks:** `LICENSE`, `SECURITY.md`, and `CODE_OF_CONDUCT.md` content; Gate A.
 - **Questions:**
@@ -636,10 +636,10 @@ Clerk provides authentication. It does not replace application authorization.
   - A resource outside the actor's tenants returns `404`.
   - A resource inside the actor's tenant, accessed with an insufficient role, returns `403`.
 - **TEN-06** Client-provided user IDs, roles, tenant IDs, and subscription claims are untrusted. A tenant ID from the client only selects which context to verify.
-- **TEN-07** Membership removals and role changes are enforced within the owner-approved staleness bound (DEC-009; not yet set).
+- **TEN-07** Membership removals and role changes are enforced within the owner-approved staleness bound of 300 s (DEC-009, ADR-0002).
   - Authorization reads membership and role from the authoritative store, never from token claims alone.
   - A privileged write re-checks the role inside the same transaction, so a concurrent downgrade cannot be bypassed.
-- **TEN-08** Organization membership and individual subscription ownership are separate entities. No code path derives entitlement from membership until DEC-002 is resolved.
+- **TEN-08** Organization membership and individual subscription ownership are separate entities. Entitlement derives only from the actor's own subscription. Membership decides only whether an organization context exists (DEC-002 option (b), §9.9).
 
 ### 7.3 Administrative operations
 
@@ -661,7 +661,7 @@ Clerk provides authentication. It does not replace application authorization.
 | NT-09 | Client sends `plan`, `role`, `org_id`, or `subscription_status` fields to influence decisions | Ignored or rejected; decision unchanged |
 | NT-10 | Entitlement manipulation: forged success redirect, replayed checkout session ID, client-asserted subscription state | No Pro access |
 | NT-11 | Forged, expired, wrong-issuer, wrong-authorized-party, and `alg=none` tokens | `401` |
-| NT-12 | Subscriber present in an organization context uses a Pro-gated feature there | Not entitled (interim DEC-002 rule) |
+| NT-12 | A non-subscribing member uses a Pro-gated feature in an organization where another member is a subscriber | `403`; Pro is never shared (DEC-002 option (b)). The full truth table is in §9.9 |
 
 ---
 
@@ -711,7 +711,7 @@ Clerk provides authentication. It does not replace application authorization.
 
 ### 8.4 Backup and restore
 
-- **DB-10** Backup and restore procedures are documented, and restoration is tested in an isolated environment with synthetic data. Objectives and acceptance are governed by DEC-005.
+- **DB-10** Backup and restore procedures are documented, and restoration is tested in an isolated environment with synthetic data. The template tests restoration locally (`pnpm db:restore-drill`). Recovery objectives and the hosted restore test are adopter-owned (DEC-005, ADR-0002; checklist in `docs/operations.md`).
 
 ---
 
@@ -805,11 +805,20 @@ Clerk provides authentication. It does not replace application authorization.
 
 ### 9.9 Organization context (DEC-002)
 
-- **BILL-ORG-01** Until DEC-002 is resolved:
-  - Entitlement in organization contexts is "not entitled".
-  - No paid feature is exposed there.
-  - Administrators manage members independently of billing.
-- **BILL-ORG-02** After resolution, the approved entitlement truth table is inserted here and drives tests.
+- **BILL-ORG-01** *(Superseded by BILL-ORG-02 on 2026-10-14.)* Interim rule until DEC-002 was resolved: organization contexts were not entitled.
+- **BILL-ORG-02** DEC-002 option (b) ([ADR-0002](adr/0002-organization-entitlements-contacts-adopter-decisions.md)). An individual's Pro applies to that individual's own actions in every organization they currently belong to. It is never shared with other members, and roles neither grant nor remove it. Tested in `apps/api/tests/integration/test_org_entitlements.py`.
+
+  | Actor | Context | Role | Membership | Actor's subscription (§9.5) | Pro-gated feature | Entitlement |
+  |---|---|---|---|---|---|---|
+  | Subscriber | Personal | — | — | Entitling | Allowed | Pro |
+  | Subscriber | Organization | Admin or member | Current | Entitling | Allowed | Pro |
+  | Subscriber | Organization | Admin or member | Current | Not entitling | `403 ENTITLEMENT_REQUIRED` | Free |
+  | Non-subscriber | Personal or organization | Any | Current | None | `403 ENTITLEMENT_REQUIRED` | Free, even if other members are Pro |
+  | Anyone | Organization | — | Not a member, or removed (enforced within TEN-07) | Any | `404` | — |
+
+  - Billing management (checkout, Customer Portal, status) exists only in the personal context.
+  - Organization administration is independent of billing: a Free admin keeps admin rights, and Pro grants none.
+  - Cancellation ends Pro in organizations at the same moment as in the personal context.
 
 ### 9.10 Billing verification
 
@@ -857,7 +866,7 @@ Clerk provides authentication. It does not replace application authorization.
   - Input autocapture is disabled or masked.
   - Session recording is disabled by default; enabling it requires approval.
   - Users are identified by internal ID, never by email.
-  - Consent behavior follows DEC-004.
+  - Consent behavior is an adopter decision (DEC-004, ADR-0002; `docs/data-inventory.md` checklist item 8).
 - **OBS-04** Backend logs are structured. They carry a request ID and pseudonymous internal user and tenant IDs, and never secrets, tokens, request bodies, or prompts.
 - **OBS-05** A correlation ID is returned in responses and attached to error reports.
 - **OBS-06** Telemetry is non-blocking: bounded buffers, timeouts, and graceful degradation. Authentication, billing, and authorization never depend on analytics or monitoring availability, as proven by tests with telemetry endpoints unavailable.
@@ -866,7 +875,7 @@ Clerk provides authentication. It does not replace application authorization.
   - Synthetic canary values are injected through requests and errors: fake keys, fake tokens, fake email addresses, prompt text.
   - Logs and mocked telemetry transports are captured.
   - The test asserts that the canaries are absent.
-- **OBS-09** Telemetry retention and deletion behavior is documented per DEC-004.
+- **OBS-09** Telemetry retention and deletion behavior is documented. Retention follows each provider's project settings, and adopters choose the periods (DEC-004, ADR-0002).
 
 ---
 
@@ -888,7 +897,7 @@ Clerk provides authentication. It does not replace application authorization.
   - mobile and desktop viewport checks;
   - automated accessibility scans of key pages;
   - a manual accessibility pass.
-- **FE-12** Bundle size and Core Web Vitals are measured. Budgets follow DEC-003.
+- **FE-12** Bundle size and Core Web Vitals are measured. Budgets are adopter-owned (DEC-003, ADR-0002; `perf/run-plan-template.md`).
 
 ---
 
@@ -1008,7 +1017,7 @@ Update this model whenever an endpoint, integration, data category, trust bounda
   - frontend loading performance;
   - telemetry overhead.
 - No caching is introduced initially. If caching is introduced, an ADR must document its invalidation and consistency rules.
-- Quantitative performance acceptance remains `BLOCKED` until DEC-003 targets are approved.
+- Quantitative performance acceptance is adopter-owned (DEC-003, ADR-0002). The template never claims that a target is met.
 
 ### 15.2 Performance test plan
 
@@ -1080,7 +1089,7 @@ These are initial engineering defaults, held in configuration. They are **not** 
 
 ### 15.4 Approved performance targets
 
-None. These are pending DEC-003.
+None in the template. Targets are adopter-owned (DEC-003, [ADR-0002](adr/0002-organization-entitlements-contacts-adopter-decisions.md)). Adopters propose and approve them with `perf/run-plan-template.md`, from their own preview baseline.
 
 ---
 
@@ -1134,8 +1143,8 @@ None. These are pending DEC-003.
 - Health and readiness checks.
 - Provider outage handling (§16.4).
 - Incident response and troubleshooting.
-- Backup and restore verification (DEC-005). A local restore drill (`pnpm db:restore-drill`) exists; hosted verification is pending.
-- Data inventory (`docs/data-inventory.md`, DEC-004).
+- Backup and restore: the local restore drill (`pnpm db:restore-drill`) and the adopter checklist with a hosted restore-test procedure (DEC-005, adopter-owned).
+- Data inventory and the adopter retention, deletion, and export checklist (`docs/data-inventory.md`, DEC-004, adopter-owned).
 - Python runtime limitations established by DEC-001.
 
 ---
@@ -1184,13 +1193,13 @@ Broad implementation does not begin while a decision that blocks it remains open
 |---|---|---|---|---|
 | P0 | Repository inspection, specification consolidation, decision register, `.gitignore`, `AGENTS.md` | — | This revision committed locally; owner review | Done |
 | P1 | DEC-001 proof (local, then authorized preview deployment) | Owner authorizes the Vercel project and preview deployment; non-production Supabase project; Stripe sandbox | `dev-docs/evidence/dec-001-vercel-python.md`; DEC-001 resolved or escalated | BLOCKED — owner chose local-only for now |
-| P2 | Scaffold: layout, toolchain, configuration validation, CI skeleton, README, `.env.example`, community files, template initialization | DEC-001, DEC-007 resolved; DEC-012 for license files | Gate A checks (except those blocked by DEC-012) | Implemented locally (deviation D-001); remote CI never run |
+| P2 | Scaffold: layout, toolchain, configuration validation, CI skeleton, README, `.env.example`, community files, template initialization | DEC-001, DEC-007 resolved; DEC-012 for license files | Gate A checks | Implemented locally (deviation D-001); community contacts are adopter placeholders (ADR-0002); remote CI never run |
 | P3 | Identity, tenancy, schema, migrations, RLS, authorization, audit | DEC-008, DEC-009 resolved | AUTH, TEN, ADM, DB, MIG requirements; NT-01 to NT-09, NT-11 | Implemented; tests PASS (mocked) |
-| P4 | Billing: checkout, webhooks, synchronization, entitlements, reconciliation, paywall API | DEC-010 resolved; DEC-002 for organization scope | BILL requirements; §9.10 tests; sandbox evidence (DEC-006) | Implemented; tests PASS (mocked Stripe API); sandbox NOT VERIFIED |
+| P4 | Billing: checkout, webhooks, synchronization, entitlements, reconciliation, paywall API | DEC-010 resolved; DEC-002 for organization scope | BILL requirements; §9.10 tests; sandbox evidence (DEC-006) | Implemented, including the DEC-002 (b) organization truth table; tests PASS (mocked Stripe API); sandbox NOT VERIFIED |
 | P5 | LLM port and adapter, observability, rate limiting | DEC-011 resolved; LLM provider selected (DEC-006) | LLM, OBS, SEC-09 requirements | Implemented; tests PASS (mocked); providers NOT VERIFIED |
 | P6 | Frontend flows, paywall, error and loading states, accessibility | P3 to P5 APIs available | FE requirements; end-to-end and accessibility evidence | Implemented; unit and account-free e2e PASS; browser and accessibility e2e NOT VERIFIED (needs Clerk sandbox) |
-| P7 | Resilience, security hardening, performance baseline and stress; propose targets | Authorized performance environment | Resilience and security evidence; performance reports; DEC-003 target proposal | Resilience and security tests done locally. Performance harness (`perf/`) built; local PERF-01, PERF-03, and PERF-06 recorded. Preview runs need authorization; no target proposal yet |
-| P8 | Operations documentation, backup and restore, deletion and export, integration classification, handoff | DEC-003, DEC-004, DEC-005, DEC-006 resolved, or explicitly accepted by the owner | Gates D and E; handoff report (§22) | Operations docs and data inventory drafted; local restore drill PASS; integrations diagnostics page built. Hosted backup, deletion and export, and integration classification pending |
+| P7 | Resilience, security hardening, performance baseline and stress; propose targets | Authorized performance environment | Resilience and security evidence; performance reports; DEC-003 target proposal | Resilience and security tests done locally. Performance harness (`perf/`) covers PERF-01 to PERF-07, all recorded locally. Preview runs need the DEC-001 environment. Targets are adopter-owned (ADR-0002) |
+| P8 | Operations documentation, backup and restore, deletion and export, integration classification, handoff | DEC-003, DEC-004, DEC-005, DEC-006 resolved, or explicitly accepted by the owner | Gates D and E; handoff report (§22) | Operations docs, data inventory, and adopter checklists done (DEC-003 to DEC-005 adopter-owned); local restore drill PASS; integrations diagnostics page built. Integration classification pending DEC-006 |
 
 ---
 
@@ -1266,7 +1275,7 @@ Evidence records never contain secrets, tokens, or personal data.
 
 ## 21. Requirements Traceability Matrix
 
-Status as of 2026-10-14. Evidence: [`dev-docs/evidence/2026-10-14-local-verification.md`](evidence/2026-10-14-local-verification.md) and [`2026-10-14-diagnostics-perf-local.md`](evidence/2026-10-14-diagnostics-perf-local.md).
+Status as of 2026-10-14. Evidence: [`dev-docs/evidence/2026-10-14-local-verification.md`](evidence/2026-10-14-local-verification.md), [`2026-10-14-diagnostics-perf-local.md`](evidence/2026-10-14-diagnostics-perf-local.md), and [`2026-10-14-adr-0002-perf07-local.md`](evidence/2026-10-14-adr-0002-perf07-local.md).
 
 `PASS` here means the check was **executed locally** with **mocked** external integrations and met its criteria. It is not sandbox or live verification (TEST-04).
 
@@ -1274,45 +1283,45 @@ Status as of 2026-10-14. Evidence: [`dev-docs/evidence/2026-10-14-local-verifica
 |---|---|---|---|---|---|
 | ARCH-01, ARCH-02 | Layering, no cycles | `lint-imports` (4 contracts), ESLint import bans | B | — | PASS |
 | ARCH-03 to ARCH-07, ARCH-09 to ARCH-12 | Single rules, adapters, no global state, bounded calls, ADRs | Review; LLM retry tests; timeouts configured | B | — | PASS (review) |
-| ARCH-08 | No N+1 queries | Query-count tests (project lists, billing status, organization entitlement) | B | — | PASS |
+| ARCH-08 | No N+1 queries | Query-count tests (project lists, billing status, organization entitlement); single-statement transaction setup; at most 8 statements per request | B | — | PASS |
 | API-01 to API-06 | Versioning, problem details, pagination, bearer-only, idempotency, health | Contract and platform tests; account-free e2e | B | — | PASS |
 | ENV-01 | Separate credentials per environment | Operational | E | DEC-006 | NOT VERIFIED |
 | ENV-02 to ENV-06 | Modes, validation, key/mode consistency, production guards, `.env.example` | Config tests; migration guard tests | A, C | — | PASS |
 | ENV-07 | No server-only values in the bundle | `check:bundle-secrets` (plus negative test) | C | — | PASS |
 | ENV-08 | No test-only auth path in the application | Review | C | — | PASS (review) |
-| REPO-01 to REPO-08, REPO-10, REPO-12 | Docs, commands, lockfiles, migrations, seed, reset, init, mock-mode tests, no credentials | Clean clone; `test:init-template` (also a CI step); gitleaks history and tracked files | A | — | PASS |
-| REPO-09 | Community files and policies | Files exist | A | DEC-012 (contacts) | BLOCKED |
+| REPO-01 to REPO-08, REPO-10, REPO-12 | Docs, commands, lockfiles, migrations, seed, reset, init (including contacts), mock-mode tests, no credentials | Clean clone; `test:init-template` (also a CI step); gitleaks history and tracked files | A | — | PASS |
+| REPO-09 | Community files and policies | Files exist; contact placeholders filled by `init-template` and enforced by `check:placeholders` (CI) | A | — | PASS (ADR-0002) |
 | REPO-11 | Clean-clone onboarding | Fresh clone (shared caches; see limitations) | A | — | PASS |
 | AUTH-01 to AUTH-05 | Server-side token verification | Unit tests with generated keys; end-to-end through the app | C | — | PASS (mocked IdP) |
 | AUTH-06 | Session expiry UX | Component test; real Clerk flow | B | DEC-006 | NOT VERIFIED (sandbox) |
 | TEN-01 to TEN-06, TEN-08 | Tenant context, deny-by-default, scoping, RLS, 404/403 | NT-01 to NT-04, NT-08, NT-09, route manifest, RLS tests | C | — | PASS |
-| TEN-07 | Membership change enforcement | NT-05 (bound, webhook, outage), NT-06 (re-check, serialization) | C | DEC-009 bound confirmation | PASS (against proposed 300 s) |
+| TEN-07 | Membership change enforcement | NT-05 (bound, webhook, outage), NT-06 (re-check, serialization) | C | — | PASS (300 s, confirmed in ADR-0002) |
 | ADM-01, ADM-02 | Admin authorization and audit | NT-07; audit assertions | C | — | PASS |
 | DB-01 to DB-09 | Integrity, indexes, transactions, bounds, pooling, RLS, isolation, fixtures | RLS and integration tests | B, C | — | PASS |
-| DB-10 | Backup and restore | Restore test | E | DEC-005 | BLOCKED (local restore drill PASS; hosted restore not tested) |
+| DB-10 | Backup and restore | Local restore drill; adopter checklist and hosted restore-test procedure | E | — | PASS (local drill and documentation). Hosted restore is adopter-owned (ADR-0002) |
 | MIG-01 to MIG-05 | Migration safety | Checksum tamper test; non-local refusal; idempotent apply | B, C | — | PASS (CI stage not yet executed remotely) |
 | BILL-01 to BILL-21 | Entitlements, checkout, webhooks, transitions, reconciliation, presentation | Unit matrix; billing integration tests; web unit tests | B, C | — | PASS (mocked Stripe API; real signature verification) |
 | BILL-* sandbox | Real Stripe test-mode behavior (test clocks, portal) | Sandbox procedure in docs/integrations.md | E | DEC-006 | NOT VERIFIED |
-| BILL-ORG-01 | Interim organization gating | NT-12 | C | — | PASS |
-| BILL-ORG-02 | Organization entitlement policy | Truth-table tests | C | DEC-002 | BLOCKED |
+| BILL-ORG-01 | Interim organization gating | — | C | — | RETIRED (superseded by BILL-ORG-02, ADR-0002) |
+| BILL-ORG-02 | Organization entitlement policy, DEC-002 (b) | Truth-table tests (`test_org_entitlements.py`); NT-12 | C | — | PASS |
 | LLM-01 to LLM-10 | Port, normalization, bounded retries, limits, budget, privacy, mock, isolation, docs | Adapter and platform tests | B, C, D | — | PASS (mocked provider) |
 | LLM real provider | Connectivity with a real key | Sandbox check | E | DEC-006 | NOT VERIFIED |
 | OBS-01 to OBS-08 | Telemetry configuration, redaction, allowlists, non-blocking, leakage | Unit and leakage tests; outage tests | C, D | — | PASS (mocked transports) |
 | OBS real services | PostHog and Sentry capture without personal data | Sandbox inspection | E | DEC-006 | NOT VERIFIED |
-| OBS-09 | Telemetry retention | Documentation | E | DEC-004 | BLOCKED |
+| OBS-09 | Telemetry retention | Documentation; adopter checklist | E | — | PASS (documented; adopters set the periods) |
 | FE-02, FE-03, FE-05 to FE-07, FE-10 | Boundaries, states, protected routes, paywall, 404, error mapping | ESLint bans; Vitest; account-free e2e | B | — | PASS |
 | FE-01, FE-04, FE-08, FE-09, FE-11 | Accessibility, session UX, error boundaries, keyboard, browser flows | axe and Playwright page and authenticated suites | B | DEC-006 (Clerk sandbox) | NOT VERIFIED |
-| FE-12 | Frontend performance budgets | Measurements | D | DEC-003 | BLOCKED |
+| FE-12 | Frontend performance budgets | Measurements | D | Preview environment (DEC-001) | NOT VERIFIED (budgets adopter-owned; Core Web Vitals not measured) |
 | SEC-01 to SEC-05, SEC-07 to SEC-10, SEC-13 to SEC-15 | Validation, headers, secrets, audits, lockfiles, errors, limits, licenses, webhooks, redirects | Tests; audits; gitleaks; license check | C | — | PASS (as of 2026-10-14) |
 | SEC-06 | Static analysis (CodeQL) | Workflow defined | C | Remote CI not authorized | NOT VERIFIED |
-| SEC-11 | Vulnerability reporting | SECURITY.md | A | DEC-012 (contacts) | BLOCKED |
+| SEC-11 | Vulnerability reporting | SECURITY.md with an adopter placeholder enforced by `check:placeholders` | A | — | PASS (ADR-0002) |
 | SEC-12 | Required review of migrations and workflows | CODEOWNERS and branch protection | A | Remote settings not authorized | NOT VERIFIED |
 | TEST-01 to TEST-05 | Test discipline | Review; deterministic clocks; labeled evidence | B | — | PASS |
-| PERF-01 to PERF-07 | Performance scenarios | Reports per §15.2 | D | Authorized environment | NOT VERIFIED (local PERF-01, PERF-03, PERF-06 recorded for relative comparison only; PERF-02, -04, -05, -07 not run; no preview runs) |
-| Performance acceptance | Approved targets met | §15.4 | D | DEC-003 | BLOCKED |
+| PERF-01 to PERF-07 | Performance scenarios | Reports per §15.2 | D | Preview environment (DEC-001) | NOT VERIFIED (all seven recorded **locally** for relative comparison only; no preview runs) |
+| Performance acceptance | Approved targets met | §15.4 | D | — | RETIRED for the template: adopter-owned (ADR-0002) |
 | CI-SEC-01 to CI-SEC-05 | CI security | Workflow review; first remote run | A, C | Remote CI not authorized | NOT VERIFIED (implemented) |
-| OPS-01 to OPS-03, §16.4, §16.5 | Deployment, rollback, operations | docs/operations.md | E | DEC-001, DEC-005 | BLOCKED |
-| Account deletion and export | Deletion and export behavior | Tests | E | DEC-004 | BLOCKED |
+| OPS-01 to OPS-03, §16.4, §16.5 | Deployment, rollback, operations | docs/operations.md | E | DEC-001 | BLOCKED |
+| Account deletion and export | Deletion and export behavior | — | E | — | RETIRED for the template: adopter-owned (ADR-0002); no feature ships |
 | Integration diagnostics | Per-provider configuration report and checks; operator-only; no secrets | Diagnostics integration, unit, and adapter tests | C, E | — | PASS (mocked providers) |
 | Integration classification | Mocked, sandbox, or live per provider | Evidence records; `/integrations` checks in sandbox mode | E | DEC-006 | All providers **mocked** |
 
@@ -1340,40 +1349,37 @@ The report clearly distinguishes verified behavior from assumptions, mocks, and 
 - **Implemented:**
   - Python API: domain, application, infrastructure, HTTP; migrations with forced RLS.
   - Next.js web app with a minimal UI for every integration, including the operator-only `/integrations` diagnostics page.
-  - Repository tooling, CI definitions, and community files. `init-template` has a CI check.
-  - Query-count tests (ARCH-08).
-  - Local performance harness (`perf/`).
-  - Data inventory.
-  - Local restore drill.
+  - Repository tooling, CI definitions, and community files with adopter contact placeholders. `init-template` and `check:placeholders` have CI checks.
+  - DEC-002 option (b) organization entitlements, with the §9.9 truth table under test.
+  - Query-count tests (ARCH-08). Transaction setup takes one statement.
+  - Local performance harness (`perf/`) for PERF-01 to PERF-07, with a run-plan and targets worksheet.
+  - Data inventory, local restore drill, and adopter checklists for DEC-003 to DEC-005.
 - **Integrations:** all **mocked**. No sandbox or live service has been contacted.
 - **Local evidence:**
-  - API 210 tests, web 43 unit tests, and 20 account-free e2e checks pass.
-  - Lint, strict type checks, build, contract-drift, init-template, bundle-secret, audit, license, and secret scans pass (history and tracked files).
-  - Clean clone at `085a7d6` passes in 66 s.
-  - Local performance baseline, stress, and webhook-concurrency results are recorded for relative comparison only.
+  - API 226 tests, web 43 unit tests, and 20 account-free e2e checks pass.
+  - Lint, strict type checks, build, contract drift, init-template, placeholder, bundle-secret, audit, license, and secret scans pass.
+  - All seven performance scenarios were run locally, for relative comparison only. PERF-07 found that database round trips were the first bottleneck. Single-statement setup cut p50 by 64% to 74% at 20 ms RTT.
 
-  Details: `dev-docs/evidence/2026-10-14-local-verification.md` and [`2026-10-14-diagnostics-perf-local.md`](evidence/2026-10-14-diagnostics-perf-local.md).
-- **Security review:** an automated review found that diagnostics were open to every signed-in user. Fixed in `0422335` (operator-only; explicit personal action set).
+  Details: [`2026-10-14-adr-0002-perf07-local.md`](evidence/2026-10-14-adr-0002-perf07-local.md) and the earlier records in `dev-docs/evidence/`.
 - **Gates:**
 
   | Gate | Status | Reason |
   |---|---|---|
-  | A | NOT VERIFIED | Remote CI never run; DEC-012 contacts pending |
-  | B | NOT VERIFIED | Browser and signed-in e2e need Clerk sandbox keys |
-  | C | NOT VERIFIED | CodeQL and sandbox verification pending; local security tests PASS |
-  | D | BLOCKED | DEC-003; only local performance results exist |
-  | E | BLOCKED | DEC-001, DEC-005, DEC-006 |
+  | A | NOT VERIFIED | Remote CI has never run (needs authorization to push) |
+  | B | NOT VERIFIED | Browser and signed-in e2e need Clerk sandbox keys (DEC-006) |
+  | C | NOT VERIFIED | CodeQL (remote CI) and sandbox verification pending; local security tests PASS |
+  | D | NOT VERIFIED | Dependency-failure, concurrency, and PERF-01 to PERF-07 results are recorded locally. Preview runs need DEC-001. Targets are adopter-owned (ADR-0002) |
+  | E | BLOCKED | DEC-001 (deployment proof), DEC-006 (integration classification) |
 
 - **Decisions:**
-  - DEC-007 to DEC-011: RESOLVED (ADR-0001). The DEC-009 staleness value still needs confirmation.
-  - DEC-012: license resolved; contacts OPEN.
-  - DEC-001 to DEC-006: OPEN.
+  - DEC-002 to DEC-005, DEC-009 value, DEC-012 contacts: RESOLVED (ADR-0002). DEC-003 to DEC-005 are adopter-owned.
+  - DEC-007 to DEC-011: RESOLVED (ADR-0001).
+  - **Open:** DEC-001 and DEC-006 only. Both need owner action, not decisions.
 - **Deviation:** D-001 (§18).
 - **Remote actions:** none. No push, publication, deployment, or release has occurred.
-- **Next steps:**
-  1. Owner adds sandbox keys to `.env`, and their Clerk user ID to `DIAGNOSTICS_OPERATOR_IDS`, or uses `APP_ENV=local`.
-  2. Run **Run all server checks** and the browser checks on `/integrations`, the sandbox e2e suites, and the procedures in `docs/integrations.md`. Record the evidence.
-  3. Owner authorizes the DEC-001 preview proof, and with it the preview performance runs.
-  4. Owner decides DEC-002 to DEC-005, using `docs/data-inventory.md` for DEC-004, and the DEC-012 contacts.
+- **Next steps (owner action required):**
+  1. Add sandbox keys to `.env`, and your Clerk user ID to `DIAGNOSTICS_OPERATOR_IDS` (or use `APP_ENV=local`). Then run **Run all server checks** and the browser checks on `/integrations`, the sandbox e2e suites (`E2E_SANDBOX=1`), and the procedures in `docs/integrations.md`, and record the evidence (DEC-006, Gates B and C).
+  2. Authorize pushing to a remote, so CI and CodeQL run (Gates A and C).
+  3. Authorize the DEC-001 Vercel preview proof, and with it the preview performance runs (Gates D and E).
 
 **Final principle:** build a template that is secure by default, modular by design, reproducible from a clean clone, and honest about its verified limits. Do not trade correctness, security, or maintainability for superficial completion.

@@ -4,6 +4,8 @@ An open-source SaaS starter: a **Next.js** (TypeScript, strict) web app and a **
 
 It is secure by default: every API operation is authorized on the server, tenants are isolated by the database as well as the application, and Pro access is granted only from verified Stripe data.
 
+**Billing model.** Subscriptions belong to individuals. A user's Pro plan covers their own actions in their personal workspace and in every organization they belong to. It is never shared with other members, and organization roles neither grant nor remove it ([ADR-0002](dev-docs/adr/0002-organization-entitlements-contacts-adopter-decisions.md)).
+
 A minimal UI exercises every integration:
 
 - sign-in and organizations;
@@ -46,9 +48,11 @@ You also need your **own** accounts for the services you enable. The automated t
 
 ```bash
 pnpm bootstrap             # install JS and Python dependencies from lockfiles
-pnpm init-template --name "Your Product" --slug your-product   # optional: rename, creates .env
+pnpm init-template --name "Your Product" --slug your-product \
+  --security-contact security@your-product.example \
+  --conduct-contact conduct@your-product.example   # rename, fill in contacts, create .env
                            # add --db-port 54330 to run several projects side by side
-cp -n .env.example .env    # if you skipped init-template
+cp -n .env.example .env    # if you are only trying the template out
 pnpm db:up                 # start local PostgreSQL (127.0.0.1:54329)
 pnpm db:migrate            # apply migrations
 ```
@@ -88,6 +92,7 @@ Diagnostics are open to any signed-in user only when `APP_ENV=local` and `DIAGNO
 | `pnpm db:reset` | Drop, migrate, and seed the **local** database |
 | `pnpm db:restore-drill` | Dump the local database, restore it into a scratch database, and verify it |
 | `pnpm test:init-template` | Check that `init-template` leaves no original identifiers (runs on temporary copies) |
+| `pnpm check:placeholders` | Fail if `SECURITY.md` or `CODE_OF_CONDUCT.md` still has a contact placeholder after the project was renamed |
 | `pnpm perf:server` / `pnpm perf:run` | Local performance server and k6 scenarios ([perf/README.md](perf/README.md)) |
 | `pnpm billing:reconcile` | Compare billing records with Stripe (dry run; add `--apply`) |
 
@@ -107,9 +112,19 @@ Tests never use your `.env`. Database tests create and drop their own database, 
 | Unit, integration, and security tests | Run locally (see the latest evidence in `dev-docs/evidence/`) |
 | Clerk, Stripe, Supabase, PostHog, Sentry, LLM | **Mocked only.** Sandbox verification is pending (DEC-006); the `/integrations` page is the tool for it |
 | Vercel deployment (Python runtime) | **Not verified** (DEC-001) |
-| Performance | Local baseline recorded; targets **not defined** (DEC-003) |
-| Backup and restore | Local restore drill only; objectives **not defined** (DEC-005) |
-| Data retention, deletion, export | Inventory in [docs/data-inventory.md](docs/data-inventory.md); policy **not defined** (DEC-004) |
+| Performance | PERF-01 to PERF-07 recorded locally, for relative comparison only. Targets are **yours to set** ([perf/run-plan-template.md](perf/run-plan-template.md)) |
+| Backup and restore | Local restore drill only. Objectives and the hosted restore test are **yours to set** ([checklist](docs/operations.md#backup-and-restore)) |
+| Data retention, deletion, export | No deletion or export feature. Policy is **yours to set** ([checklist](docs/data-inventory.md#adopter-decision-checklist)) |
+
+## Before you launch
+
+The template leaves these decisions to each adopter ([ADR-0002](dev-docs/adr/0002-organization-entitlements-contacts-adopter-decisions.md)):
+
+1. Security and conduct contacts: `init-template` asks for them, and CI fails while placeholders remain.
+2. Data retention, deletion, export, and analytics consent: [docs/data-inventory.md](docs/data-inventory.md#adopter-decision-checklist).
+3. Backup objectives, plus a timed hosted restore test: [docs/operations.md](docs/operations.md#backup-and-restore).
+4. Performance targets, from your own preview baseline: [perf/run-plan-template.md](perf/run-plan-template.md).
+5. Sandbox verification of every integration: [docs/integrations.md](docs/integrations.md), plus the `/integrations` page.
 
 ## Troubleshooting
 

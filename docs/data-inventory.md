@@ -2,7 +2,7 @@
 
 This inventory lists every place the template stores or sends data about people, why, and for how long. It is the evidence that DEC-004 requires (spec §3.3) and reflects the code as of 2026-10-14.
 
-> **DEC-004 is open.** Retention periods, account deletion, and data export are not defined, so the "Retention" column describes **current behavior**, not policy. Update this file whenever code changes what is stored or sent.
+> **Adopter decision (DEC-004, [ADR-0002](../dev-docs/adr/0002-organization-entitlements-contacts-adopter-decisions.md)).** The template defines no retention periods and has no account deletion or export feature. The "Retention" column therefore describes **current behavior**, not policy. Each project made from the template sets its own policy with the checklist at the end of this file. Update this file whenever code changes what is stored or sent.
 
 ## Identifiers
 
@@ -60,14 +60,22 @@ Logs never include IP addresses, user IDs, tokens, headers, or bodies. Every log
 | Cookies (`__session`, `__client_uat`, and others) | Clerk session state | Clerk |
 | `localStorage` (PostHog keys) | PostHog distinct ID and queued events | PostHog, only when analytics is enabled |
 
-Consent requirements for analytics storage are pending (DEC-004 question 8).
+Consent requirements for analytics storage are an adopter decision (checklist item 8).
 
-## Open questions for DEC-004
+## Adopter decision checklist
 
-- What account deletion removes or anonymizes in each row above:
-  - `users`, `audit_log` actors, and project names;
-  - the Stripe customer metadata;
-  - the PostHog person.
-- Retention periods for `audit_log`, `billing_events`, `identity_events`, logs, and telemetry.
-- Export scope and format.
-- Analytics consent.
+Answer these questions before production, record the policy in an ADR, and keep this inventory in sync with it. Template code never deletes payment records. Do not claim that deletion is complete until each system's deletion has been tested against sandbox providers.
+
+1. **Account deletion scope.** For each row above, choose delete, anonymize, or retain:
+   - `users`, `audit_log` actors, and project names;
+   - the Stripe customer metadata;
+   - the Clerk user;
+   - the PostHog person;
+   - Sentry events.
+2. **Active subscriptions.** Cancel immediately, cancel at period end, or block deletion until the subscription is canceled.
+3. **Sole organization owners.** Block deletion, transfer ownership, or delete the organization.
+4. **Export.** Scope (which tables and providers) and format (for example JSON).
+5. **Retention periods** for `audit_log`, `billing_events`, `identity_events`, logs, and telemetry. Configure the matching settings in PostHog, Sentry, and your log drain.
+6. **Mandatory retention** (legal, tax, fraud): which records, for how long, and who may access them.
+7. **Completion time.** The expected time to finish a deletion across all systems.
+8. **Analytics consent.** Which jurisdictions apply. Whether PostHog may run before consent, or must stay off until the user opts in.

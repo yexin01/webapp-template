@@ -75,8 +75,8 @@ class IdentitySyncService:
             external_user_id = _str(event.data.get("id"))
             user_id = repo.find_user_id(external_user_id) if external_user_id else None
             if user_id is not None:
-                # Access is revoked; retention of the user's data is governed
-                # by DEC-004 and is not decided here.
+                # Access is revoked; retention of the user's data is an
+                # adopter decision (DEC-004, ADR-0002) and is not decided here.
                 repo.remove_user_memberships(user_id)
             return EventStatus.PROCESSED, None
 

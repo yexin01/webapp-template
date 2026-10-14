@@ -1,13 +1,13 @@
 # Performance tests
 
-Scripts for the scenarios in spec §15.2 (PERF-01 to PERF-06). Read the safety rules before running anything.
+Scripts for the scenarios in spec §15.2 (PERF-01 to PERF-07). Read the safety rules before running anything.
 
-> **No performance targets exist yet (DEC-003).** Results are baselines and observed limits. Never present local numbers as deployment performance.
+> **Performance targets are an adopter decision (DEC-003, [ADR-0002](../dev-docs/adr/0002-organization-entitlements-contacts-adopter-decisions.md)).** The template ships none. Results are baselines and observed limits. Never present local numbers as deployment performance. Use [run-plan-template.md](run-plan-template.md) to plan deployed runs and to propose targets.
 
 ## Safety rules
 
 - **Local by default.** `pnpm perf:run` refuses any target other than `localhost`, `127.0.0.1`, or `host.docker.internal`.
-- **Deployed environments** (preview only) need an owner-approved run plan first. The plan states:
+- **Deployed environments** (preview only) need an approved run plan first ([run-plan-template.md](run-plan-template.md)). The plan states:
   - rate and duration caps;
   - abort criteria;
   - cost acknowledgement;
@@ -44,6 +44,7 @@ Scripts for the scenarios in spec §15.2 (PERF-01 to PERF-06). Read the safety r
 | `billing_status` | `GET /billing/status` |
 | `entitlement_gated` | `GET /pro/insight` (`200` for Pro users, `403` expected for Free users) |
 | `auth_write` | `POST /projects`, then `DELETE` |
+| `llm_check` | `POST /llm/check` (mocked provider). Only with `INCLUDE_LLM=1` |
 
 ## Commands
 
@@ -61,6 +62,17 @@ SCENARIO=baseline pnpm perf:run       # terminal 2
 | Spike | PERF-04 | `SCENARIO=spike SPIKE_RATE=60 pnpm perf:run` | Idle, then a jump to `SPIKE_RATE` for 30 s |
 | Soak | PERF-05 | `SCENARIO=soak RATE=10 DURATION=30m pnpm perf:run` | Constant moderate load |
 | Webhooks | PERF-06 | `SCENARIO=webhooks WEBHOOK_EVENTS=100 DUPLICATES=3 pnpm perf:run` | Each signed event delivered `DUPLICATES` times by concurrent VUs |
+| Degradation | PERF-07 | Restart the server with a knob below, then `SCENARIO=baseline INCLUDE_LLM=1 LABEL=<knob> pnpm perf:run` | Compare against a control run with no knobs |
+
+**PERF-07 server knobs.** All of them are off by default:
+
+| Knob | Effect |
+|---|---|
+| `--db-latency-ms 20` | Every API-to-PostgreSQL round trip passes through a loopback proxy that adds 20 ms, like a remote database |
+| `--provider-latency-ms 200` | The mocked identity directory, Stripe API, and LLM provider wait 200 ms per call |
+| `--telemetry [--traces-sample-rate 0.1]` | The real PostHog and Sentry SDKs run, sending to a loopback sink. Nothing leaves the machine; the sink counts uploads on exit |
+
+Pass knobs after `--`, for example `pnpm perf:server -- --db-latency-ms 20`.
 
 Stop the server with Ctrl+C. It then prints the peak number of database connections and the webhook ledger counts, which verify that each event was processed once.
 
@@ -71,9 +83,6 @@ Stop the server with Ctrl+C. It then prints the peak number of database connecti
 
 ## Not covered yet
 
-- **PERF-07 (degradation):**
-  - injected database and provider latency;
-  - telemetry enabled vs. disabled.
 - **Deployment measurements:**
   - cold starts;
   - function duration and memory.

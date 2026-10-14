@@ -27,7 +27,7 @@ Read it before making changes. Do not restate its requirements in other files; l
 pnpm db:up                       # local PostgreSQL for API tests
 pnpm lint && pnpm typecheck
 pnpm test && pnpm test:e2e       # API + web; e2e browser/sandbox suites need E2E_SANDBOX=1
-pnpm contracts:check && pnpm test:init-template
+pnpm contracts:check && pnpm test:init-template && pnpm check:placeholders
 pnpm build && pnpm check:bundle-secrets
 pnpm security:audit && pnpm security:licenses
 ```

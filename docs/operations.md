@@ -1,6 +1,6 @@
 # Operations
 
-Operational guidance for adopters. Items that depend on unresolved decisions are marked; do not treat them as verified.
+Operational guidance for adopters. Items that depend on unresolved decisions, or on decisions each adopter makes, are marked. Do not treat them as verified.
 
 ## Environments
 
@@ -94,9 +94,21 @@ Vulnerability reports from outside the team follow [SECURITY.md](../SECURITY.md)
 
 ## Backup and restore
 
-> **DEC-005 is open.** Recovery objectives (RPO and RTO), backup frequency, and the restore procedure have not been approved or tested. Until they are, make no recovery-readiness claims.
+> **Adopter decision (DEC-005, [ADR-0002](../dev-docs/adr/0002-organization-entitlements-contacts-adopter-decisions.md)).** The template sets no recovery objectives and makes no recovery-readiness claim. Decide and test the items below before production.
 
-Required before production: confirm the backup capabilities of your Supabase plan, approve the objectives, and perform a timed restore into an isolated project with synthetic data. Record the results in `dev-docs/evidence/`.
+**Adopter checklist:**
+
+1. **Objectives.** Choose a recovery point objective (the acceptable data-loss window) and a recovery time objective.
+2. **Plan capabilities.** Confirm what your Supabase plan offers: daily backups, their retention, and whether point-in-time recovery is available. Choose a plan that meets the objectives.
+3. **Authority.** Name who may start a restore, and how that person gets production database credentials.
+4. **Hosted restore test.** Run a timed restore into an isolated, non-production project that holds synthetic data only:
+   1. Load synthetic data into the source project. `pnpm db:seed` refuses non-local databases by design, so apply `supabase/seed.sql`, or a larger synthetic set, with `psql` and the migration-role connection string.
+   2. Record per-table row counts and checksums. The queries in `scripts/restore-drill.mjs` work against any PostgreSQL database.
+   3. Restore a backup (or a point in time) into a **new** project. Never restore over the source.
+   4. Re-run the counts and checksums. Also confirm that RLS is still forced on every `app` table, and that the migration ledger matches.
+   5. Record the elapsed time against the RTO, and the data-loss window against the RPO.
+5. **Evidence.** Record the method, dates, plan, timings, and results in `dev-docs/evidence/`, labeled `sandbox`.
+6. **Repeat** after major schema changes, and on a schedule you choose.
 
 **Local restore drill.** `pnpm db:restore-drill` dumps the local Docker database and restores it into a scratch database. It then verifies:
 
@@ -108,7 +120,7 @@ It proves that the dump format and the restore procedure work for this schema. I
 
 ## Data retention and deletion
 
-> **DEC-004 is open.** Account deletion, data export, and retention periods have not been defined.
+> **Adopter decision (DEC-004, [ADR-0002](../dev-docs/adr/0002-organization-entitlements-contacts-adopter-decisions.md)).** The template has no account deletion or export feature and makes no deletion-completeness claim. Use the checklist in [data-inventory.md](data-inventory.md) to set your policy before production.
 
 Current behavior:
 

@@ -121,7 +121,7 @@ Privacy defaults:
   - browser: `apps/web/src/lib/analytics.ts`
   - API: `ANALYTICS_ALLOWLIST` in `apps/api/app/infrastructure/observability.py`
 
-Consent requirements and retention are pending owner decision (DEC-004).
+Consent requirements and retention are adopter decisions (DEC-004): see the checklist in [data-inventory.md](data-inventory.md#adopter-decision-checklist).
 
 ## Sentry
 
