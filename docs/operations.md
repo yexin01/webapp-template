@@ -69,7 +69,7 @@ Deploying, promoting, or changing hosting and Git settings are remote actions. T
 |---|---|---|
 | Billing reconciliation (dry run) | `pnpm billing:reconcile` | After incidents or missed webhooks |
 | Apply reconciliation | `pnpm billing:reconcile --apply` | When a dry run shows divergences you have reviewed |
-| Prune rate-limit counters | `cd apps/api && uv run python -m app.cli prune-rate-limits` | Daily (scheduling is not yet configured) |
+| Prune rate-limit counters | Job `prune-rate-limits` (see [Scheduled jobs](#scheduled-jobs)) | Daily |
 | Dependency audit | `pnpm security:audit` | Weekly and before releases |
 
 ## Secret rotation

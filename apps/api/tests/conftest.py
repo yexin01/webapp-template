@@ -22,15 +22,15 @@ import psycopg
 import pytest
 from fastapi.testclient import TestClient
 
-from app.composition import Container, build_container
-from app.domain.errors import AuthenticationError
-from app.domain.tenancy import VerifiedIdentity
-from app.http.app import create_app
-from app.infrastructure import migrations
-from app.infrastructure.config import Settings, load_settings
-from app.infrastructure.fakes import InMemoryBillingProvider, StaticMembershipDirectory
-from app.infrastructure.llm_providers import MockLLMProvider
-from app.infrastructure.stripe_billing import StripeWebhookVerifier
+from app.bootstrap import Container, build_container, create_app
+from app.kernel.errors import AuthenticationError
+from app.kernel.infrastructure import migrations
+from app.kernel.tenancy import VerifiedIdentity
+from app.modules.billing.adapters.fakes import InMemoryBillingProvider
+from app.modules.billing.adapters.stripe import StripeWebhookVerifier
+from app.modules.identity.adapters.fakes import StaticMembershipDirectory
+from app.modules.llm.adapters import MockLLMProvider
+from app.settings import Settings, load_settings
 
 DEFAULT_TEST_DATABASE_URL = "postgresql://postgres:postgres@127.0.0.1:54329/app"
 TEST_STRIPE_WEBHOOK_SECRET = "whsec_test_only_not_a_real_secret_000000"
@@ -54,6 +54,8 @@ _ENV_PREFIXES = (
     "MAX_REQUEST_",
     "LOG_LEVEL",
     "DIAGNOSTICS_",
+    "CRON_",
+    "OUTBOX_",
 )
 
 
@@ -109,7 +111,7 @@ class RecordingAnalytics:
         self.export_ok = True
 
     def capture(self, user_id: uuid.UUID, event: str, properties: Any) -> None:
-        from app.infrastructure.observability import _filter
+        from app.kernel.infrastructure.observability import _filter
 
         filtered = _filter(event, properties)
         if filtered is not None:
@@ -161,7 +163,7 @@ def db(database_url: str) -> Iterator[str]:
         conn.execute(
             "TRUNCATE app.users, app.organizations, app.organization_memberships, app.projects, "
             "app.billing_customers, app.subscriptions, app.billing_events, app.identity_events, "
-            "app.audit_log, app.rate_limit_counters RESTART IDENTITY CASCADE"
+            "app.audit_log, app.rate_limit_counters, app.outbox RESTART IDENTITY CASCADE"
         )
 
 

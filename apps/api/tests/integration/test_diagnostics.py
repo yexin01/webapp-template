@@ -9,10 +9,12 @@ from typing import Any
 
 import pytest
 
-from app.domain.tenancy import ExternalMembership, Role
-from app.infrastructure.config import AppEnv, Settings
-from app.infrastructure.llm_providers import MockLLMProvider
-from app.ports import PriceDescription
+from app.kernel.infrastructure.config import AppEnv
+from app.kernel.tenancy import Role
+from app.modules.billing.ports import PriceDescription
+from app.modules.identity.domain import ExternalMembership
+from app.modules.llm.adapters import MockLLMProvider
+from app.settings import Settings
 from tests.conftest import PRICE_MONTHLY, PRICE_YEARLY, Harness
 
 pytestmark = pytest.mark.db
@@ -256,19 +258,32 @@ def test_unknown_integration_is_rejected(operator_harness: Harness) -> None:
 
 
 def test_operator_ids_parsed_and_local_default_is_open_only_locally() -> None:
+    from app.modules.diagnostics.settings import open_to_any_signed_in_user
     from tests.conftest import make_settings
 
+    def s(**kw: Any) -> Settings:
+        return Settings.model_construct(**kw)
+
     assert make_settings(diagnostics_operator_ids=" user_1, ,user_2 ").diagnostics_operator_ids == ["user_1", "user_2"]
-    assert Settings.model_construct(app_env=AppEnv.LOCAL, diagnostics_operator_ids=[]).diagnostics_open_to_any_user
-    assert not Settings.model_construct(
-        app_env=AppEnv.LOCAL, diagnostics_operator_ids=["user_1"]
-    ).diagnostics_open_to_any_user
+    local_open = s(app_env=AppEnv.LOCAL, diagnostics_operator_ids=[])
+    assert open_to_any_signed_in_user(local_open, local_open)
+    local_listed = s(app_env=AppEnv.LOCAL, diagnostics_operator_ids=["user_1"])
+    assert not open_to_any_signed_in_user(local_listed, local_listed)
     for env in (AppEnv.TEST, AppEnv.PREVIEW, AppEnv.PRODUCTION):
-        assert not Settings.model_construct(app_env=env, diagnostics_operator_ids=[]).diagnostics_open_to_any_user
+        other = s(app_env=env, diagnostics_operator_ids=[])
+        assert not open_to_any_signed_in_user(other, other)
 
 
 def test_diagnostics_default_off_in_production_only() -> None:
-    assert Settings.model_construct(app_env=AppEnv.PRODUCTION, diagnostics_enabled=None).diagnostics_active is False
-    assert Settings.model_construct(app_env=AppEnv.PRODUCTION, diagnostics_enabled=True).diagnostics_active is True
+    from app.modules.diagnostics.settings import diagnostics_active
+
+    def s(**kw: Any) -> Settings:
+        return Settings.model_construct(**kw)
+
+    prod_default = s(app_env=AppEnv.PRODUCTION, diagnostics_enabled=None)
+    assert diagnostics_active(prod_default, prod_default) is False
+    prod_on = s(app_env=AppEnv.PRODUCTION, diagnostics_enabled=True)
+    assert diagnostics_active(prod_on, prod_on) is True
     for env in (AppEnv.LOCAL, AppEnv.PREVIEW, AppEnv.TEST):
-        assert Settings.model_construct(app_env=env, diagnostics_enabled=None).diagnostics_active is True
+        other = s(app_env=env, diagnostics_enabled=None)
+        assert diagnostics_active(other, other) is True

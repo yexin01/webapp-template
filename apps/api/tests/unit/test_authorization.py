@@ -6,12 +6,17 @@ import uuid
 
 import pytest
 
-from app.domain.authorization import Action, authorize, is_allowed
-from app.domain.errors import ForbiddenError
-from app.domain.tenancy import ContextKind, Role, TenantContext, is_valid_external_org_id, role_from_external
+from app.kernel.authorization import Permission, authorize, is_allowed
+from app.kernel.errors import ForbiddenError
+from app.kernel.tenancy import ContextKind, Role, TenantContext
+from app.modules.billing.domain import BILLING_MANAGE, PRO_FEATURE_USE
+from app.modules.identity.domain import is_valid_external_org_id, role_from_external
+from app.modules.llm.domain import LLM_CHECK
+from app.modules.projects.domain import PROJECT_CREATE, PROJECT_DELETE, PROJECT_READ
 
 USER = uuid.uuid4()
 ORG = uuid.uuid4()
+ALL = (PROJECT_READ, PROJECT_CREATE, PROJECT_DELETE, BILLING_MANAGE, PRO_FEATURE_USE, LLM_CHECK)
 
 
 def personal() -> TenantContext:
@@ -23,42 +28,40 @@ def org(role: Role) -> TenantContext:
 
 
 def test_personal_context_allows_own_actions() -> None:
-    for action in Action:
-        assert is_allowed(personal(), action)
+    for permission in ALL:
+        assert is_allowed(personal(), permission)
 
 
-def test_personal_actions_are_listed_explicitly() -> None:
-    """A new action must be granted deliberately, never inherited from the enum."""
-    import ast
-    import inspect
+def test_permissions_are_denied_unless_granted() -> None:
+    """A new permission grants nothing until a context or role is listed explicitly."""
+    bare = Permission("thing:do", personal=False)
+    assert not is_allowed(personal(), bare)
+    assert not is_allowed(org(Role.ADMIN), bare)
+    assert not is_allowed(org(Role.MEMBER), bare)
 
-    from app.domain import authorization
 
-    tree = ast.parse(inspect.getsource(authorization))
-    assignments = [
-        n for n in ast.walk(tree) if isinstance(n, ast.AnnAssign) and getattr(n.target, "id", "") == "_PERSONAL_ALLOWED"
-    ]
-    assert assignments, "_PERSONAL_ALLOWED not found"
-    assert "frozenset(Action)" not in ast.unparse(assignments[0].value)
+def test_permission_names_are_validated() -> None:
+    with pytest.raises(ValueError, match="resource:verb"):
+        Permission("Delete Everything", personal=True)
 
 
 def test_member_cannot_delete_or_manage_billing() -> None:
     ctx = org(Role.MEMBER)
-    assert is_allowed(ctx, Action.PROJECT_READ)
-    assert is_allowed(ctx, Action.PROJECT_CREATE)
-    assert not is_allowed(ctx, Action.PROJECT_DELETE)
-    assert not is_allowed(ctx, Action.BILLING_MANAGE)
+    assert is_allowed(ctx, PROJECT_READ)
+    assert is_allowed(ctx, PROJECT_CREATE)
+    assert not is_allowed(ctx, PROJECT_DELETE)
+    assert not is_allowed(ctx, BILLING_MANAGE)
 
 
 def test_admin_can_delete_but_never_manages_billing_in_org() -> None:
     ctx = org(Role.ADMIN)
-    assert is_allowed(ctx, Action.PROJECT_DELETE)
-    assert not is_allowed(ctx, Action.BILLING_MANAGE)
+    assert is_allowed(ctx, PROJECT_DELETE)
+    assert not is_allowed(ctx, BILLING_MANAGE)
 
 
 def test_authorize_raises_forbidden() -> None:
     with pytest.raises(ForbiddenError):
-        authorize(org(Role.MEMBER), Action.PROJECT_DELETE)
+        authorize(org(Role.MEMBER), PROJECT_DELETE)
 
 
 def test_context_invariants() -> None:

@@ -17,8 +17,8 @@ from typing import Any
 
 import pytest
 
-from app.domain.entitlements import PlanKey, SubscriptionSnapshot, SubscriptionStatus
-from app.domain.errors import DependencyUnavailableError
+from app.kernel.errors import DependencyUnavailableError
+from app.modules.billing.domain import PlanKey, SubscriptionSnapshot, SubscriptionStatus
 from tests.conftest import PRICE_MONTHLY, TEST_STRIPE_WEBHOOK_SECRET, Harness, superuser_query
 
 pytestmark = pytest.mark.db
@@ -331,13 +331,13 @@ def test_concurrent_duplicate_deliveries_are_serialized(harness: Harness) -> Non
 def test_reconciliation_dry_run_then_apply(harness: Harness) -> None:
     customer = make_pro(harness, "user_a")
     harness.billing.set_subscriptions(customer, [snapshot(customer, SubscriptionStatus.CANCELED)])  # webhook "lost"
-    report = harness.container.billing.reconcile(user_id=None, apply=False)
+    report = harness.container.billing.service.reconcile(user_id=None, apply=False)
     assert report.customers_checked == 1
     assert [(d.kind, d.local_status, d.remote_status) for d in report.divergences] == [
         ("differs", "active", "canceled")
     ]
     assert harness.client.get("/api/v1/billing/status", headers=harness.login("user_a")).json()["plan"] == "pro"
 
-    harness.container.billing.reconcile(user_id=None, apply=True)
+    harness.container.billing.service.reconcile(user_id=None, apply=True)
     assert harness.client.get("/api/v1/billing/status", headers=harness.login("user_a")).json()["plan"] == "free"
-    assert harness.container.billing.reconcile(user_id=None, apply=False).divergences == []
+    assert harness.container.billing.service.reconcile(user_id=None, apply=False).divergences == []

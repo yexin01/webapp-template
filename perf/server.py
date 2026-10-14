@@ -46,16 +46,21 @@ sys.path.insert(0, str(API_DIR))
 import psycopg  # noqa: E402
 import uvicorn  # noqa: E402
 
-from app.composition import build_container  # noqa: E402
-from app.domain.entitlements import PlanKey, SubscriptionSnapshot, SubscriptionStatus  # noqa: E402
-from app.domain.errors import AuthenticationError  # noqa: E402
-from app.domain.tenancy import ExternalMembership, Role, VerifiedIdentity  # noqa: E402
-from app.http.app import create_app  # noqa: E402
-from app.infrastructure import migrations  # noqa: E402
-from app.infrastructure.config import load_settings  # noqa: E402
-from app.infrastructure.fakes import InMemoryBillingProvider, StaticMembershipDirectory  # noqa: E402
-from app.infrastructure.llm_providers import MockLLMProvider  # noqa: E402
-from app.infrastructure.observability import NoopAnalytics, configure_logging, init_error_reporting  # noqa: E402
+from app.bootstrap import build_container, create_app  # noqa: E402
+from app.kernel.errors import AuthenticationError  # noqa: E402
+from app.kernel.infrastructure import migrations  # noqa: E402
+from app.kernel.infrastructure.observability import (  # noqa: E402
+    NoopAnalytics,
+    configure_logging,
+    init_error_reporting,
+)
+from app.kernel.tenancy import Role, VerifiedIdentity  # noqa: E402
+from app.modules.billing.adapters.fakes import InMemoryBillingProvider  # noqa: E402
+from app.modules.billing.domain import PlanKey, SubscriptionSnapshot, SubscriptionStatus  # noqa: E402
+from app.modules.identity.adapters.fakes import StaticMembershipDirectory  # noqa: E402
+from app.modules.identity.domain import ExternalMembership  # noqa: E402
+from app.modules.llm.adapters import MockLLMProvider  # noqa: E402
+from app.settings import load_settings  # noqa: E402
 
 ADMIN_URL = os.environ.get("PERF_ADMIN_DATABASE_URL", "postgresql://postgres:postgres@127.0.0.1:54329/app")
 PERF_DB = "app_perf"

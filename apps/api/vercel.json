@@ -1,0 +1,9 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "crons": [
+    { "path": "/api/v1/jobs/drain-outbox", "schedule": "15 * * * *" },
+    { "path": "/api/v1/jobs/prune-rate-limits", "schedule": "0 5 * * *" },
+    { "path": "/api/v1/jobs/reconcile-billing", "schedule": "0 4 * * *" },
+    { "path": "/api/v1/jobs/reconcile-memberships", "schedule": "30 3 * * *" }
+  ]
+}

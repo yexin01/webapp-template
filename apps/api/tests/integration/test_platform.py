@@ -15,12 +15,12 @@ import pytest
 from fastapi.routing import APIRoute
 from svix.webhooks import Webhook
 
-from app.domain.tenancy import ExternalMembership, Role
-from app.http.deps import authenticate
-from app.infrastructure import migrations
-from app.infrastructure.clerk import ClerkWebhookVerifier
-from app.infrastructure.llm_providers import MockLLMProvider
-from app.infrastructure.observability import JsonFormatter
+from app.kernel.infrastructure import migrations
+from app.kernel.infrastructure.observability import JsonFormatter
+from app.kernel.tenancy import Role
+from app.modules.identity.adapters.clerk import ClerkWebhookVerifier
+from app.modules.identity.domain import ExternalMembership
+from app.modules.llm.adapters import MockLLMProvider
 from tests.conftest import Harness, superuser_query
 
 pytestmark = pytest.mark.db
@@ -47,8 +47,8 @@ def _api_routes(routes: list[Any]) -> list[APIRoute]:
     return found
 
 
-def _requires_auth(dependant: Any) -> bool:
-    return any(d.call is authenticate or _requires_auth(d) for d in dependant.dependencies)
+def _requires_auth(dependant: Any, authenticate: Any) -> bool:
+    return any(d.call is authenticate or _requires_auth(d, authenticate) for d in dependant.dependencies)
 
 
 def test_route_manifest_every_route_declares_authentication(harness: Harness) -> None:
@@ -70,7 +70,7 @@ def test_route_manifest_every_route_declares_authentication(harness: Harness) ->
             status = harness.client.request(method, probe_path).status_code
             if status != 401:
                 unprotected.append((method, path, status))
-        elif not _requires_auth(route.dependant):
+        elif not _requires_auth(route.dependant, harness.container.identity.auth.authenticate):
             unprotected.append((method, path, "no authenticate dependency"))
     assert unprotected == []
 
@@ -150,12 +150,16 @@ def test_project_name_validation(harness: Harness) -> None:
 
 
 def test_readiness_reports_database_unavailable(make_harness: Any) -> None:
-    from app.infrastructure.db import Database, PgUnitOfWork
+    from app.kernel.infrastructure.db import Database
 
-    dead = PgUnitOfWork(
-        Database("postgresql://u:p@127.0.0.1:1/x", max_size=1, connect_timeout=1, statement_timeout_ms=1000)
+    dead = Database(
+        "postgresql://u:p@127.0.0.1:1/x",
+        api_pool_size=1,
+        worker_pool_size=1,
+        connect_timeout=1,
+        statement_timeout_ms=1000,
     )
-    h = make_harness(uow=dead)
+    h = make_harness(database=dead)
     assert h.client.get("/api/v1/health").status_code == 200
     r = h.client.get("/api/v1/ready")
     assert r.status_code == 503
@@ -173,7 +177,7 @@ def test_analytics_failure_does_not_break_requests(make_harness: Any) -> None:
         def shutdown(self) -> None:
             raise ConnectionError("analytics down")
 
-    from app.infrastructure.observability import PostHogAnalytics
+    from app.kernel.infrastructure.observability import PostHogAnalytics
 
     analytics = PostHogAnalytics(api_key="phc_test_not_real", host="http://127.0.0.1:1")
     analytics._client = Broken()  # type: ignore[assignment]
@@ -223,7 +227,7 @@ def test_logs_do_not_contain_tokens_or_bodies(harness: Harness, caplog: pytest.L
 def test_analytics_events_are_allowlisted(harness: Harness) -> None:
     headers = harness.login("user_a")
     harness.client.post("/api/v1/projects", json={"name": "sk_test_PROPCANARY123 me@example.com"}, headers=headers)
-    harness.container.analytics.capture(uuid.uuid4(), "custom_event", {"email": "x@example.com"})
+    harness.container.kernel.analytics.capture(uuid.uuid4(), "custom_event", {"email": "x@example.com"})
     serialized = json.dumps(harness.analytics.events)
     assert "PROPCANARY" not in serialized
     assert "example.com" not in serialized

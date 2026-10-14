@@ -16,8 +16,9 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from app.domain.tenancy import ExternalMembership, Role
-from app.infrastructure.clerk import ClerkTokenVerifier
+from app.kernel.tenancy import Role
+from app.modules.identity.adapters.clerk import ClerkTokenVerifier
+from app.modules.identity.domain import ExternalMembership
 from tests.conftest import Harness, superuser_query
 
 pytestmark = pytest.mark.db
@@ -97,7 +98,7 @@ def test_nt05_removed_member_loses_access_after_staleness_bound(harness: Harness
 
 def test_nt05_removed_member_loses_access_immediately_via_webhook_sync(harness: Harness, world: dict[str, Any]) -> None:
     harness.directory.set("user_bob", [ExternalMembership(GLOBEX, Role.ADMIN)])
-    harness.container.resolver.refresh_memberships(
+    harness.container.identity.resolver.refresh_memberships(
         superuser_query(harness.database_url, "SELECT id FROM app.users WHERE clerk_user_id='user_bob'")[0][0],
         "user_bob",
     )
@@ -124,10 +125,10 @@ def _ids(harness: Harness) -> tuple[Any, Any]:
 
 def test_nt06_write_rechecks_role_after_context_was_resolved(harness: Harness, world: dict[str, Any]) -> None:
     """Context resolved as admin, then downgraded before the write: the write is denied."""
-    from app.domain.errors import ForbiddenError
-    from app.domain.tenancy import VerifiedIdentity
+    from app.kernel.errors import ForbiddenError
+    from app.kernel.tenancy import VerifiedIdentity
 
-    ctx = harness.container.resolver.organization(VerifiedIdentity("user_alice"), ACME)
+    ctx = harness.container.identity.resolver.organization(VerifiedIdentity("user_alice"), ACME)
     assert ctx.role is Role.ADMIN
     org_uuid, alice_uuid = _ids(harness)
     superuser_query(
@@ -138,7 +139,7 @@ def test_nt06_write_rechecks_role_after_context_was_resolved(harness: Harness, w
     import uuid as _uuid
 
     with pytest.raises(ForbiddenError):
-        harness.container.projects.delete(ctx, _uuid.UUID(world["acme_project"]), None)
+        harness.container.projects.service.delete(ctx, _uuid.UUID(world["acme_project"]), None)
     count = superuser_query(
         harness.database_url, "SELECT count(*) FROM app.projects WHERE id=%s", (world["acme_project"],)
     )
@@ -147,22 +148,22 @@ def test_nt06_write_rechecks_role_after_context_was_resolved(harness: Harness, w
 
 def test_nt06_concurrent_downgrade_waits_for_privileged_transaction(harness: Harness, world: dict[str, Any]) -> None:
     """While a privileged write holds the membership lock, a downgrade cannot commit."""
-    from app.domain.tenancy import VerifiedIdentity
+    from app.kernel.tenancy import VerifiedIdentity
 
-    ctx = harness.container.resolver.organization(VerifiedIdentity("user_alice"), ACME)
+    ctx = harness.container.identity.resolver.organization(VerifiedIdentity("user_alice"), ACME)
     org_uuid, alice_uuid = _ids(harness)
     downgrade_committed = threading.Event()
 
     def downgrade() -> None:
-        with harness.container.uow.as_system() as repo:
-            repo._exec(  # type: ignore[attr-defined]
+        with harness.container.kernel.database.transaction("app_worker", {}) as conn:
+            conn.execute(
                 "UPDATE app.organization_memberships SET role='member' WHERE org_id=%s AND user_id=%s",
                 (org_uuid, alice_uuid),
             )
         downgrade_committed.set()
 
-    with harness.container.uow.as_tenant(ctx) as repo:
-        assert repo.lock_my_membership_role(org_uuid) is Role.ADMIN
+    with harness.container.kernel.store.as_tenant(ctx) as t:
+        assert t.lock_my_role(org_uuid) is Role.ADMIN
         worker = threading.Thread(target=downgrade)
         worker.start()
         # The downgrade blocks on the row lock held by this transaction.

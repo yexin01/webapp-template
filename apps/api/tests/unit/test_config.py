@@ -7,7 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from app.infrastructure.config import ConfigError, clerk_issuer_from_publishable_key
+from app.kernel.infrastructure.config import ConfigError
+from app.modules.identity.settings import clerk_issuer_from_publishable_key
 from tests.conftest import make_settings
 
 SECRET_MARKER = "sk_" + "live_SHOULDNEVERAPPEAR123"  # built at runtime to avoid tripping secret scanners
@@ -104,7 +105,8 @@ def test_empty_values_mean_unset() -> None:
 
 def test_env_example_placeholders_fail_clearly(tmp_path: Path) -> None:
     """A fresh copy of .env.example must fail fast with names, not run with placeholders."""
-    from app.infrastructure.config import REPO_ROOT, load_settings
+    from app.kernel.infrastructure.config import REPO_ROOT
+    from app.settings import load_settings
 
     with pytest.raises(ConfigError) as excinfo:
         load_settings(_env_file=REPO_ROOT / ".env.example")

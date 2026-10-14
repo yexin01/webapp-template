@@ -11,11 +11,10 @@ import sentry_sdk
 from sentry_sdk.envelope import Envelope
 from sentry_sdk.transport import Transport
 
-from app.domain.catalog import PriceCatalog
-from app.domain.entitlements import PlanKey
-from app.domain.errors import DependencyUnavailableError, InvalidRequestError
-from app.infrastructure.observability import PostHogAnalytics, SentryErrorReporter, scrub_event
-from app.infrastructure.stripe_billing import StripeBillingProvider
+from app.kernel.errors import DependencyUnavailableError, InvalidRequestError
+from app.kernel.infrastructure.observability import PostHogAnalytics, SentryErrorReporter, scrub_event
+from app.modules.billing.adapters.stripe import StripeBillingProvider
+from app.modules.billing.domain import PlanKey, PriceCatalog
 from tests.stub_server import stub_server
 
 CATALOG = PriceCatalog({PlanKey.PRO_MONTHLY: "price_m", PlanKey.PRO_YEARLY: "price_y"})

@@ -13,7 +13,7 @@ from typing import Any
 import psycopg
 import pytest
 
-from app.infrastructure import migrations
+from app.kernel.infrastructure import migrations
 
 pytestmark = pytest.mark.db
 

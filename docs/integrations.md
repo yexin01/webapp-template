@@ -119,7 +119,7 @@ Privacy defaults:
 - Users are identified by internal UUID only.
 - Only allowlisted events are sent:
   - browser: `apps/web/src/lib/analytics.ts`
-  - API: `ANALYTICS_ALLOWLIST` in `apps/api/app/infrastructure/observability.py`
+  - API: `ANALYTICS_ALLOWLIST` in `apps/api/app/kernel/infrastructure/observability.py`
 
 Consent requirements and retention are adopter decisions (DEC-004): see the checklist in [data-inventory.md](data-inventory.md#adopter-decision-checklist).
 

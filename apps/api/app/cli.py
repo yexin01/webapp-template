@@ -2,6 +2,7 @@
 
 Destructive and development-only commands refuse non-local databases
 (ENV-05). Reconciliation is a dry run unless ``--apply`` is given (BILL-19).
+``job <name>`` runs any registered job (the same ones Vercel Cron calls).
 """
 
 from __future__ import annotations
@@ -9,12 +10,12 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID
 
-from app.infrastructure import migrations
-from app.infrastructure.config import ConfigError, load_database_url, load_settings
+from app.kernel.infrastructure import migrations
+from app.kernel.infrastructure.config import ConfigError, load_database_url
+from app.settings import load_settings
 
 
 def _database_url(args: argparse.Namespace) -> str:
@@ -52,11 +53,11 @@ def cmd_reset(args: argparse.Namespace) -> int:
 
 
 def cmd_reconcile(args: argparse.Namespace) -> int:
-    from app.composition import bootstrap
+    from app.bootstrap import bootstrap
 
     container = bootstrap()
     try:
-        report = container.billing.reconcile(user_id=UUID(args.user) if args.user else None, apply=args.apply)
+        report = container.billing.service.reconcile(user_id=UUID(args.user) if args.user else None, apply=args.apply)
     finally:
         container.close()
     print(
@@ -72,24 +73,33 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_prune_rate_limits(args: argparse.Namespace) -> int:
-    from app.composition import bootstrap
+def cmd_job(args: argparse.Namespace) -> int:
+    from app.bootstrap import bootstrap
 
     container = bootstrap()
     try:
-        with container.uow.as_system() as repo:
-            removed = repo.prune_counters(datetime.now(UTC) - timedelta(days=2))
+        if args.name is None:
+            jobs = [
+                {"name": j.name, "schedule": j.schedule, "description": j.description}
+                for j in container.kernel.jobs.all()
+            ]
+            print(json.dumps(jobs, indent=2))
+            return 0
+        job = container.kernel.jobs.get(args.name)
+        if job is None:
+            print(f"Unknown job: {args.name}", file=sys.stderr)
+            return 2
+        summary = dict(job.run())
     finally:
         container.close()
-    print(json.dumps({"removed": removed}))
+    print(json.dumps({"job": args.name, "summary": summary}))
     return 0
 
 
 def cmd_openapi(args: argparse.Namespace) -> int:
     """Export the OpenAPI document without connecting to any service."""
-    from app.composition import build_container
-    from app.http.app import create_app
-    from app.infrastructure.fakes import InMemoryBillingProvider
+    from app.bootstrap import build_container, create_app
+    from app.modules.billing.adapters.fakes import InMemoryBillingProvider
 
     settings = load_settings(
         _env_file=None,
@@ -128,8 +138,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--apply", action="store_true")
     p.set_defaults(func=cmd_reconcile)
 
-    p = sub.add_parser("prune-rate-limits", help="Delete expired rate-limit windows")
-    p.set_defaults(func=cmd_prune_rate_limits)
+    p = sub.add_parser("job", help="Run a registered job, or list jobs when no name is given")
+    p.add_argument("name", nargs="?")
+    p.set_defaults(func=cmd_job)
 
     p = sub.add_parser("openapi", help="Write the OpenAPI document")
     p.add_argument("--output", required=True)

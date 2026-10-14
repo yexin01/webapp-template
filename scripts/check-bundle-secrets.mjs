@@ -21,6 +21,7 @@ const SERVER_ONLY_NAMES = [
   "DATABASE_URL",
   "LLM_API_KEY",
   "SENTRY_AUTH_TOKEN",
+  "CRON_SECRET",
 ];
 const SECRET_PATTERNS = [
   /\b[sr]k_(?:live|test)_[A-Za-z0-9]{10,}/,

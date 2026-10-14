@@ -14,8 +14,8 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from app.domain.errors import AuthenticationError, DependencyUnavailableError
-from app.infrastructure.clerk import ClerkTokenVerifier
+from app.kernel.errors import AuthenticationError, DependencyUnavailableError
+from app.modules.identity.adapters.clerk import ClerkTokenVerifier
 
 ISSUER = "https://example-app.clerk.accounts.dev"
 ORIGIN = "http://localhost:3000"

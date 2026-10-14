@@ -28,7 +28,7 @@ The template never stores email addresses, names, or payment details. Those stay
 | `billing_events` | Stripe event ID, event type, customer ID, timestamps, attempt count; **no payloads** | Webhook idempotency ledger | Kept indefinitely. |
 | `identity_events` | Clerk/Svix event ID, event type, timestamps; **no payloads** | Webhook idempotency ledger | Kept indefinitely. |
 | `audit_log` | Actor user, organization, action, target, outcome, request ID | Security audit (ADM-02) | Kept indefinitely. |
-| `rate_limit_counters` | Keys containing the internal user ID (`llm:user:…`, `checkout:…`, `diagnostics:user:…`), window start, hit count | Rate limits (DEC-011) | Until `prune-rate-limits` runs. Scheduling it is not yet configured. |
+| `rate_limit_counters` | Keys containing the internal user ID (`llm:user:…`, `checkout:…`, `diagnostics:user:…`), window start, hit count | Rate limits (DEC-011) | Until the daily `prune-rate-limits` job runs (about two days). |
 
 Backups of this database follow the hosting plan's schedule. They are not defined yet (DEC-005).
 

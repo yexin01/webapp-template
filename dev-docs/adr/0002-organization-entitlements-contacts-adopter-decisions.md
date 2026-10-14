@@ -15,7 +15,7 @@ The register still had DEC-002 to DEC-005 open, plus the DEC-009 staleness value
 
 An individual's Pro subscription applies to **that individual's own actions in every organization they currently belong to**. It is never shared with other members. Organization roles neither grant nor remove it.
 
-Truth table (BILL-ORG-02). It is enforced by `decide()` in `apps/api/app/domain/entitlements.py` and tested in `apps/api/tests/integration/test_org_entitlements.py`:
+Truth table (BILL-ORG-02). It is enforced by `decide()` in `apps/api/app/modules/billing/domain.py` (moved there by ADR-0003) and tested in `apps/api/tests/integration/test_org_entitlements.py`:
 
 | Actor | Context | Role | Membership | Actor's subscription | Pro-gated feature | Entitlement |
 |---|---|---|---|---|---|---|

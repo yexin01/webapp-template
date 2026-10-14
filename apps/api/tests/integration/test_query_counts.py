@@ -18,9 +18,10 @@ from unittest import mock
 import psycopg
 import pytest
 
-from app.domain.entitlements import SubscriptionStatus
-from app.domain.tenancy import ExternalMembership, Role
-from app.infrastructure.db import API_ROLE, WORKER_ROLE, Database
+from app.kernel.infrastructure.db import API_ROLE, WORKER_ROLE, Database
+from app.kernel.tenancy import Role
+from app.modules.billing.domain import SubscriptionStatus
+from app.modules.identity.domain import ExternalMembership
 from tests.conftest import Harness
 from tests.integration.test_billing import event_payload, make_pro, send_webhook, snapshot
 
@@ -94,8 +95,9 @@ def test_organization_entitlement_query_count_is_independent_of_membership_count
     small = statements_for(harness, lambda: harness.client.get(url, headers=headers))
 
     harness.directory.set("user_a", many)
-    harness.container.resolver.refresh_memberships(
-        harness.container.resolver.personal(harness.verifier.verify(headers["Authorization"][7:])).user_id, "user_a"
+    harness.container.identity.resolver.refresh_memberships(
+        harness.container.identity.resolver.personal(harness.verifier.verify(headers["Authorization"][7:])).user_id,
+        "user_a",
     )
     large = statements_for(harness, lambda: harness.client.get(url, headers=headers))
     assert large == small
@@ -103,7 +105,7 @@ def test_organization_entitlement_query_count_is_independent_of_membership_count
 
 
 def test_transaction_setup_is_one_statement_and_takes_effect(db: str) -> None:
-    database = Database(db, max_size=1, connect_timeout=3, statement_timeout_ms=7000)
+    database = Database(db, api_pool_size=1, worker_pool_size=1, connect_timeout=3, statement_timeout_ms=7000)
     user = "00000000-0000-4000-8000-00000000a11c"
     try:
         with counting_statements() as counter, database.transaction(API_ROLE, {"app.user_id": user}) as conn:

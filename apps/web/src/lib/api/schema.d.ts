@@ -400,6 +400,7 @@ export interface components {
         };
         /**
          * IntegrationKey
+         * @description An external service that diagnostics can describe and check.
          * @enum {string}
          */
         IntegrationKey: "database" | "identity" | "billing" | "llm" | "analytics" | "error_reporting";

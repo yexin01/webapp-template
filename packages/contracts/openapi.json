@@ -202,6 +202,7 @@
         "type": "object"
       },
       "IntegrationKey": {
+        "description": "An external service that diagnostics can describe and check.",
         "enum": [
           "database",
           "identity",

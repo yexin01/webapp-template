@@ -52,6 +52,9 @@ select = ["E", "F", "W", "I", "B", "UP", "S", "BLE", "SIM", "RUF", "N", "C4", "P
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "S105", "S106", "S311", "S608", "E501"]
+# Router factories define FastAPI dependency aliases (``Personal = Annotated[...]``)
+# as local, capitalized type aliases.
+"app/modules/*/routes.py" = ["N806"]
 
 [tool.mypy]
 python_version = "3.12"
@@ -67,30 +70,77 @@ ignore_missing_imports = true
 root_package = "app"
 include_external_packages = true
 
-[[tool.importlinter.contracts]]
-name = "Domain is independent of every other layer and of vendor SDKs"
-type = "forbidden"
-source_modules = ["app.domain"]
-forbidden_modules = ["app.application", "app.infrastructure", "app.http", "app.composition", "app.ports", "fastapi", "starlette", "psycopg", "stripe", "httpx", "sentry_sdk", "posthog", "jwt", "svix", "pydantic"]
+# Architecture contracts (ADR-0003). tests/architecture adds the cross-module rule:
+# a module may import another module only through that module's `api`.
 
 [[tool.importlinter.contracts]]
-name = "Application and ports depend only on the domain"
+name = "The kernel never depends on feature modules or the composition root"
 type = "forbidden"
-source_modules = ["app.application", "app.ports"]
-forbidden_modules = ["app.infrastructure", "app.http", "app.composition", "fastapi", "starlette", "psycopg", "stripe", "httpx", "sentry_sdk", "posthog", "jwt", "svix"]
+source_modules = ["app.kernel"]
+forbidden_modules = ["app.modules", "app.bootstrap", "app.settings", "app.cli"]
 
 [[tool.importlinter.contracts]]
-name = "Infrastructure does not depend on application services or HTTP"
+name = "Kernel core is framework-free"
 type = "forbidden"
-source_modules = ["app.infrastructure"]
-forbidden_modules = ["app.application", "app.http", "app.composition"]
+source_modules = [
+  "app.kernel.errors", "app.kernel.tenancy", "app.kernel.authorization", "app.kernel.events",
+  "app.kernel.pagination", "app.kernel.ports", "app.kernel.diagnostics", "app.kernel.jobs",
+  "app.kernel.webhooks", "app.kernel.application",
+]
+forbidden_modules = [
+  "app.kernel.infrastructure", "app.kernel.http", "app.kernel.wiring",
+  "fastapi", "starlette", "psycopg", "psycopg_pool", "stripe", "httpx", "sentry_sdk", "posthog", "jwt", "svix",
+]
 
 [[tool.importlinter.contracts]]
-name = "HTTP layer does not use vendor SDKs or adapters directly"
+name = "Kernel infrastructure does not depend on the HTTP layer"
 type = "forbidden"
-source_modules = ["app.http"]
-forbidden_modules = ["stripe", "psycopg", "posthog", "svix", "jwt", "sentry_sdk", "app.infrastructure"]
+source_modules = ["app.kernel.infrastructure"]
+forbidden_modules = ["app.kernel.http", "app.kernel.wiring", "app.kernel.application"]
+
+[[tool.importlinter.contracts]]
+name = "Every module follows the same layers"
+type = "layers"
+containers = ["app.modules.*"]
+layers = [
+  "module",
+  "(settings) | (api)",
+  "routes | (adapters) | (probe)",
+  "service",
+  "(ports)",
+  "domain",
+]
+exhaustive = true
+
+[[tool.importlinter.contracts]]
+name = "Module domains are pure"
+type = "forbidden"
+source_modules = ["app.modules.*.domain"]
+forbidden_modules = [
+  "app.kernel.infrastructure", "app.kernel.http", "app.kernel.wiring", "app.kernel.application",
+  "fastapi", "starlette", "pydantic", "psycopg", "stripe", "httpx", "sentry_sdk", "posthog", "jwt", "svix",
+]
+
+[[tool.importlinter.contracts]]
+name = "Module services, ports, and probes use no frameworks, SDKs, or adapters"
+type = "forbidden"
+source_modules = ["app.modules.*.service", "app.modules.*.ports", "app.modules.*.probe"]
+forbidden_modules = [
+  "app.kernel.infrastructure", "app.kernel.http", "app.kernel.wiring",
+  "fastapi", "starlette", "psycopg", "stripe", "httpx", "sentry_sdk", "posthog", "jwt", "svix",
+]
+
+[[tool.importlinter.contracts]]
+name = "Module routes use no vendor SDKs or infrastructure"
+type = "forbidden"
+source_modules = ["app.modules.*.routes"]
+forbidden_modules = ["app.kernel.infrastructure", "psycopg", "stripe", "posthog", "svix", "jwt", "sentry_sdk", "httpx"]
 allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+name = "Modules do not form import cycles"
+type = "acyclic_siblings"
+ancestors = ["app.modules"]
 
 [tool.uv]
 # Flat layout imported from the project directory; no build or install step.

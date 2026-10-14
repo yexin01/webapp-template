@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from app.domain.entitlements import (
+from app.modules.billing.domain import (
     BillingState,
     Plan,
     PlanKey,

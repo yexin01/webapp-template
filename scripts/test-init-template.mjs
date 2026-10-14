@@ -88,7 +88,7 @@ try {
   const read = (rel) => readFileSync(path.join(dir, rel), "utf8");
   check(JSON.parse(read("package.json")).name === SLUG, "package.json name was not renamed");
   check(read("apps/web/src/components/site-header.tsx").includes(NAME), "site header was not renamed");
-  check(read("apps/api/app/http/app.py").includes(`${NAME} API`), "API title was not renamed");
+  check(read("apps/api/app/bootstrap.py").includes(`${NAME} API`), "API title was not renamed");
   check(read("docker-compose.yml").includes(`127.0.0.1:${PORT}:5432`), "docker-compose port was not moved");
   check(read(".env.example").includes(`127.0.0.1:${PORT}/app`), ".env.example port was not moved");
   check(existsSync(path.join(dir, ".env")), ".env was not created");

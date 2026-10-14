@@ -11,13 +11,12 @@ from typing import Any
 import httpx
 import pytest
 
-from app.domain.catalog import PriceCatalog
-from app.domain.entitlements import PlanKey, SubscriptionStatus
-from app.domain.errors import WebhookSignatureError
-from app.infrastructure.llm_providers import AnthropicProvider, OpenAIProvider
-from app.infrastructure.observability import scrub_event
-from app.infrastructure.redaction import REDACTED, redact, redact_text
-from app.infrastructure.stripe_billing import StripeWebhookVerifier, to_snapshot
+from app.kernel.errors import WebhookSignatureError
+from app.kernel.infrastructure.observability import scrub_event
+from app.kernel.infrastructure.redaction import REDACTED, redact, redact_text
+from app.modules.billing.adapters.stripe import StripeWebhookVerifier, to_snapshot
+from app.modules.billing.domain import PlanKey, PriceCatalog, SubscriptionStatus
+from app.modules.llm.adapters import AnthropicProvider, OpenAIProvider
 
 SECRET = "whsec_test_only_not_a_real_secret_000000"
 CATALOG = PriceCatalog({PlanKey.PRO_MONTHLY: "price_m", PlanKey.PRO_YEARLY: "price_y"})
@@ -203,7 +202,7 @@ class TestRedaction:
 
 
 def test_sentry_collects_no_personal_or_request_data() -> None:
-    from app.infrastructure.observability import scrub_breadcrumb, sentry_options
+    from app.kernel.infrastructure.observability import scrub_breadcrumb, sentry_options
     from tests.conftest import make_settings
 
     options = sentry_options(

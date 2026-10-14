@@ -11,8 +11,9 @@ from typing import Any
 
 import pytest
 
-from app.domain.entitlements import SubscriptionStatus
-from app.domain.tenancy import ExternalMembership, Role
+from app.kernel.tenancy import Role
+from app.modules.billing.domain import SubscriptionStatus
+from app.modules.identity.domain import ExternalMembership
 from tests.conftest import Harness
 from tests.integration.test_billing import make_pro
 

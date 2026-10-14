@@ -11,26 +11,17 @@ from typing import Any
 
 import pytest
 
-from app.application.diagnostics import (
-    DiagnosticsService,
-    IntegrationInfo,
-    IntegrationKey,
-    IntegrationMode,
-    OperatorPolicy,
-    Outcome,
-)
-from app.application.llm import LLMService
-from app.application.rate_limit import RateLimiter
-from app.domain.catalog import PriceCatalog
-from app.domain.errors import NotFoundError
-from app.domain.tenancy import ContextKind, Role, TenantContext
-from app.infrastructure.fakes import StaticMembershipDirectory
-from app.infrastructure.llm_providers import MockLLMProvider
-from app.infrastructure.observability import NoopAnalytics, NoopErrorReporter
-from app.ports import ConnectionDescription
+from app.kernel.application.probes import DatabaseProbe
+from app.kernel.application.rate_limit import RateLimiter
+from app.kernel.diagnostics import IntegrationInfo, IntegrationKey, IntegrationMode, Outcome
+from app.kernel.errors import NotFoundError
+from app.kernel.ports import ConnectionDescription
+from app.kernel.tenancy import ContextKind, Role, TenantContext
+from app.modules.diagnostics.domain import OperatorPolicy
+from app.modules.diagnostics.service import DiagnosticsService
 
 
-class _Repo:
+class _Store:
     def __init__(self, description: ConnectionDescription) -> None:
         self.description = description
 
@@ -41,17 +32,22 @@ class _Repo:
         return 1
 
 
-class _UoW:
+class _Tx:
+    def __init__(self, store: _Store) -> None:
+        self.repo = store
+
+
+class _Transactions:
     def __init__(self, description: ConnectionDescription) -> None:
-        self.repo = _Repo(description)
+        self.tx = _Tx(_Store(description))
 
     @contextmanager
     def as_tenant(self, ctx: TenantContext) -> Iterator[Any]:
-        yield self.repo
+        yield self.tx
 
     @contextmanager
     def as_system(self) -> Iterator[Any]:
-        yield self.repo
+        yield self.tx
 
 
 class _Clock:
@@ -60,22 +56,13 @@ class _Clock:
 
 
 def service(description: ConnectionDescription, operators: OperatorPolicy | None = None) -> DiagnosticsService:
-    uow: Any = _UoW(description)
-    limiter = RateLimiter(uow, _Clock())
+    tx: Any = _Transactions(description)
+    info = IntegrationInfo(IntegrationKey.DATABASE, "PostgreSQL", IntegrationMode.LOCAL)
     return DiagnosticsService(
         enabled=True,
         operators=operators or OperatorPolicy(frozenset({"user_a"})),
-        integrations=[IntegrationInfo(IntegrationKey.DATABASE, "PostgreSQL", IntegrationMode.LOCAL)],
-        uow=uow,
-        directory=StaticMembershipDirectory(),
-        billing_provider=None,
-        catalog=PriceCatalog({}),
-        analytics=NoopAnalytics(),
-        error_reporter=NoopErrorReporter(),
-        llm=LLMService(
-            MockLLMProvider(), limiter, NoopAnalytics(), checks_per_user_per_minute=1, checks_global_per_day=1
-        ),
-        rate_limiter=limiter,
+        probes=[DatabaseProbe(info, tx)],
+        rate_limiter=RateLimiter(tx, _Clock()),
         runs_per_user_per_minute=10,
         runs_global_per_day=10,
     )
