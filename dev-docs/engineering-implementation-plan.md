@@ -44,8 +44,8 @@ Requirements carry stable identifiers (for example `AUTH-03`). Identifiers are n
 | Performance test plan | §15.2 of this document | Maintained here |
 | Requirements traceability matrix | §21 of this document | Maintained here |
 | Architecture Decision Records | `dev-docs/adr/NNNN-short-title.md` | ADR-0001 (approved recommendations for DEC-007 to DEC-012) |
-| Evidence records | `dev-docs/evidence/` | `2026-10-14-local-verification.md` (mocked integrations, local only) |
-| Adopter-facing documentation | `README.md`, `docs/integrations.md`, `docs/operations.md` | Exists |
+| Evidence records | `dev-docs/evidence/` | `2026-10-14-local-verification.md` and `2026-10-14-diagnostics-perf-local.md` (mocked integrations, local only) |
+| Adopter-facing documentation | `README.md`, `docs/integrations.md`, `docs/operations.md`, `docs/data-inventory.md`, `perf/README.md` | Exists |
 | Community files | `LICENSE`, `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, `.github/` | Exist; reporting and enforcement contacts pending (DEC-012) |
 
 ---
@@ -121,10 +121,10 @@ These decisions are confirmed. A confirmed technology choice is not evidence tha
 |---|---|---|---|---|
 | DEC-001 | Python backend on Vercel | OPEN — mandatory technical validation | All backend implementation beyond the proof | Owner authorizes the proof deployment (§18, P1) |
 | DEC-002 | Individual billing vs. organization entitlements | OPEN | Organization-level paid authorization | Owner policy decision |
-| DEC-003 | Performance targets | OPEN — targets follow baseline measurement | Quantitative acceptance in Gate D | Baseline and stress results (P7) |
-| DEC-004 | Data retention, export, and deletion | OPEN | Account deletion/export features; any deletion-completeness claim | Owner policy plus provider verification |
-| DEC-005 | Backup and recovery | OPEN | Recovery-readiness claims; Gate E | Owner objectives plus restore test |
-| DEC-006 | External integration verification | OPEN until verified | Any "sandbox-tested" or "live-tested" claim; Gate E | Owner provides authorized sandbox accounts |
+| DEC-003 | Performance targets | OPEN — targets follow baseline measurement | Quantitative acceptance in Gate D | Local baseline recorded (not deployment evidence); preview baseline and stress need an authorized run plan (P7) |
+| DEC-004 | Data retention, export, and deletion | OPEN | Account deletion/export features; any deletion-completeness claim | Owner answers the questions in `docs/data-inventory.md` (inventory drafted); provider verification |
+| DEC-005 | Backup and recovery | OPEN | Recovery-readiness claims; Gate E | Owner objectives plus a hosted restore test (a local restore drill exists) |
+| DEC-006 | External integration verification | OPEN until verified | Any "sandbox-tested" or "live-tested" claim; Gate E | Owner provides sandbox keys in `.env`; then run the `/integrations` checks and sandbox e2e |
 | DEC-007 | Frontend framework, repository layout, toolchain, and API contracts | RESOLVED 2026-10-14 — recommendation approved ([ADR-0001](adr/0001-approved-recommendations.md)) | — | — |
 | DEC-008 | Data access path and RLS enforcement model | RESOLVED 2026-10-14 — option A approved (ADR-0001) | — | Validate on Vercel in DEC-001 |
 | DEC-009 | Organization membership source of truth and staleness bound | RESOLVED 2026-10-14 — option A approved (ADR-0001); staleness bound value still needs owner confirmation | — | Owner confirms `MEMBERSHIP_MAX_STALENESS_SECONDS` (proposed 300 s) |
@@ -1134,7 +1134,8 @@ None. These are pending DEC-003.
 - Health and readiness checks.
 - Provider outage handling (§16.4).
 - Incident response and troubleshooting.
-- Backup and restore verification (DEC-005).
+- Backup and restore verification (DEC-005). A local restore drill (`pnpm db:restore-drill`) exists; hosted verification is pending.
+- Data inventory (`docs/data-inventory.md`, DEC-004).
 - Python runtime limitations established by DEC-001.
 
 ---
@@ -1188,8 +1189,8 @@ Broad implementation does not begin while a decision that blocks it remains open
 | P4 | Billing: checkout, webhooks, synchronization, entitlements, reconciliation, paywall API | DEC-010 resolved; DEC-002 for organization scope | BILL requirements; §9.10 tests; sandbox evidence (DEC-006) | Implemented; tests PASS (mocked Stripe API); sandbox NOT VERIFIED |
 | P5 | LLM port and adapter, observability, rate limiting | DEC-011 resolved; LLM provider selected (DEC-006) | LLM, OBS, SEC-09 requirements | Implemented; tests PASS (mocked); providers NOT VERIFIED |
 | P6 | Frontend flows, paywall, error and loading states, accessibility | P3 to P5 APIs available | FE requirements; end-to-end and accessibility evidence | Implemented; unit and account-free e2e PASS; browser and accessibility e2e NOT VERIFIED (needs Clerk sandbox) |
-| P7 | Resilience, security hardening, performance baseline and stress; propose targets | Authorized performance environment | Resilience and security evidence; performance reports; DEC-003 target proposal | Resilience and security tests done locally; performance not started |
-| P8 | Operations documentation, backup and restore, deletion and export, integration classification, handoff | DEC-003, DEC-004, DEC-005, DEC-006 resolved, or explicitly accepted by the owner | Gates D and E; handoff report (§22) | Operations docs drafted; backup, deletion, integration classification pending |
+| P7 | Resilience, security hardening, performance baseline and stress; propose targets | Authorized performance environment | Resilience and security evidence; performance reports; DEC-003 target proposal | Resilience and security tests done locally. Performance harness (`perf/`) built; local PERF-01, PERF-03, and PERF-06 recorded. Preview runs need authorization; no target proposal yet |
+| P8 | Operations documentation, backup and restore, deletion and export, integration classification, handoff | DEC-003, DEC-004, DEC-005, DEC-006 resolved, or explicitly accepted by the owner | Gates D and E; handoff report (§22) | Operations docs and data inventory drafted; local restore drill PASS; integrations diagnostics page built. Hosted backup, deletion and export, and integration classification pending |
 
 ---
 
@@ -1265,7 +1266,7 @@ Evidence records never contain secrets, tokens, or personal data.
 
 ## 21. Requirements Traceability Matrix
 
-Status as of 2026-10-14. Evidence: [`dev-docs/evidence/2026-10-14-local-verification.md`](evidence/2026-10-14-local-verification.md).
+Status as of 2026-10-14. Evidence: [`dev-docs/evidence/2026-10-14-local-verification.md`](evidence/2026-10-14-local-verification.md) and [`2026-10-14-diagnostics-perf-local.md`](evidence/2026-10-14-diagnostics-perf-local.md).
 
 `PASS` here means the check was **executed locally** with **mocked** external integrations and met its criteria. It is not sandbox or live verification (TEST-04).
 
@@ -1273,13 +1274,13 @@ Status as of 2026-10-14. Evidence: [`dev-docs/evidence/2026-10-14-local-verifica
 |---|---|---|---|---|---|
 | ARCH-01, ARCH-02 | Layering, no cycles | `lint-imports` (4 contracts), ESLint import bans | B | — | PASS |
 | ARCH-03 to ARCH-07, ARCH-09 to ARCH-12 | Single rules, adapters, no global state, bounded calls, ADRs | Review; LLM retry tests; timeouts configured | B | — | PASS (review) |
-| ARCH-08 | No N+1 queries | Query-count tests | B | — | NOT VERIFIED (tests not written) |
+| ARCH-08 | No N+1 queries | Query-count tests (project lists, billing status, organization entitlement) | B | — | PASS |
 | API-01 to API-06 | Versioning, problem details, pagination, bearer-only, idempotency, health | Contract and platform tests; account-free e2e | B | — | PASS |
 | ENV-01 | Separate credentials per environment | Operational | E | DEC-006 | NOT VERIFIED |
 | ENV-02 to ENV-06 | Modes, validation, key/mode consistency, production guards, `.env.example` | Config tests; migration guard tests | A, C | — | PASS |
 | ENV-07 | No server-only values in the bundle | `check:bundle-secrets` (plus negative test) | C | — | PASS |
 | ENV-08 | No test-only auth path in the application | Review | C | — | PASS (review) |
-| REPO-01 to REPO-08, REPO-10, REPO-12 | Docs, commands, lockfiles, migrations, seed, reset, init, mock-mode tests, no credentials | Clean clone; init test; gitleaks | A | — | PASS |
+| REPO-01 to REPO-08, REPO-10, REPO-12 | Docs, commands, lockfiles, migrations, seed, reset, init, mock-mode tests, no credentials | Clean clone; `test:init-template` (also a CI step); gitleaks history and tracked files | A | — | PASS |
 | REPO-09 | Community files and policies | Files exist | A | DEC-012 (contacts) | BLOCKED |
 | REPO-11 | Clean-clone onboarding | Fresh clone (shared caches; see limitations) | A | — | PASS |
 | AUTH-01 to AUTH-05 | Server-side token verification | Unit tests with generated keys; end-to-end through the app | C | — | PASS (mocked IdP) |
@@ -1288,7 +1289,7 @@ Status as of 2026-10-14. Evidence: [`dev-docs/evidence/2026-10-14-local-verifica
 | TEN-07 | Membership change enforcement | NT-05 (bound, webhook, outage), NT-06 (re-check, serialization) | C | DEC-009 bound confirmation | PASS (against proposed 300 s) |
 | ADM-01, ADM-02 | Admin authorization and audit | NT-07; audit assertions | C | — | PASS |
 | DB-01 to DB-09 | Integrity, indexes, transactions, bounds, pooling, RLS, isolation, fixtures | RLS and integration tests | B, C | — | PASS |
-| DB-10 | Backup and restore | Restore test | E | DEC-005 | BLOCKED |
+| DB-10 | Backup and restore | Restore test | E | DEC-005 | BLOCKED (local restore drill PASS; hosted restore not tested) |
 | MIG-01 to MIG-05 | Migration safety | Checksum tamper test; non-local refusal; idempotent apply | B, C | — | PASS (CI stage not yet executed remotely) |
 | BILL-01 to BILL-21 | Entitlements, checkout, webhooks, transitions, reconciliation, presentation | Unit matrix; billing integration tests; web unit tests | B, C | — | PASS (mocked Stripe API; real signature verification) |
 | BILL-* sandbox | Real Stripe test-mode behavior (test clocks, portal) | Sandbox procedure in docs/integrations.md | E | DEC-006 | NOT VERIFIED |
@@ -1307,12 +1308,13 @@ Status as of 2026-10-14. Evidence: [`dev-docs/evidence/2026-10-14-local-verifica
 | SEC-11 | Vulnerability reporting | SECURITY.md | A | DEC-012 (contacts) | BLOCKED |
 | SEC-12 | Required review of migrations and workflows | CODEOWNERS and branch protection | A | Remote settings not authorized | NOT VERIFIED |
 | TEST-01 to TEST-05 | Test discipline | Review; deterministic clocks; labeled evidence | B | — | PASS |
-| PERF-01 to PERF-07 | Performance scenarios | Reports per §15.2 | D | Authorized environment | NOT VERIFIED (not started) |
+| PERF-01 to PERF-07 | Performance scenarios | Reports per §15.2 | D | Authorized environment | NOT VERIFIED (local PERF-01, PERF-03, PERF-06 recorded for relative comparison only; PERF-02, -04, -05, -07 not run; no preview runs) |
 | Performance acceptance | Approved targets met | §15.4 | D | DEC-003 | BLOCKED |
 | CI-SEC-01 to CI-SEC-05 | CI security | Workflow review; first remote run | A, C | Remote CI not authorized | NOT VERIFIED (implemented) |
 | OPS-01 to OPS-03, §16.4, §16.5 | Deployment, rollback, operations | docs/operations.md | E | DEC-001, DEC-005 | BLOCKED |
 | Account deletion and export | Deletion and export behavior | Tests | E | DEC-004 | BLOCKED |
-| Integration classification | Mocked, sandbox, or live per provider | Evidence records | E | DEC-006 | All providers **mocked** |
+| Integration diagnostics | Per-provider configuration report and checks; operator-only; no secrets | Diagnostics integration, unit, and adapter tests | C, E | — | PASS (mocked providers) |
+| Integration classification | Mocked, sandbox, or live per provider | Evidence records; `/integrations` checks in sandbox mode | E | DEC-006 | All providers **mocked** |
 
 ## 22. Required Handoff Report
 
@@ -1337,10 +1339,21 @@ The report clearly distinguishes verified behavior from assumptions, mocks, and 
 
 - **Implemented:**
   - Python API: domain, application, infrastructure, HTTP; migrations with forced RLS.
-  - Next.js web app.
-  - Repository tooling, CI definitions, and community files.
+  - Next.js web app with a minimal UI for every integration, including the operator-only `/integrations` diagnostics page.
+  - Repository tooling, CI definitions, and community files. `init-template` has a CI check.
+  - Query-count tests (ARCH-08).
+  - Local performance harness (`perf/`).
+  - Data inventory.
+  - Local restore drill.
 - **Integrations:** all **mocked**. No sandbox or live service has been contacted.
-- **Local evidence:** API 167 tests, web 37 unit tests, and 16 account-free e2e checks pass, along with lint, strict type checks, build, contract-drift, bundle-secret, audit, license, and secret scans. Details: `dev-docs/evidence/2026-10-14-local-verification.md`.
+- **Local evidence:**
+  - API 210 tests, web 43 unit tests, and 20 account-free e2e checks pass.
+  - Lint, strict type checks, build, contract-drift, init-template, bundle-secret, audit, license, and secret scans pass (history and tracked files).
+  - Clean clone at `085a7d6` passes in 66 s.
+  - Local performance baseline, stress, and webhook-concurrency results are recorded for relative comparison only.
+
+  Details: `dev-docs/evidence/2026-10-14-local-verification.md` and [`2026-10-14-diagnostics-perf-local.md`](evidence/2026-10-14-diagnostics-perf-local.md).
+- **Security review:** an automated review found that diagnostics were open to every signed-in user. Fixed in `0422335` (operator-only; explicit personal action set).
 - **Gates:**
 
   | Gate | Status | Reason |
@@ -1348,7 +1361,7 @@ The report clearly distinguishes verified behavior from assumptions, mocks, and 
   | A | NOT VERIFIED | Remote CI never run; DEC-012 contacts pending |
   | B | NOT VERIFIED | Browser and signed-in e2e need Clerk sandbox keys |
   | C | NOT VERIFIED | CodeQL and sandbox verification pending; local security tests PASS |
-  | D | BLOCKED | Performance not started; DEC-003 |
+  | D | BLOCKED | DEC-003; only local performance results exist |
   | E | BLOCKED | DEC-001, DEC-005, DEC-006 |
 
 - **Decisions:**
@@ -1358,9 +1371,9 @@ The report clearly distinguishes verified behavior from assumptions, mocks, and 
 - **Deviation:** D-001 (§18).
 - **Remote actions:** none. No push, publication, deployment, or release has occurred.
 - **Next steps:**
-  1. Owner adds sandbox keys to `.env`.
-  2. Run the sandbox e2e suites and the integration procedures in `docs/integrations.md`, and record the evidence.
-  3. Owner authorizes the DEC-001 preview proof.
-  4. Owner decides DEC-002 to DEC-005 and the DEC-012 contacts.
+  1. Owner adds sandbox keys to `.env`, and their Clerk user ID to `DIAGNOSTICS_OPERATOR_IDS`, or uses `APP_ENV=local`.
+  2. Run **Run all server checks** and the browser checks on `/integrations`, the sandbox e2e suites, and the procedures in `docs/integrations.md`. Record the evidence.
+  3. Owner authorizes the DEC-001 preview proof, and with it the preview performance runs.
+  4. Owner decides DEC-002 to DEC-005, using `docs/data-inventory.md` for DEC-004, and the DEC-012 contacts.
 
 **Final principle:** build a template that is secure by default, modular by design, reproducible from a clean clone, and honest about its verified limits. Do not trade correctness, security, or maintainability for superficial completion.
