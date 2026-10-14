@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+from app.kernel.application.outbox import prune_in_batches
 from app.kernel.errors import RateLimitedError
 from app.kernel.ports import Clock, KernelStore, Transactions
 
 _RETENTION = timedelta(days=2)
+_PRUNE_BATCH = 1_000
 
 
 class RateLimiter:
@@ -28,7 +30,12 @@ class RateLimiter:
         if count > limit:
             raise RateLimitedError(retry_after_seconds=start + window_seconds - epoch)
 
-    def prune(self) -> int:
-        """Delete windows older than two days (longer than any configured window)."""
-        with self._tx.as_system() as t:
-            return t.repo.prune_counters(self._clock.now() - _RETENTION)
+    def prune(self, time_budget_seconds: float) -> int:
+        """Delete windows older than two days (longer than any configured window), in batches."""
+        cutoff = self._clock.now() - _RETENTION
+
+        def batch() -> int:
+            with self._tx.as_system() as t:
+                return t.repo.prune_counters(cutoff, _PRUNE_BATCH)
+
+        return prune_in_batches(batch, _PRUNE_BATCH, time_budget_seconds)

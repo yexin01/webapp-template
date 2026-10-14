@@ -197,7 +197,7 @@ def test_reconcile_billing_job_reports_without_applying_by_default(cron: Harness
     customer = make_pro(cron, "user_a")
     cron.billing.set_subscriptions(customer, [snapshot(customer, SubscriptionStatus.PAST_DUE)])
     r = cron.client.get("/api/v1/jobs/reconcile-billing", headers={"Authorization": f"Bearer {CRON_SECRET}"})
-    assert r.json()["summary"] == {"customers": 1, "divergences": 1, "applied": False}
+    assert r.json()["summary"] == {"customers": 1, "divergences": 1, "unlinked": 0, "rejected": 0, "applied": False}
     status = superuser_query(cron.database_url, "SELECT status FROM app.subscriptions")[0][0]
     assert status == "active"
 
@@ -250,3 +250,60 @@ def test_completion_is_fenced_to_the_current_lease(harness: Harness) -> None:
         assert t.repo.fail_outbox(first.id, first.attempts, "late failure", retry_at=None) is False
         assert t.repo.complete_outbox(first.id, first.attempts, harness.clock.now()) is False
     assert [r[1] for r in outbox_rows(harness)] == ["processed"]
+
+
+def test_an_event_whose_worker_keeps_dying_is_dead_lettered(harness: Harness) -> None:
+    """ARCH-15: attempts stay bounded even when the handler never returns (a crash or a platform timeout)."""
+    _record(harness)
+    dispatcher = _dispatcher(harness, EventHandlers(), max_attempts=3)
+    store = harness.container.kernel.store
+    for _ in range(3):  # each worker leases the event and dies
+        with store.as_system() as t:
+            assert len(t.repo.claim_outbox(limit=1, now=harness.clock.now(), lease_seconds=60, ids=None)) == 1
+        harness.clock.advance(seconds=61)
+    report = dispatcher.drain()
+    assert (report.dead, report.claimed) == (1, 0)
+    status, attempts, error = superuser_query(
+        harness.database_url, "SELECT status, attempts, last_error FROM app.outbox"
+    )[0]
+    assert (status, attempts) == ("dead", 3)
+    assert "lease expired" in error
+
+
+def test_a_crashing_handler_never_costs_other_events_an_attempt(harness: Harness) -> None:
+    """Events are leased one at a time, so a crash holds only the event being handled."""
+    for user in ("user_a", "user_b", "user_c"):
+        _record(harness, user)
+
+    class WorkerDied(BaseException):
+        pass
+
+    def crash(event: StoredEvent) -> None:
+        raise WorkerDied
+
+    handlers = EventHandlers()
+    handlers.subscribe(EntitlementChanged, "test.crash", crash)
+    with pytest.raises(WorkerDied):
+        _dispatcher(harness, handlers).drain()
+    rows = superuser_query(harness.database_url, "SELECT status, attempts FROM app.outbox ORDER BY status")
+    assert sorted(rows) == [("pending", 0), ("pending", 0), ("processing", 1)]
+
+
+def test_the_drain_job_keeps_going_past_one_batch(harness: Harness) -> None:
+    for i in range(5):
+        _record(harness, f"user_{i}")
+    handlers = EventHandlers()
+    handlers.subscribe(EntitlementChanged, "test.ok", lambda event: None)
+    dispatcher = OutboxDispatcher(harness.container.kernel.store, handlers, harness.clock, batch_size=2, max_attempts=3)
+    assert dispatcher.drain().processed == 2  # after-response style: one bounded batch
+    assert dispatcher.drain(time_budget_seconds=30).processed == 3  # the job: until nothing is due
+
+
+def test_prune_deletes_in_bounded_batches(cron: Harness, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.kernel.application import outbox
+
+    monkeypatch.setattr(outbox, "_PRUNE_BATCH", 2)
+    for i in range(5):
+        cron.client.post("/api/v1/projects", json={"name": f"p{i}"}, headers=cron.login("user_a"))
+    cron.clock.advance(days=cron.container.settings.outbox_retention_days, seconds=1)
+    assert cron.container.kernel.outbox.prune(timedelta(days=1), time_budget_seconds=30) == 5

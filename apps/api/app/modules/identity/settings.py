@@ -6,6 +6,9 @@ import base64
 import binascii
 from typing import Annotated
 
+from cryptography.exceptions import UnsupportedAlgorithm
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from pydantic import AliasChoices, BaseModel, Field, SecretStr, field_validator
 from pydantic_settings import NoDecode
 
@@ -40,18 +43,9 @@ class IdentitySettings(BaseModel):
 
 
 def identity_problems(s: IdentitySettings, core: CoreSettings) -> list[str]:
-    if core.app_env is AppEnv.TEST:
-        return []
     production = core.app_env is AppEnv.PRODUCTION
     problems: list[str] = []
-    if not s.clerk_publishable_key:
-        problems.append("NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY is required")
-    elif clerk_issuer_from_publishable_key(s.clerk_publishable_key) is None:
-        problems.append("NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY is malformed")
-    if s.clerk_secret_key is None:
-        problems.append("CLERK_SECRET_KEY is required")
-    if not s.clerk_authorized_parties:
-        problems.append("CLERK_AUTHORIZED_PARTIES is required (comma-separated frontend origins)")
+    # Key/environment consistency holds everywhere, tests included (ENV-02, ENV-04).
     live_prefix = ("pk_live_", "sk_live_")
     keys = {
         "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY": s.clerk_publishable_key or "",
@@ -62,7 +56,33 @@ def identity_problems(s: IdentitySettings, core: CoreSettings) -> list[str]:
             problems.append(f"{name} is a live key; live keys are only allowed when APP_ENV=production")
         if value and production and not value.startswith(live_prefix):
             problems.append(f"{name} must be a live key when APP_ENV=production")
+    if s.clerk_jwt_key is not None and not is_rsa_public_key_pem(normalize_pem(secret(s.clerk_jwt_key))):
+        problems.append("CLERK_JWT_KEY must be a PEM-encoded RSA public key")
+    if core.app_env is AppEnv.TEST:
+        return problems
+    if not s.clerk_publishable_key:
+        problems.append("NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY is required")
+    elif clerk_issuer_from_publishable_key(s.clerk_publishable_key) is None:
+        problems.append("NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY is malformed")
+    if s.clerk_secret_key is None:
+        problems.append("CLERK_SECRET_KEY is required")
+    if not s.clerk_authorized_parties:
+        problems.append("CLERK_AUTHORIZED_PARTIES is required (comma-separated frontend origins)")
     return problems
+
+
+def normalize_pem(value: str) -> str:
+    """A PEM pasted into a single-line variable often carries literal ``\\n`` escapes."""
+    value = value.strip()
+    return value.replace("\\n", "\n") if "\n" not in value else value
+
+
+def is_rsa_public_key_pem(value: str) -> bool:
+    try:
+        key = serialization.load_pem_public_key(value.encode())
+    except (ValueError, TypeError, UnsupportedAlgorithm):
+        return False
+    return isinstance(key, rsa.RSAPublicKey)
 
 
 def clerk_issuer_from_publishable_key(key: str) -> str | None:

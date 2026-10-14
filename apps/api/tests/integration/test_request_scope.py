@@ -7,6 +7,7 @@ the tenant context whenever it changes, and never absorbs ``app_worker`` work.
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import Any
@@ -94,7 +95,7 @@ def test_commit_failure_is_reported_before_the_response(harness: Harness, member
 
 
 def _finish(database: Database, token: Any) -> None:
-    commit = database.end_request_scope(token)
+    commit = database.end_request_scope(token, completed=True)
     if commit is not None:
         commit()
 
@@ -111,7 +112,12 @@ def test_block_exception_rolls_back_pending_request_work(db: str) -> None:
             conn.execute("INSERT INTO app.users (clerk_user_id) VALUES ('user_rollback')")
         with pytest.raises(ZeroDivisionError), database.transaction(API_ROLE, {"app.clerk_user_id": "user_rollback"}):
             _ = 1 / 0
-        _finish(database, token)
+        # The caller swallowed the error, but the first block's work is gone:
+        # later blocks and a "successful" end of the request both fail loudly.
+        with pytest.raises(RuntimeError, match="rolled back"), database.transaction(API_ROLE, {}):
+            pass
+        with pytest.raises(RuntimeError, match="rolled back"):
+            _finish(database, token)
         assert superuser_query(db, "SELECT count(*) FROM app.users WHERE clerk_user_id = 'user_rollback'")[0][0] == 0
     finally:
         database.close()
@@ -205,10 +211,82 @@ def test_no_thread_hop_or_commit_when_no_transaction_was_opened(db: str) -> None
     database = _database(db)
     try:
         token = database.begin_request_scope()
-        assert database.end_request_scope(token) is None
+        assert database.end_request_scope(token, completed=True) is None
     finally:
         database.close()
 
 
 def test_admission_is_bounded_by_the_api_pool(harness: Harness) -> None:
     assert harness.container.kernel.database.api_pool_size == harness.container.settings.database_pool_max_size
+
+
+@pytest.mark.parametrize("scoped", [False, True], ids=["transaction", "request-scope"])
+def test_a_swallowed_statement_error_never_commits_silently(db: str, scoped: bool) -> None:
+    """After a caught SQL error PostgreSQL turns COMMIT into ROLLBACK without an error; we refuse instead."""
+    database = _database(db)
+    try:
+        token = database.begin_request_scope() if scoped else None
+
+        def swallow_an_error() -> None:
+            with database.transaction(API_ROLE, {"app.clerk_user_id": "user_swallow"}) as conn:
+                conn.execute("INSERT INTO app.users (clerk_user_id) VALUES ('user_swallow')")
+                with contextlib.suppress(psycopg.errors.UniqueViolation):
+                    conn.execute("INSERT INTO app.users (clerk_user_id) VALUES ('user_swallow')")
+
+        with pytest.raises(RuntimeError, match="cannot commit"):
+            swallow_an_error()
+        if token is not None:
+            with pytest.raises(RuntimeError, match="rolled back"):
+                database.end_request_scope(token, completed=True)
+        assert superuser_query(db, "SELECT count(*) FROM app.users WHERE clerk_user_id = 'user_swallow'")[0][0] == 0
+    finally:
+        database.close()
+
+
+def test_release_inside_a_block_is_refused(db: str) -> None:
+    """Releasing would return the connection to the pool while the block still uses it."""
+    database = _database(db)
+    try:
+        token = database.begin_request_scope()
+        with database.transaction(API_ROLE, {"app.clerk_user_id": "user_inner"}) as conn:
+            with pytest.raises(RuntimeError, match="inside a database block"):
+                database.release_request_transaction()
+            assert conn.execute("SELECT current_user").fetchone() == ("app_api",)
+        _finish(database, token)
+    finally:
+        database.close()
+
+
+def test_a_request_waiting_on_the_identity_provider_does_not_block_others(make_harness: Any) -> None:
+    """``release()`` gives the admission place back, so a slow provider call
+    stalls only the request that makes it (§16.4)."""
+    import threading
+    import time
+
+    h = make_harness({"database_pool_max_size": 1})
+    h.directory.set("user_slow", [ExternalMembership("org_slow", Role.MEMBER)])
+    slow, fast = h.login("user_slow"), h.login("user_fast")
+    in_provider = threading.Event()
+    original = h.directory.list_user_memberships
+
+    def slow_directory(external_user_id: str) -> list[ExternalMembership]:
+        in_provider.set()
+        time.sleep(2.0)
+        return original(external_user_id)
+
+    h.directory.list_user_memberships = slow_directory  # type: ignore[method-assign]
+    results: list[int] = []
+    waiting = threading.Thread(
+        target=lambda: results.append(h.client.get("/api/v1/orgs/org_slow/projects", headers=slow).status_code)
+    )
+    waiting.start()
+    assert in_provider.wait(10)
+    fast_results: list[int] = []
+    other = threading.Thread(
+        target=lambda: fast_results.append(h.client.get("/api/v1/me", headers=fast).status_code), daemon=True
+    )
+    other.start()
+    other.join(1.5)  # well before the provider call ends
+    assert fast_results == [200]
+    waiting.join(10)
+    assert results == [200]

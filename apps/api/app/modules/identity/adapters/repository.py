@@ -80,9 +80,22 @@ class PgIdentityRepository:
             return None
         return MembershipRecord(row["org_id"], row["clerk_org_id"], Role(row["role"]), row["verified_at"])
 
+    def get_my_memberships_verified_at(self) -> datetime | None:
+        row = self._one("SELECT memberships_verified_at FROM app.users WHERE id = app.ctx_user_id()")
+        return row["memberships_verified_at"] if row else None
+
     def replace_user_memberships(
         self, user_id: UUID, memberships: Sequence[ExternalMembership], verified_at: datetime
-    ) -> None:
+    ) -> bool:
+        """Apply a directory read taken at ``verified_at``; refuse one older than the last applied.
+
+        The user row lock serializes concurrent refreshes for one user, so a
+        slow, older read can never overwrite (or resurrect) what a newer read
+        applied.
+        """
+        row = self._one("SELECT memberships_verified_at FROM app.users WHERE id = %s FOR UPDATE", (user_id,))
+        if row is None or (row["memberships_verified_at"] is not None and row["memberships_verified_at"] > verified_at):
+            return False
         external_ids = [m.external_org_id for m in memberships]
         for m in memberships:
             self._exec(
@@ -110,6 +123,8 @@ class PgIdentityRepository:
             """,
             (user_id, external_ids),
         )
+        self._exec("UPDATE app.users SET memberships_verified_at = %s WHERE id = %s", (verified_at, user_id))
+        return True
 
     def mark_org_deleted(self, external_org_id: str) -> None:
         self._exec(

@@ -153,6 +153,17 @@ class DatabaseSettings(BaseSettings):
     )
 
     database_url: SecretStr | None = None
+    app_env: AppEnv = AppEnv.LOCAL
+
+
+def require_development_environment(operation: str) -> None:
+    """ENV-05: development and test commands run only when APP_ENV is local or test."""
+    try:
+        app_env = DatabaseSettings().app_env
+    except ValueError as exc:
+        raise ConfigError("Invalid configuration: APP_ENV") from exc
+    if app_env not in (AppEnv.LOCAL, AppEnv.TEST):
+        raise ConfigError(f"Refusing to {operation}: APP_ENV={app_env.value}; this command needs local or test.")
 
 
 def load_database_url() -> str:

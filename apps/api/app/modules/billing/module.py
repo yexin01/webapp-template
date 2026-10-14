@@ -63,6 +63,10 @@ def build_billing(
         analytics=kernel.analytics,
         rate_limiter=kernel.rate_limiter,
         checkouts_per_hour=settings.checkouts_per_user_per_hour,
+        # Synchronization holds a worker connection across Stripe calls; leave
+        # at least one worker connection for everything else.
+        sync_slots=max(1, core.database_worker_pool_max_size - 1),
+        sync_wait_seconds=core.database_connect_timeout_seconds,
     )
 
     kernel.handlers.subscribe(EntitlementChanged, "billing.analytics", service.capture_entitlement_change)
@@ -71,7 +75,7 @@ def build_billing(
             "reconcile-billing",
             "Compare billing records with Stripe; apply fixes only if BILLING_RECONCILE_APPLY=true.",
             "0 4 * * *",
-            lambda: service.reconcile_job(settings.billing_reconcile_apply),
+            lambda: service.reconcile_job(settings.billing_reconcile_apply, settings.billing_reconcile_batch_size),
         )
     )
     contribution.routers += [

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextvars
 import logging
+import threading
 from collections.abc import AsyncIterator, Callable
 from uuid import UUID
 
@@ -40,15 +41,18 @@ def request_transaction(database: Database) -> Callable[[], AsyncIterator[None]]
     commit therefore surfaces as an error, never as a false success.
 
     A request-scoped request holds a pooled connection across several
-    threadpool hops (dependencies, endpoint, commit). Two measures keep
+    threadpool hops (dependencies, endpoint, commit). Three measures keep
     connection holders from starving behind threads that are waiting for a
     connection:
 
     - **Admission:** at most ``api_pool_size`` scoped requests run at once.
       Others wait asynchronously, holding neither a thread nor a connection.
+      ``release()`` ends the scope and gives the place back at once, so a
+      request waiting on an external service never blocks other requests.
     - **Commit:** runs on its own one-off thread limiter, the pattern FastAPI
       uses for dependency exits, so it never queues behind the shared
-      threadpool.
+      threadpool. It is shielded from cancellation, so a client that
+      disconnects cannot leave the transaction open.
     """
     admission: anyio.Semaphore | None = None
 
@@ -56,14 +60,39 @@ def request_transaction(database: Database) -> Callable[[], AsyncIterator[None]]
         nonlocal admission
         if admission is None:
             admission = anyio.Semaphore(database.api_pool_size)
-        async with admission:
-            token = database.begin_request_scope()
+        gate = admission
+        await gate.acquire()
+        loop_thread = threading.get_ident()
+        given_back = threading.Event()
+
+        def give_back() -> None:
+            # Called by ``release()``: from a worker thread, or from the event loop.
+            if given_back.is_set():
+                return
             try:
-                yield
-            finally:
-                commit = database.end_request_scope(token)
+                if threading.get_ident() == loop_thread:
+                    gate.release()
+                else:
+                    anyio.from_thread.run_sync(gate.release)
+            except RuntimeError:
+                return  # not an anyio worker thread: the teardown below gives the place back
+            given_back.set()
+
+        token = database.begin_request_scope(on_release=give_back)
+        completed = False
+        try:
+            yield
+            completed = True
+        finally:
+            try:
+                commit = database.end_request_scope(token, completed=completed)
                 if commit is not None:
-                    await anyio.to_thread.run_sync(commit, limiter=anyio.CapacityLimiter(1))
+                    with anyio.CancelScope(shield=True):
+                        await anyio.to_thread.run_sync(commit, limiter=anyio.CapacityLimiter(1))
+            finally:
+                if not given_back.is_set():
+                    given_back.set()
+                    gate.release()
 
     return dependency
 

@@ -8,13 +8,14 @@ Destructive and development-only commands refuse non-local databases
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import sys
 from pathlib import Path
 from uuid import UUID
 
 from app.kernel.infrastructure import migrations
-from app.kernel.infrastructure.config import ConfigError, load_database_url
+from app.kernel.infrastructure.config import ConfigError, load_database_url, require_development_environment
 from app.settings import load_settings
 
 
@@ -34,6 +35,7 @@ def cmd_migrate(args: argparse.Namespace) -> int:
 
 
 def cmd_seed(args: argparse.Namespace) -> int:
+    require_development_environment("seed synthetic data")
     migrations.seed(_database_url(args))
     print(json.dumps({"seeded": True}))
     return 0
@@ -43,6 +45,7 @@ def cmd_reset(args: argparse.Namespace) -> int:
     if not args.yes:
         print("Refusing to reset without --yes. This drops all local application data.", file=sys.stderr)
         return 2
+    require_development_environment("reset the database")
     url = _database_url(args)
     migrations.reset(url)
     migrations.migrate(url)
@@ -65,7 +68,9 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
             {
                 "applied": report.applied,
                 "customers_checked": report.customers_checked,
-                "divergences": [d.__dict__ | {"user_id": str(d.user_id)} for d in report.divergences],
+                "divergences": [dataclasses.asdict(d) | {"user_id": str(d.user_id)} for d in report.divergences],
+                "unlinked_customers": report.unlinked_customers,
+                "rejected_customers": report.rejected_customers,
             },
             indent=2,
         )

@@ -19,7 +19,7 @@ from app.modules.identity.ports import IdentityVerifier, IdentityWebhookVerifier
 from app.modules.identity.probe import IdentityProbe
 from app.modules.identity.routes import build_account_router, build_auth, build_webhook_router
 from app.modules.identity.service import ContextResolver, IdentitySyncService, MembershipReconciler
-from app.modules.identity.settings import IdentitySettings
+from app.modules.identity.settings import IdentitySettings, normalize_pem
 
 
 @dataclass
@@ -76,7 +76,7 @@ def _verifier(settings: IdentitySettings) -> IdentityVerifier:
     return ClerkTokenVerifier(
         issuer=issuer,
         authorized_parties=settings.clerk_authorized_parties,
-        jwt_public_key=settings.clerk_jwt_key.get_secret_value() if settings.clerk_jwt_key else None,
+        jwt_public_key=normalize_pem(settings.clerk_jwt_key.get_secret_value()) if settings.clerk_jwt_key else None,
     )
 
 

@@ -113,6 +113,52 @@ def test_nt05_stale_membership_fails_closed_when_directory_down(harness: Harness
     assert r.json()["code"] == "DEPENDENCY_UNAVAILABLE"
 
 
+def test_nt05_an_older_directory_read_cannot_resurrect_a_removed_membership(
+    harness: Harness, world: dict[str, Any]
+) -> None:
+    """A slow refresh that read Clerk before a removal, but applies after the
+    refresh that saw the removal, changes nothing (TEN-07, DEC-009)."""
+    resolver = harness.container.identity.resolver
+    bob = superuser_query(harness.database_url, "SELECT id FROM app.users WHERE clerk_user_id='user_bob'")[0][0]
+    directory = harness.directory
+    original = type(directory).list_user_memberships
+    slow_read = threading.Event()
+    release_slow = threading.Event()
+
+    def racing(self: Any, external_user_id: str) -> list[ExternalMembership]:
+        seen = original(self, external_user_id)
+        if threading.current_thread().name == "slow-refresh":
+            slow_read.set()
+            assert release_slow.wait(10)
+        return seen
+
+    directory.list_user_memberships = racing.__get__(directory)  # type: ignore[method-assign]
+    slow = threading.Thread(target=lambda: resolver.refresh_memberships(bob, "user_bob"), name="slow-refresh")
+    slow.start()  # reads Bob as a member of Acme, then stalls
+    assert slow_read.wait(10)
+    harness.clock.advance(seconds=1)
+    directory.set("user_bob", [ExternalMembership(GLOBEX, Role.ADMIN)])  # removed from Acme
+    resolver.refresh_memberships(bob, "user_bob")  # the newer read applies first
+    release_slow.set()
+    slow.join(10)
+    assert harness.client.get(f"/api/v1/orgs/{ACME}/projects", headers=world["bob"]).status_code == 404
+
+
+def test_probing_unknown_organizations_does_not_call_the_directory_each_time(
+    harness: Harness, world: dict[str, Any]
+) -> None:
+    carol = world["carol"]
+    assert harness.client.get("/api/v1/orgs/org_probe1/projects", headers=carol).status_code == 404
+    calls = harness.directory.calls
+    for n in range(2, 12):
+        assert harness.client.get(f"/api/v1/orgs/org_probe{n}/projects", headers=carol).status_code == 404
+    assert harness.directory.calls == calls  # answered from the fresh mirror
+    # After the cooldown, a miss is re-checked, so a new membership is found.
+    harness.directory.set("user_carol", [ExternalMembership("org_new", Role.MEMBER)])
+    harness.clock.advance(seconds=31)
+    assert harness.client.get("/api/v1/orgs/org_new/projects", headers=carol).status_code == 200
+
+
 def _ids(harness: Harness) -> tuple[Any, Any]:
     org_uuid = superuser_query(harness.database_url, "SELECT id FROM app.organizations WHERE clerk_org_id=%s", (ACME,))[
         0

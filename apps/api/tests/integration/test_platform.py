@@ -112,6 +112,21 @@ def test_body_size_limit(make_harness: Any) -> None:
     assert r.json()["code"] == "PAYLOAD_TOO_LARGE"
 
 
+def test_body_size_limit_without_content_length(make_harness: Any) -> None:
+    """A chunked body has no Content-Length; the streaming count still answers 413."""
+    h = make_harness({"max_request_body_bytes": 2048})
+
+    def chunks() -> Any:
+        for _ in range(4):
+            yield b"x" * 1024
+
+    headers = {**h.login("user_a"), "Content-Type": "application/json"}
+    r = h.client.post("/api/v1/projects", content=chunks(), headers=headers)
+    assert "content-length" not in {k.lower() for k in r.request.headers}
+    assert r.status_code == 413
+    assert r.json()["code"] == "PAYLOAD_TOO_LARGE"
+
+
 def test_unhandled_errors_are_sanitized(make_harness: Any) -> None:
     class Exploding:
         name = "boom"
@@ -125,6 +140,36 @@ def test_unhandled_errors_are_sanitized(make_harness: Any) -> None:
     assert r.json()["code"] == "INTERNAL_ERROR"
     assert "LEAKCANARY" not in r.text
     assert "internal" not in r.text
+    # Correlated like every other response (OBS-05), with the security headers.
+    assert r.json()["request_id"] == r.headers["x-request-id"]
+    assert r.headers["x-content-type-options"] == "nosniff"
+
+
+def test_unhandled_error_message_never_reaches_the_logs(make_harness: Any, capsys: pytest.CaptureFixture[str]) -> None:
+    """The raw exception message stays out of the application's log lines; only its type is logged."""
+    import logging
+
+    from app.kernel.infrastructure.observability import JsonFormatter
+
+    class Exploding:
+        name = "boom"
+
+        def check(self) -> Any:
+            raise RuntimeError("detail sk_test_LEAKCANARY0000 alice@example.com")
+
+    handler = logging.StreamHandler()
+    handler.setFormatter(JsonFormatter())
+    root = logging.getLogger()
+    root.addHandler(handler)
+    try:
+        h = make_harness(llm_provider=Exploding())
+        r = h.client.post("/api/v1/llm/check", headers=h.login("user_a"))
+    finally:
+        root.removeHandler(handler)
+    assert r.status_code == 500
+    captured = capsys.readouterr()
+    assert "LEAKCANARY" not in captured.out + captured.err
+    assert '"exc_type": "RuntimeError"' in captured.err
 
 
 def test_pagination_is_bounded_and_cursor_based(harness: Harness) -> None:
@@ -314,6 +359,10 @@ def test_clerk_webhook_forgery_and_duplicates(clerk_harness: Harness) -> None:
     }
     assert h.client.post("/api/v1/webhooks/clerk", content=payload, headers=bad).status_code == 400
     assert h.client.post("/api/v1/webhooks/clerk", content=payload).status_code == 400
+    # Malformed signature headers and non-UTF-8 bodies are rejected as unauthenticated, never a 500.
+    for signature, body in (("v1", payload), ("v1,a,b", payload), ("v1,AAAA", b"\xff\xfe")):
+        malformed = {**bad, "svix-signature": signature}
+        assert h.client.post("/api/v1/webhooks/clerk", content=body, headers=malformed).status_code == 400
     first = clerk_send(h, "user.deleted", {"id": "user_x"}, msg_id="msg_same")
     second = clerk_send(h, "user.deleted", {"id": "user_x"}, msg_id="msg_same")
     assert first.json()["status"] == second.json()["status"] == "processed"
@@ -333,9 +382,131 @@ def test_modified_migration_is_detected(db: str, tmp_path: Path) -> None:
         migrations.migrate(db, tmp_path)
 
 
+def test_a_migration_numbered_before_an_applied_one_is_refused(db: str, tmp_path: Path) -> None:
+    for src in migrations.discover():
+        (tmp_path / src.path.name).write_text(src.path.read_text())
+    (tmp_path / "20200101000000_late_branch.sql").write_text("SELECT 1;\n")
+    with pytest.raises(migrations.MigrationError, match="numbered before"):
+        migrations.migrate(db, tmp_path)
+
+
+def test_concurrent_migration_runs_apply_each_migration_once(db: str, tmp_path: Path) -> None:
+    import threading
+
+    for src in migrations.discover():
+        (tmp_path / src.path.name).write_text(src.path.read_text())
+    (tmp_path / "29991231000000_concurrent.sql").write_text(
+        "SELECT pg_sleep(0.3); CREATE TABLE app.concurrent_probe (id int);\n"
+    )
+    results: list[list[str]] = []
+    errors: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            results.append(migrations.migrate(db, tmp_path))
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=run) for _ in range(3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(30)
+    try:
+        assert not errors
+        assert sorted(len(r) for r in results) == [0, 0, 1]
+    finally:
+        superuser_query(db, "DROP TABLE IF EXISTS app.concurrent_probe")
+        superuser_query(db, "DELETE FROM public.app_schema_migrations WHERE version = '29991231000000'")
+
+
+def test_the_migration_ledger_is_private(db: str) -> None:
+    """On Supabase, ``public`` is exposed through the Data API; the ledger must not be."""
+    assert superuser_query(
+        db, "SELECT relrowsecurity FROM pg_class WHERE oid = 'public.app_schema_migrations'::regclass"
+    ) == [(True,)]
+    assert superuser_query(db, "SELECT has_table_privilege('app_api', 'public.app_schema_migrations', 'SELECT')") == [
+        (False,)
+    ]
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "postgresql://u:p@localhost/app",
+        "postgresql://u:p@127.0.0.1:5432/app",
+        "postgresql://u:p@[::1]/app",
+        "postgresql:///app?host=/var/run/postgresql",
+    ],
+)
+def test_local_database_urls_are_recognized(url: str) -> None:
+    assert migrations.is_local_database(url)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "postgresql://u:p@db.example.com:5432/app",
+        "postgresql://u:p@10.0.0.5/app",
+        # libpq parameters override the URL's host.
+        "postgresql://u:p@localhost/app?host=db.example.com",
+        "postgresql://u:p@127.0.0.1/app?hostaddr=203.0.113.7",
+        "postgresql://u:p@localhost,db.example.com/app",
+        "postgresql://u:p@localhost/app?service=production",
+        "not a connection string",
+    ],
+)
+def test_non_local_database_urls_are_detected(url: str) -> None:
+    assert not migrations.is_local_database(url)
+
+
+def test_environment_overrides_count_for_locality(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PGHOST", "db.example.com")
+    assert not migrations.is_local_database("postgresql:///app")
+
+
+def test_development_commands_refuse_other_environments(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app import cli
+
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@localhost/app")
+    assert cli.main(["seed"]) == 1
+    assert cli.main(["reset", "--yes"]) == 1
+
+
 @pytest.mark.parametrize("url", ["postgresql://u:p@db.example.com:5432/app", "postgresql://u:p@10.0.0.5/app"])
 def test_destructive_commands_refuse_non_local_targets(url: str) -> None:
     with pytest.raises(migrations.UnsafeTargetError):
         migrations.reset(url)
     with pytest.raises(migrations.UnsafeTargetError):
         migrations.seed(url)
+
+
+def test_llm_checks_in_flight_are_bounded_per_instance(make_harness: Any) -> None:
+    """LLM-05: a per-instance concurrency bound, on top of the per-user and global limits."""
+    import threading
+
+    from app.modules.llm.domain import LLMCheckResult
+
+    entered, release = threading.Event(), threading.Event()
+
+    class Slow:
+        name = "slow"
+
+        def check(self) -> LLMCheckResult:
+            entered.set()
+            assert release.wait(10)
+            return LLMCheckResult(ok=True, provider="slow", model="m", latency_ms=1, error_code=None)
+
+    h = make_harness({"llm_max_concurrent_checks": 1}, llm_provider=Slow())
+    codes: list[int] = []
+    first = threading.Thread(
+        target=lambda: codes.append(h.client.post("/api/v1/llm/check", headers=h.login("user_a")).status_code)
+    )
+    first.start()
+    assert entered.wait(10)
+    second = h.client.post("/api/v1/llm/check", headers=h.login("user_b"))
+    release.set()
+    first.join(10)
+    assert second.status_code == 429
+    assert codes == [200]

@@ -135,23 +135,51 @@ class TestLLMProviders:
         assert result.error_code == "auth_failed"
         assert calls == 1
 
-    def test_unavailable_is_retried_at_most_twice(self) -> None:
-        calls = 0
+    @pytest.mark.parametrize(
+        ("response", "calls", "error"),
+        [
+            # Retried only with retry guidance short enough to honour (LLM-03).
+            (lambda: httpx.Response(503, headers={"retry-after": "1"}), 3, "unavailable"),
+            (lambda: httpx.Response(429, headers={"retry-after": "2"}), 3, "rate_limited"),
+            (lambda: httpx.Response(429, headers={"retry-after": "60"}), 1, "rate_limited"),
+            (lambda: httpx.Response(503), 1, "unavailable"),
+            (lambda: httpx.Response(500), 1, "unavailable"),
+            (lambda: httpx.Response(404), 1, "invalid_request"),
+        ],
+    )
+    def test_retries_only_with_retry_guidance(self, response: Any, calls: int, error: str) -> None:
+        seen = 0
 
         def handler(_request: httpx.Request) -> httpx.Response:
-            nonlocal calls
-            calls += 1
-            return httpx.Response(503)
+            nonlocal seen
+            seen += 1
+            return response()
 
         result = self.make(OpenAIProvider, handler).check()
-        assert result.error_code == "unavailable"
-        assert calls == 3
+        assert (seen, result.error_code) == (calls, error)
 
-    def test_timeout_normalized(self) -> None:
+    def test_connection_failures_before_sending_are_retried(self) -> None:
+        seen = 0
+
         def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal seen
+            seen += 1
+            raise httpx.ConnectError("refused", request=request)
+
+        assert self.make(AnthropicProvider, handler).check().error_code == "unavailable"
+        assert seen == 3
+
+    def test_timeout_normalized_and_never_retried(self) -> None:
+        """A read timeout may mean the provider accepted the request."""
+        seen = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal seen
+            seen += 1
             raise httpx.ReadTimeout("slow", request=request)
 
         assert self.make(AnthropicProvider, handler).check().error_code == "timeout"
+        assert seen == 1
 
 
 CANARIES = [
@@ -199,6 +227,17 @@ class TestRedaction:
         scrubbed = json.dumps(scrub_event(sentry_event, None))
         for canary in CANARIES:
             assert canary not in scrubbed
+
+    def test_sentry_event_carries_the_request_id(self) -> None:
+        """OBS-05: an operator can go from a response's X-Request-ID to the error event."""
+        from app.kernel.request_context import request_id_var
+
+        token = request_id_var.set("req-1234567890")
+        try:
+            event = scrub_event({"tags": {"handler": "x"}}, None)
+        finally:
+            request_id_var.reset(token)
+        assert event["tags"] == {"handler": "x", "request_id": "req-1234567890"}
 
 
 def test_sentry_collects_no_personal_or_request_data() -> None:

@@ -22,6 +22,7 @@ class LLMSettings(BaseModel):
     llm_timeout_seconds: float = Field(default=30.0, gt=0, le=120)
     llm_checks_per_user_per_minute: int = Field(default=5, ge=1, le=600)
     llm_checks_global_per_day: int = Field(default=200, ge=1, le=100_000)
+    llm_max_concurrent_checks: int = Field(default=4, ge=1, le=100)
 
 
 def llm_problems(s: LLMSettings, core: CoreSettings) -> list[str]:

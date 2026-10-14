@@ -32,6 +32,7 @@ def build_llm(settings: LLMSettings, kernel: Kernel, auth: AuthDeps, overrides: 
         kernel.analytics,
         checks_per_user_per_minute=settings.llm_checks_per_user_per_minute,
         checks_global_per_day=settings.llm_checks_global_per_day,
+        max_concurrent_checks=settings.llm_max_concurrent_checks,
     )
     contribution = Contribution(
         routers=[build_router(service, auth)],

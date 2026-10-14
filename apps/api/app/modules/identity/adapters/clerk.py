@@ -25,6 +25,10 @@ logger = logging.getLogger(__name__)
 _ALGORITHMS = ["RS256"]  # AUTH-02: pinned; "none" and HMAC algorithms are rejected.
 _CLOCK_SKEW_SECONDS = 5
 _MAX_TOKEN_LENGTH = 8_192
+# How long a fetched key set is trusted. A key Clerk removes (rotation or
+# revocation) stops verifying within this time (AUTH-04); verification also
+# keeps working this long through a Clerk outage (§16.4).
+_JWKS_LIFESPAN_SECONDS = 3_600
 
 
 class ClerkTokenVerifier:
@@ -43,10 +47,14 @@ class ClerkTokenVerifier:
         self._issuer = issuer
         self._authorized_parties = frozenset(p.rstrip("/") for p in authorized_parties)
         self._public_key = jwt_public_key
+        # Only the key set is cached, with a lifespan. ``cache_keys`` would keep
+        # every key ever seen for the life of the process, even after Clerk
+        # removes it from the set.
         self._jwks = jwks_client or PyJWKClient(
             f"{issuer}/.well-known/jwks.json",
-            cache_keys=True,
-            lifespan=3_600,
+            cache_jwk_set=True,
+            cache_keys=False,
+            lifespan=_JWKS_LIFESPAN_SECONDS,
             timeout=5,
         )
 
@@ -152,7 +160,9 @@ class ClerkWebhookVerifier:
             raise WebhookSignatureError()
         try:
             self._webhook.verify(payload, svix_headers)
-        except WebhookVerificationError as exc:
+        except (WebhookVerificationError, ValueError) as exc:
+            # Malformed signature headers and non-UTF-8 bodies raise ValueError
+            # (UnicodeDecodeError is one); unauthenticated input is never a 500.
             raise WebhookSignatureError() from exc
         try:
             body = json.loads(payload)

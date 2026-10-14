@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import select
 import socket
+import sys
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -180,7 +181,7 @@ def test_a_request_transaction_is_bounded_too(proxy: tuple[FaultProxy, str]) -> 
             with database.transaction(API_ROLE, {}) as conn:
                 conn.execute("SELECT 1")
         finally:
-            commit = database.end_request_scope(token)
+            commit = database.end_request_scope(token, completed=sys.exc_info()[0] is None)
             if commit is not None:
                 commit()
 
@@ -222,7 +223,7 @@ def test_a_request_transaction_survives_connections_that_died_while_idle(proxy: 
             with database.transaction(API_ROLE, {}) as conn:
                 row = conn.execute("SELECT 1").fetchone()
         finally:
-            commit = database.end_request_scope(token)
+            commit = database.end_request_scope(token, completed=sys.exc_info()[0] is None)
             if commit is not None:
                 commit()
         assert row == (1,)
@@ -245,7 +246,7 @@ def test_a_rollback_that_never_completes_reports_unavailable(proxy: tuple[FaultP
                 raise LookupError("not found")
         finally:
             if token is not None:
-                commit = database.end_request_scope(token)
+                commit = database.end_request_scope(token, completed=sys.exc_info()[0] is None)
                 if commit is not None:
                     commit()
 
@@ -274,7 +275,7 @@ def test_a_commit_that_never_completes_reports_unavailable(proxy: tuple[FaultPro
                 fault.freeze_on(b"COMMIT")
         finally:
             if token is not None:
-                commit = database.end_request_scope(token)
+                commit = database.end_request_scope(token, completed=sys.exc_info()[0] is None)
                 if commit is not None:
                     commit()
 

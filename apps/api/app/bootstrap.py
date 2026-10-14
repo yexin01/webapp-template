@@ -48,6 +48,8 @@ from app.modules.projects.module import ProjectsModule, build_projects
 from app.settings import Settings, load_settings
 
 API_TITLE = "SaaS Template API"
+# Work per scheduled run of an open-ended job; well inside the platform's function duration limit.
+_JOB_TIME_BUDGET_SECONDS = 60.0
 
 
 @dataclass
@@ -117,7 +119,10 @@ def build_container(settings: Settings, **overrides: Any) -> Container:
             "prune-expired",
             "Delete expired rate-limit windows and processed outbox events past retention.",
             "0 5 * * *",
-            lambda: {"rate_limit_windows": rate_limiter.prune(), "outbox_events": outbox.prune(retention)},
+            lambda: {
+                "rate_limit_windows": rate_limiter.prune(_JOB_TIME_BUDGET_SECONDS / 2),
+                "outbox_events": outbox.prune(retention, _JOB_TIME_BUDGET_SECONDS / 2),
+            },
         )
     )
 
@@ -199,4 +204,4 @@ def _error_reporter(settings: Settings) -> ErrorReporter:
 
 
 def _drain(outbox: OutboxDispatcher) -> Callable[[], dict[str, int]]:
-    return lambda: outbox.drain().summary()
+    return lambda: outbox.drain(time_budget_seconds=_JOB_TIME_BUDGET_SECONDS).summary()

@@ -37,6 +37,7 @@ query into a single transaction. Semantics:
 from __future__ import annotations
 
 import contextvars
+import math
 import threading
 import time
 import uuid
@@ -48,6 +49,7 @@ from uuid import UUID
 import psycopg
 from psycopg import sql
 from psycopg.abc import PQGen
+from psycopg.pq import TransactionStatus
 from psycopg.rows import TupleRow
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool, PoolTimeout
@@ -137,7 +139,18 @@ class Database:
                         timeout=self._connect_timeout,
                         # Transaction-mode poolers (e.g. Supabase's) do not
                         # support server-side prepared statements.
-                        kwargs={"prepare_threshold": None, "connect_timeout": int(self._connect_timeout)},
+                        kwargs={
+                            "prepare_threshold": None,
+                            # libpq takes whole seconds; never round a short timeout down to 0 (no limit).
+                            "connect_timeout": max(1, math.ceil(self._connect_timeout)),
+                            # Keepalives notice a peer that vanished without closing the
+                            # connection (a failover), so an idle pooled connection fails
+                            # fast and is replaced instead of waiting out the deadline.
+                            "keepalives": 1,
+                            "keepalives_idle": 30,
+                            "keepalives_interval": 10,
+                            "keepalives_count": 3,
+                        },
                         open=True,
                         name=role,
                     )
@@ -193,40 +206,59 @@ class Database:
     def transaction(self, role: str, context: Mapping[str, str]) -> Iterator[psycopg.Connection]:
         query, params = self.setup_statement(role, context)
         scope = self._scope.get()
-        if scope is not None and role == API_ROLE:
+        if scope is not None and role == API_ROLE and not scope.released:
             with scope.block(query, params) as conn:
                 yield conn
             return
         try:
             with ExitStack() as stack:
-                yield self.begin(stack, role, query, params)
+                conn = self.begin(stack, role, query, params)
+                yield conn
+                _refuse_failed_transaction(conn)
         except (PoolTimeout, psycopg.OperationalError) as exc:
             raise DependencyUnavailableError(_UNAVAILABLE) from exc
 
     # -- Request scope ----------------------------------------------------------
 
-    def begin_request_scope(self) -> contextvars.Token[RequestScope | None]:
-        return self._scope.set(RequestScope(self))
+    def begin_request_scope(
+        self, on_release: Callable[[], None] | None = None
+    ) -> contextvars.Token[RequestScope | None]:
+        """Start a request scope. ``on_release`` runs once ``release()`` has ended it early."""
+        return self._scope.set(RequestScope(self, on_release))
 
     @property
     def api_pool_size(self) -> int:
         return self._sizes[API_ROLE]
 
-    def end_request_scope(self, token: contextvars.Token[RequestScope | None]) -> Callable[[], None] | None:
+    def end_request_scope(
+        self, token: contextvars.Token[RequestScope | None], *, completed: bool
+    ) -> Callable[[], None] | None:
         """End the scope in the caller's context; return the blocking commit to run, if any.
 
         The context variable must be reset in the context that set it (the
         event loop), while the commit belongs in a worker thread. Returns
-        ``None`` when no transaction was opened, so no thread hop is needed.
+        ``None`` when no transaction is open, so no thread hop is needed.
+
+        ``completed`` says the handler returned normally. If a block rolled the
+        request transaction back and the handler still returned, the work of
+        earlier blocks is gone, so the request fails instead of reporting a
+        success that did not happen.
         """
         scope = self._scope.get()
         self._scope.reset(token)
-        return scope.commit if scope is not None and scope.is_open else None
+        if scope is None:
+            return None
+        if completed and scope.rolled_back:
+            raise RuntimeError(
+                "A database block raised and rolled back the request transaction, but the request completed. "
+                "Let the error propagate, or use explicit transactions for this route."
+            )
+        return scope.commit if scope.is_open else None
 
     def release_request_transaction(self) -> None:
         scope = self._scope.get()
-        if scope is not None:
-            scope.commit()
+        if scope is not None and not scope.released:
+            scope.release()
 
     def in_request_transaction(self) -> bool:
         scope = self._scope.get()
@@ -240,14 +272,21 @@ class Database:
 
 
 class RequestScope:
-    """One lazily opened ``app_api`` transaction shared by a request's blocks."""
+    """One lazily opened ``app_api`` transaction shared by a request's blocks.
 
-    def __init__(self, db: Database) -> None:
+    After ``release()``, the scope is over: the remaining blocks of the request
+    run as ordinary short transactions.
+    """
+
+    def __init__(self, db: Database, on_release: Callable[[], None] | None = None) -> None:
         self._db = db
+        self._on_release = on_release
         self._stack: ExitStack | None = None
         self._conn: psycopg.Connection | None = None
         self._applied: list[str] | None = None
         self._depth = 0
+        self.rolled_back = False
+        self.released = False
 
     @property
     def is_open(self) -> bool:
@@ -260,6 +299,9 @@ class RequestScope:
             # under the outer block, and its rollback would release the
             # connection the outer block still uses.
             raise RuntimeError("Nested database blocks are not supported inside a request transaction.")
+        if self.rolled_back:
+            # The earlier blocks' work is gone; continuing would commit only part of the request.
+            raise RuntimeError("The request transaction was rolled back by an earlier error.")
         self._depth += 1
         try:
             yield from self._block(query, params)
@@ -280,6 +322,7 @@ class RequestScope:
             raise DependencyUnavailableError(_UNAVAILABLE) from exc
         try:
             yield conn
+            _refuse_failed_transaction(conn)
         except BaseException as exc:
             self._rollback(exc)
             if isinstance(exc, psycopg.OperationalError):
@@ -304,9 +347,24 @@ class RequestScope:
             except psycopg.OperationalError as exc:
                 raise DependencyUnavailableError(_UNAVAILABLE) from exc
 
+    def release(self) -> None:
+        """Commit now and end the scope, before a slow external call."""
+        if self._depth:
+            # The block still uses the connection that a commit would return to the pool.
+            raise RuntimeError("release() cannot be called inside a database block.")
+        if self.rolled_back:
+            raise RuntimeError("The request transaction was rolled back by an earlier error.")
+        try:
+            self.commit()
+        finally:
+            self.released = True
+            if self._on_release is not None:
+                self._on_release()
+
     def _rollback(self, exc: BaseException) -> None:
         stack, self._stack, self._conn, self._applied = self._stack, None, None, None
         if stack is not None:
+            self.rolled_back = True
             try:
                 stack.__exit__(type(exc), exc, exc.__traceback__)
             except psycopg.OperationalError as rollback_error:
@@ -314,6 +372,12 @@ class RequestScope:
                 # server discards the transaction. Report the outage, as an
                 # unscoped transaction does.
                 raise DependencyUnavailableError(_UNAVAILABLE) from rollback_error
+
+
+def _refuse_failed_transaction(conn: psycopg.Connection) -> None:
+    """A statement failed and its error was caught: PostgreSQL would turn COMMIT into ROLLBACK silently."""
+    if conn.info.transaction_status == TransactionStatus.INERROR:
+        raise RuntimeError("A statement failed inside this transaction, so it cannot commit.")
 
 
 # ---------------------------------------------------------------------------

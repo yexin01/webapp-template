@@ -48,8 +48,15 @@ _STATUS: dict[type[DomainError], int] = {
 }
 
 
-class PayloadTooLargeError(Exception):
-    """Raised by the body-size middleware while the body is being read."""
+class PayloadTooLargeError(StarletteHTTPException):
+    """Raised by the body-size middleware while the body is being read.
+
+    An ``HTTPException``, so FastAPI's body parsing re-raises it as is instead
+    of turning it into a generic ``400``.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(status_code=413)
 
 
 def problem(
@@ -120,6 +127,12 @@ def install_error_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(Exception)
     async def _unhandled(_request: Request, exc: Exception) -> JSONResponse:
-        # ERROR-level logs are forwarded to error reporting with redaction.
+        # Last resort only: RequestContextMiddleware handles unhandled
+        # exceptions first, inside the request context. ERROR-level logs are
+        # forwarded to error reporting with redaction.
         logger.error("unhandled_exception", exc_info=exc)
-        return problem(500, "INTERNAL_ERROR", "An unexpected error occurred.")
+        return internal_error_response()
+
+
+def internal_error_response() -> JSONResponse:
+    return problem(500, "INTERNAL_ERROR", "An unexpected error occurred.")

@@ -85,7 +85,12 @@ def _scrub_request(request: dict[str, Any]) -> None:
 
 
 def scrub_event(event: Any, _hint: Any) -> Any:
-    """Sentry ``before_send``: remove secrets, bodies, and personal data."""
+    """Sentry ``before_send``: remove secrets, bodies, and personal data; tag the request ID."""
+    request_id = request_id_var.get()
+    if request_id:
+        # Lets an operator go from a user's X-Request-ID to the event (OBS-05).
+        tags = event.get("tags")
+        event["tags"] = {**(tags if isinstance(tags, dict) else {}), "request_id": request_id}
     request = event.get("request")
     if isinstance(request, dict):
         _scrub_request(request)

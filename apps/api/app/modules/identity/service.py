@@ -44,6 +44,10 @@ _MEMBERSHIP_EVENTS = frozenset(
 )
 
 
+# How long after a full membership read a miss is answered from the mirror.
+_MISS_REFRESH_COOLDOWN = timedelta(seconds=30)
+
+
 class ContextResolver:
     def __init__(
         self,
@@ -69,6 +73,11 @@ class ContextResolver:
 
         membership = self._read_membership(personal, external_org_id)
         if membership is None or self._is_stale(membership):
+            if membership is None and self._recently_verified(personal):
+                # A full read moments ago did not include this organization.
+                # Answering from the mirror keeps a caller probing organization
+                # IDs from turning each request into a provider call.
+                raise NotFoundError()
             # Never hold a request transaction open across a provider call.
             self._tx.release()
             self.refresh_memberships(personal.user_id, identity.external_user_id)
@@ -86,9 +95,12 @@ class ContextResolver:
         )
 
     def refresh_memberships(self, user_id: UUID, external_user_id: str) -> None:
+        # Stamped before the provider call: a slow answer must never look
+        # fresher than it is, or the staleness bound would stretch.
+        read_at = self._clock.now()
         memberships = self._directory.list_user_memberships(external_user_id)
         with self._tx.as_system() as t:
-            t.repo.replace_user_memberships(user_id, memberships, self._clock.now())
+            t.repo.replace_user_memberships(user_id, memberships, read_at)
 
     def _ensure_user(self, external_user_id: str) -> UUID:
         with self._tx.as_identity(external_user_id) as t:
@@ -106,6 +118,12 @@ class ContextResolver:
 
     def _is_stale(self, membership: MembershipRecord) -> bool:
         return self._clock.now() - membership.verified_at > self._max_staleness
+
+    def _recently_verified(self, personal: TenantContext) -> bool:
+        with self._tx.as_tenant(personal) as t:
+            verified_at = t.repo.get_my_memberships_verified_at()
+        cooldown = min(_MISS_REFRESH_COOLDOWN, self._max_staleness)
+        return verified_at is not None and self._clock.now() - verified_at < cooldown
 
 
 class IdentitySyncService:

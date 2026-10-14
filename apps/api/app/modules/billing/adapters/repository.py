@@ -4,6 +4,7 @@ webhook ledger. All SQL uses bound parameters only."""
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
@@ -91,16 +92,64 @@ class PgBillingRepository:
         # Serializes all synchronization for one customer within this transaction.
         self._one("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0)) AS locked", (stripe_customer_id,))
 
-    def list_billing_customers(self, limit: int, after_user_id: UUID | None) -> list[tuple[UUID, str]]:
+    def list_billing_customers(self, limit: int, after_customer_id: str | None) -> list[str]:
         rows = self._all(
             """
-            SELECT user_id, stripe_customer_id FROM app.billing_customers
-            WHERE (%s::uuid IS NULL OR user_id > %s::uuid)
-            ORDER BY user_id LIMIT %s
+            SELECT stripe_customer_id FROM app.billing_customers
+            WHERE (%s::text IS NULL OR stripe_customer_id > %s::text)
+            ORDER BY stripe_customer_id LIMIT %s
             """,
-            (after_user_id, after_user_id, limit),
+            (after_customer_id, after_customer_id, limit),
         )
-        return [(r["user_id"], r["stripe_customer_id"]) for r in rows]
+        return [r["stripe_customer_id"] for r in rows]
+
+    def list_least_recently_reconciled(self, limit: int) -> list[str]:
+        rows = self._all(
+            """
+            SELECT stripe_customer_id FROM app.billing_customers
+            ORDER BY reconciled_at NULLS FIRST, user_id LIMIT %s
+            """,
+            (limit,),
+        )
+        return [r["stripe_customer_id"] for r in rows]
+
+    def mark_reconciled(self, stripe_customer_id: str, at: datetime) -> None:
+        self._exec(
+            "UPDATE app.billing_customers SET reconciled_at = %s WHERE stripe_customer_id = %s",
+            (at, stripe_customer_id),
+        )
+
+    def list_flagged_customers(self, limit: int, after_customer_id: str | None) -> list[str]:
+        rows = self._all(
+            """
+            SELECT DISTINCT stripe_customer_id FROM app.billing_events
+            WHERE status = 'needs_reconciliation' AND stripe_customer_id IS NOT NULL
+              AND (%s::text IS NULL OR stripe_customer_id > %s::text)
+            ORDER BY stripe_customer_id LIMIT %s
+            """,
+            (after_customer_id, after_customer_id, limit),
+        )
+        return [r["stripe_customer_id"] for r in rows]
+
+    def list_recently_flagged_customers(self, limit: int) -> list[str]:
+        rows = self._all(
+            """
+            SELECT stripe_customer_id FROM app.billing_events
+            WHERE status = 'needs_reconciliation' AND stripe_customer_id IS NOT NULL
+            GROUP BY stripe_customer_id ORDER BY max(received_at) DESC LIMIT %s
+            """,
+            (limit,),
+        )
+        return [r["stripe_customer_id"] for r in rows]
+
+    def resolve_flagged_events(self, stripe_customer_id: str) -> int:
+        return self._exec(
+            """
+            UPDATE app.billing_events SET status = 'processed', processed_at = now()
+            WHERE stripe_customer_id = %s AND status = 'needs_reconciliation'
+            """,
+            (stripe_customer_id,),
+        )
 
     # -- Subscriptions --------------------------------------------------------------
 

@@ -139,3 +139,53 @@ def test_membership_lock_only_returns_callers_role(seeded: str) -> None:
         assert conn.execute("SELECT app.lock_my_membership(%s)", (GLOBEX,)).fetchone() == ("admin",)
     with as_role(seeded, "app_api", user_id=ALICE) as conn:
         assert conn.execute("SELECT app.lock_my_membership(%s)", (GLOBEX,)).fetchone() == (None,)
+
+
+@pytest.mark.parametrize(
+    ("sql", "params"),
+    [
+        # users: a request may create only its own user row.
+        (
+            "INSERT INTO app.users (clerk_user_id) VALUES (%s)",
+            ("user_new_by_alice",),
+        ),
+        # billing_customers: only the caller's own customer link.
+        (
+            "INSERT INTO app.billing_customers (user_id, stripe_customer_id) VALUES (%s, 'cus_wrongctx')",
+            (BOB,),
+        ),
+        # audit_log: entries are attributed to the caller only.
+        (
+            "INSERT INTO app.audit_log (actor_user_id, action, target_type, outcome) "
+            "VALUES (%s, 'x', 'project', 'allowed')",
+            (BOB,),
+        ),
+        # outbox: only fresh, pending events, and only while acting for a user.
+        (
+            "INSERT INTO app.outbox (id, event_type, status, attempts) "
+            "VALUES (gen_random_uuid(), 'projects.created', 'processed', 0)",
+            (),
+        ),
+    ],
+    ids=["users", "billing_customers", "audit_log", "outbox"],
+)
+def test_insert_policies_reject_wrong_context(seeded: str, sql: str, params: tuple[Any, ...]) -> None:
+    """DB-07: a wrong context is denied for every insert policy, not only for reads."""
+    with (
+        pytest.raises(psycopg.errors.InsufficientPrivilege),
+        as_role(seeded, "app_api", user_id=ALICE, clerk_user_id="user_alice_other") as conn,
+    ):
+        conn.execute(sql, params)
+
+
+def test_insert_policies_reject_missing_context(seeded: str) -> None:
+    for sql, params in (
+        (
+            "INSERT INTO app.audit_log (actor_user_id, action, target_type, outcome) VALUES (%s, 'x', 'p', 'allowed')",
+            (ALICE,),
+        ),
+        ("INSERT INTO app.outbox (id, event_type) VALUES (gen_random_uuid(), 'projects.created')", ()),
+        ("INSERT INTO app.billing_customers (user_id, stripe_customer_id) VALUES (%s, 'cus_noctx')", (ALICE,)),
+    ):
+        with pytest.raises(psycopg.errors.InsufficientPrivilege), as_role(seeded, "app_api") as conn:
+            conn.execute(sql, params)

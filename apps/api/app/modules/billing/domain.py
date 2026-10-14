@@ -106,6 +106,10 @@ def _is_entitling(sub: SubscriptionSnapshot, now: datetime) -> bool:
     return sub.plan_key is not PlanKey.UNKNOWN and sub.status in _ENTITLED_STATUSES and not _has_ended(sub, now)
 
 
+def entitling_subscriptions(subscriptions: Sequence[SubscriptionSnapshot], now: datetime) -> list[SubscriptionSnapshot]:
+    return [s for s in subscriptions if _is_entitling(s, now)]
+
+
 def _latest(subs: Sequence[SubscriptionSnapshot]) -> SubscriptionSnapshot:
     return max(subs, key=lambda s: s.current_period_end.timestamp() if s.current_period_end else 0.0)
 
@@ -121,7 +125,7 @@ def decide(
     Callers pass only the actor's subscriptions, so Pro is never shared with
     other members; membership itself is checked before this is reached.
     """
-    entitling = [s for s in subscriptions if _is_entitling(s, now)]
+    entitling = entitling_subscriptions(subscriptions, now)
     if entitling:
         sub = _latest(entitling)
         return EntitlementDecision(Plan.PRO, f"subscription_{sub.status.value}", sub)

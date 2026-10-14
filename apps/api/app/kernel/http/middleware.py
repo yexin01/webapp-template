@@ -9,10 +9,11 @@ import uuid
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from app.kernel.http.problem import PayloadTooLargeError
+from app.kernel.http.problem import PayloadTooLargeError, internal_error_response
 from app.kernel.request_context import request_id_var
 
 logger = logging.getLogger("app.access")
+errors_logger = logging.getLogger("app.errors")
 
 _REQUEST_ID = re.compile(r"^[A-Za-z0-9._-]{8,64}$")
 
@@ -31,6 +32,12 @@ class RequestContextMiddleware:
 
     The access log records method, route path, status, and duration only:
     no query strings, headers, or bodies.
+
+    It also turns an unhandled exception into the problem-details ``500``
+    here, inside the request context, so the response carries the request ID
+    and security headers. Starlette's own last-resort handler runs outside
+    every middleware, and the ASGI server would then print the raw exception
+    message, unredacted.
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -57,8 +64,24 @@ class RequestContextMiddleware:
                 message["headers"] = headers
             await send(message)
 
+        response_started = False
+
+        async def tracking_send(message: Message) -> None:
+            nonlocal response_started
+            if message["type"] == "http.response.start":
+                response_started = True
+            await send_wrapper(message)
+
         try:
-            await self.app(scope, receive, send_wrapper)
+            await self.app(scope, receive, tracking_send)
+        except Exception as exc:
+            # The log record holds the exception type only (JsonFormatter), and
+            # error reporting scrubs the event; the message never reaches stdout.
+            errors_logger.error("unhandled_exception", exc_info=exc)
+            if not response_started:
+                await internal_error_response()(scope, receive, send_wrapper)
+            # A response that already started cannot be replaced; the server
+            # closes the connection when the app returns without finishing it.
         finally:
             route = scope.get("route")
             logger.info(

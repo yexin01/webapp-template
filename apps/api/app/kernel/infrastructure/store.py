@@ -64,9 +64,17 @@ class PgKernelStore:
         )
         return int(row["hits"]) if row else 0
 
-    def prune_counters(self, older_than: datetime) -> int:
+    def prune_counters(self, older_than: datetime, limit: int) -> int:
         with self._conn.cursor() as cur:
-            cur.execute("DELETE FROM app.rate_limit_counters WHERE window_start < %s", (older_than,))
+            cur.execute(
+                """
+                DELETE FROM app.rate_limit_counters WHERE (bucket_key, window_start) IN (
+                  SELECT bucket_key, window_start FROM app.rate_limit_counters
+                  WHERE window_start < %s LIMIT %s
+                )
+                """,
+                (older_than, limit),
+            )
             return cur.rowcount
 
     # -- Outbox -----------------------------------------------------------------
@@ -129,10 +137,33 @@ class PgKernelStore:
         )
         return row is not None
 
-    def prune_outbox(self, processed_before: datetime) -> int:
+    def expire_outbox_leases(self, now: datetime, max_attempts: int) -> int:
+        """A lease that expires on the last attempt means the worker stopped (a crash or a
+        platform timeout) every time: dead-letter the event instead of leasing it forever."""
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE app.outbox
+                SET status = 'dead', locked_until = NULL,
+                    last_error = 'lease expired on the last attempt: the worker stopped or timed out'
+                WHERE status = 'processing' AND locked_until < %s AND attempts >= %s
+                """,
+                (now, max_attempts),
+            )
+            return cur.rowcount
+
+    def prune_outbox(self, processed_before: datetime, limit: int) -> int:
         """Delete processed events past retention. Dead events stay for inspection."""
         with self._conn.cursor() as cur:
-            cur.execute("DELETE FROM app.outbox WHERE status = 'processed' AND processed_at < %s", (processed_before,))
+            cur.execute(
+                """
+                DELETE FROM app.outbox WHERE id IN (
+                  SELECT id FROM app.outbox WHERE status = 'processed' AND processed_at < %s
+                  ORDER BY processed_at LIMIT %s
+                )
+                """,
+                (processed_before, limit),
+            )
             return cur.rowcount
 
     def outbox_counts(self) -> Mapping[str, int]:

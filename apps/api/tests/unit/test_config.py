@@ -111,3 +111,29 @@ def test_env_example_placeholders_fail_clearly(tmp_path: Path) -> None:
     with pytest.raises(ConfigError) as excinfo:
         load_settings(_env_file=REPO_ROOT / ".env.example")
     assert "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY is malformed" in str(excinfo.value)
+
+
+def test_live_clerk_keys_rejected_in_tests_too() -> None:
+    """ENV-02/ENV-04: the test environment relaxes what is required, never key/environment consistency."""
+    with pytest.raises(ConfigError, match="live key"):
+        make_settings(clerk_secret_key="sk_" + "live_abcdefghijklmnop")
+
+
+def test_clerk_jwt_key_must_be_an_rsa_public_key() -> None:
+    with pytest.raises(ConfigError, match="CLERK_JWT_KEY must be a PEM-encoded RSA public key") as excinfo:
+        make_settings(clerk_jwt_key="not-a-pem-" + SECRET_MARKER)
+    assert SECRET_MARKER not in str(excinfo.value)
+
+
+def test_clerk_jwt_key_accepts_escaped_newlines() -> None:
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    pem = (
+        rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        .public_key()
+        .public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+        .decode()
+    )
+    for value in (pem, pem.strip().replace("\n", "\\n")):
+        assert make_settings(clerk_jwt_key=value).clerk_jwt_key is not None

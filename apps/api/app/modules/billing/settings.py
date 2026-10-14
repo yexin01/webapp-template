@@ -16,6 +16,8 @@ class BillingSettings(BaseModel):
     checkouts_per_user_per_hour: int = Field(default=10, ge=1, le=1_000)
     # The scheduled reconcile-billing job reports divergences; it applies them only when true.
     billing_reconcile_apply: bool = False
+    # Customers the scheduled job checks per run (one Stripe call each), least recently checked first.
+    billing_reconcile_batch_size: int = Field(default=200, ge=1, le=2_000)
 
 
 def billing_problems(s: BillingSettings, core: CoreSettings) -> list[str]:

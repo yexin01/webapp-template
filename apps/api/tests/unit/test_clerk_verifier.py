@@ -113,3 +113,41 @@ def test_jwks_unreachable_fails_closed(keys: tuple[Any, str]) -> None:
     verifier = ClerkTokenVerifier(issuer=ISSUER, authorized_parties=[ORIGIN], jwks_client=DownJwks())  # type: ignore[arg-type]
     with pytest.raises(DependencyUnavailableError):
         verifier.verify(token(keys[0]))
+
+
+def test_a_key_removed_from_the_key_set_stops_verifying(monkeypatch: pytest.MonkeyPatch, keys: tuple[Any, str]) -> None:
+    """AUTH-04: rotating or revoking a key takes effect once the cached key set expires."""
+    import json
+
+    from jwt import PyJWKClient
+    from jwt.algorithms import RSAAlgorithm
+
+    from app.modules.identity.adapters import clerk
+
+    def jwk(private: Any, kid: str) -> dict[str, Any]:
+        data: dict[str, Any] = json.loads(RSAAlgorithm.to_jwk(private.public_key()))
+        return {**data, "kid": kid, "use": "sig", "alg": "RS256"}
+
+    replacement = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    published = {"keys": [jwk(keys[0], "kid1")]}
+
+    def fetch_data(self: PyJWKClient) -> Any:  # no network: serve the published set
+        data = json.loads(json.dumps(published))
+        if self.jwk_set_cache is not None:
+            self.jwk_set_cache.put(data)
+        return data
+
+    monkeypatch.setattr(PyJWKClient, "fetch_data", fetch_data)
+    monkeypatch.setattr(clerk, "_JWKS_LIFESPAN_SECONDS", 0.05)
+    verifier = ClerkTokenVerifier(issuer=ISSUER, authorized_parties=[ORIGIN])
+    now = int(time.time())
+    claims = {"sub": "user_123", "iss": ISSUER, "azp": ORIGIN, "iat": now, "exp": now + 60}
+    old = jwt.encode(claims, keys[0], algorithm="RS256", headers={"kid": "kid1"})
+    assert verifier.verify(old).external_user_id == "user_123"
+
+    published["keys"] = [jwk(replacement, "kid2")]
+    time.sleep(0.1)
+    with pytest.raises(AuthenticationError):
+        verifier.verify(old)
+    new = jwt.encode(claims, replacement, algorithm="RS256", headers={"kid": "kid2"})
+    assert verifier.verify(new).external_user_id == "user_123"

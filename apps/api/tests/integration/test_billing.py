@@ -17,7 +17,8 @@ from typing import Any
 
 import pytest
 
-from app.kernel.errors import DependencyUnavailableError
+from app.kernel.errors import DependencyUnavailableError, InvalidRequestError
+from app.modules.billing.adapters.fakes import InMemoryBillingProvider
 from app.modules.billing.domain import PlanKey, SubscriptionSnapshot, SubscriptionStatus
 from tests.conftest import PRICE_MONTHLY, TEST_STRIPE_WEBHOOK_SECRET, Harness, superuser_query
 
@@ -341,3 +342,238 @@ def test_reconciliation_dry_run_then_apply(harness: Harness) -> None:
     harness.container.billing.service.reconcile(user_id=None, apply=True)
     assert harness.client.get("/api/v1/billing/status", headers=harness.login("user_a")).json()["plan"] == "free"
     assert harness.container.billing.service.reconcile(user_id=None, apply=False).divergences == []
+
+
+def test_concurrent_distinct_events_converge_on_the_latest_stripe_state(harness: Harness) -> None:
+    """BILL-10/BILL-14: a slow sync that read older state cannot overwrite a newer one.
+
+    The first delivery reads 'active' and is slow to finish. Meanwhile the
+    subscription is canceled and a second, distinct event arrives. The
+    customer lock makes the second sync wait and then re-read Stripe.
+    """
+    customer = make_pro(harness, "user_a")
+    provider = harness.billing
+    original = InMemoryBillingProvider.list_customer_subscriptions
+    first_read = threading.Event()
+
+    def slow_first_read(self: InMemoryBillingProvider, customer_id: str) -> list[SubscriptionSnapshot]:
+        seen = original(self, customer_id)
+        if not first_read.is_set():
+            first_read.set()
+            time.sleep(1.0)
+        return seen
+
+    provider.list_customer_subscriptions = slow_first_read.__get__(provider)  # type: ignore[method-assign]
+    first = threading.Thread(target=lambda: send_webhook(harness, event_payload(customer)))
+    first.start()
+    assert first_read.wait(10)
+    provider.set_subscriptions(customer, [snapshot(customer, SubscriptionStatus.CANCELED)])
+    second = send_webhook(harness, event_payload(customer, "customer.subscription.deleted"))
+    first.join(20)
+    assert second.json()["status"] == "processed"
+    assert harness.client.get("/api/v1/billing/status", headers=harness.login("user_a")).json()["plan"] == "free"
+
+
+def test_webhook_for_a_customer_stripe_rejects_is_acknowledged_and_flagged(harness: Harness) -> None:
+    """BILL-11: a permanent Stripe rejection is not retried forever."""
+    customer = make_pro(harness, "user_a")
+    harness.billing.fail_with = lambda: InvalidRequestError("The billing request was rejected.")
+    r = send_webhook(harness, event_payload(customer, event_id="evt_rejected"))
+    assert r.status_code == 200
+    assert r.json()["status"] == "needs_reconciliation"
+    assert superuser_query(
+        harness.database_url, "SELECT status FROM app.billing_events WHERE stripe_event_id='evt_rejected'"
+    ) == [("needs_reconciliation",)]
+
+
+def test_webhook_adopts_a_customer_whose_local_link_was_lost(harness: Harness) -> None:
+    headers = harness.login("user_a")
+    user_id = harness.client.get("/api/v1/me", headers=headers).json()["user_id"]
+    harness.billing.register_customer("cus_lost", uuid.UUID(user_id))
+    harness.billing.set_subscriptions("cus_lost", [snapshot("cus_lost", SubscriptionStatus.ACTIVE)])
+    assert send_webhook(harness, event_payload("cus_lost")).json()["status"] == "processed"
+    assert customer_of(harness, "user_a") == "cus_lost"
+    assert harness.client.get("/api/v1/billing/status", headers=headers).json()["plan"] == "pro"
+
+
+def test_webhook_never_adopts_a_customer_for_a_user_linked_elsewhere(harness: Harness) -> None:
+    customer = make_pro(harness, "user_a")
+    user_id = harness.client.get("/api/v1/me", headers=harness.login("user_a")).json()["user_id"]
+    # A second customer claims the same user in its metadata.
+    harness.billing.register_customer("cus_other", uuid.UUID(user_id))
+    harness.billing.set_subscriptions("cus_other", [snapshot("cus_other", SubscriptionStatus.CANCELED)])
+    assert send_webhook(harness, event_payload("cus_other")).json()["status"] == "needs_reconciliation"
+    assert customer_of(harness, "user_a") == customer
+    assert harness.client.get("/api/v1/billing/status", headers=harness.login("user_a")).json()["plan"] == "pro"
+
+
+def test_webhook_bursts_leave_worker_connections_for_other_work(harness: Harness) -> None:
+    """Synchronization holds a worker connection across Stripe calls, so it is
+    admitted through fewer slots than the worker pool has connections."""
+    customer = make_pro(harness, "user_a")
+    provider = harness.billing
+    original = InMemoryBillingProvider.list_customer_subscriptions
+
+    def slow_list(self: InMemoryBillingProvider, customer_id: str) -> list[SubscriptionSnapshot]:
+        time.sleep(1.5)
+        return original(self, customer_id)
+
+    provider.list_customer_subscriptions = slow_list.__get__(provider)  # type: ignore[method-assign]
+    codes: list[int] = []
+    threads = [
+        threading.Thread(target=lambda: codes.append(send_webhook(harness, event_payload(customer)).status_code))
+        for _ in range(5)
+    ]
+    for t in threads:
+        t.start()
+    time.sleep(0.3)
+    started = time.monotonic()
+    ready = harness.client.get("/api/v1/ready")
+    assert ready.status_code == 200
+    assert time.monotonic() - started < 1.0
+    for t in threads:
+        t.join(30)
+    # Deliveries that found no slot in time asked Stripe to retry; none failed otherwise.
+    assert set(codes) <= {200, 503}
+    assert codes.count(200) >= 2
+
+
+def test_reconciliation_never_overwrites_a_concurrent_webhook(harness: Harness) -> None:
+    """BILL-10: apply-mode reconciliation reads Stripe under the customer lock."""
+    make_pro(harness, "user_a")
+    provider = harness.billing
+    original = InMemoryBillingProvider.list_customer_subscriptions
+    reconcile_read = threading.Event()
+    delivered: list[Any] = []
+
+    def racing_list(self: InMemoryBillingProvider, customer_id: str) -> list[SubscriptionSnapshot]:
+        seen = original(self, customer_id)
+        if not reconcile_read.is_set():
+            reconcile_read.set()
+            # The user cancels while reconciliation is between its read and its write.
+            self.set_subscriptions(customer_id, [snapshot(customer_id, SubscriptionStatus.CANCELED)])
+            webhook = threading.Thread(
+                target=lambda: delivered.append(
+                    send_webhook(harness, event_payload(customer_id, "customer.subscription.deleted"))
+                )
+            )
+            webhook.start()
+            time.sleep(0.5)  # the webhook waits on the customer lock
+        return seen
+
+    provider.list_customer_subscriptions = racing_list.__get__(provider)  # type: ignore[method-assign]
+    harness.container.billing.service.reconcile(user_id=None, apply=True)
+    deadline = time.monotonic() + 20
+    while not delivered and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert delivered[0].json()["status"] == "processed"
+    assert harness.client.get("/api/v1/billing/status", headers=harness.login("user_a")).json()["plan"] == "free"
+
+
+def test_reconciliation_apply_records_the_plan_change(harness: Harness) -> None:
+    customer = make_pro(harness, "user_a")
+    harness.billing.set_subscriptions(customer, [snapshot(customer, SubscriptionStatus.CANCELED)])
+    harness.container.billing.service.reconcile(user_id=None, apply=True)
+    rows = superuser_query(
+        harness.database_url,
+        "SELECT payload->>'plan' FROM app.outbox WHERE event_type = 'billing.entitlement_changed' ORDER BY occurred_at",
+    )
+    assert rows[-1] == ("free",)
+
+
+def test_reconciliation_links_flagged_customers_and_resolves_their_events(harness: Harness) -> None:
+    """BILL-19: events that could not be associated are reconciled once the link can be made."""
+    headers = harness.login("user_a")
+    user_id = harness.client.get("/api/v1/me", headers=headers).json()["user_id"]
+    harness.billing.set_subscriptions("cus_late", [snapshot("cus_late", SubscriptionStatus.ACTIVE)])
+    assert send_webhook(harness, event_payload("cus_late")).json()["status"] == "needs_reconciliation"
+
+    service = harness.container.billing.service
+    assert service.reconcile(user_id=None, apply=False).unlinked_customers == ["cus_late"]
+    # Stripe now shows the customer was created for this user (for example, after a restore).
+    harness.billing.register_customer("cus_late", uuid.UUID(user_id))
+    report = service.reconcile(user_id=None, apply=True)
+    assert report.unlinked_customers == []
+    assert [d.kind for d in report.divergences] == ["missing_locally"]
+    assert harness.client.get("/api/v1/billing/status", headers=headers).json()["plan"] == "pro"
+    assert superuser_query(
+        harness.database_url, "SELECT count(*) FROM app.billing_events WHERE status = 'needs_reconciliation'"
+    ) == [(0,)]
+
+
+def test_reconcile_job_checks_a_bounded_batch_least_recently_checked_first(harness: Harness) -> None:
+    customers = [make_pro(harness, f"user_{i}") for i in range(3)]
+    service = harness.container.billing.service
+    checked: list[str] = []
+    original = InMemoryBillingProvider.list_customer_subscriptions
+
+    def recording(self: InMemoryBillingProvider, customer_id: str) -> list[SubscriptionSnapshot]:
+        checked.append(customer_id)
+        return original(self, customer_id)
+
+    harness.billing.list_customer_subscriptions = recording.__get__(harness.billing)  # type: ignore[method-assign]
+    for _ in range(2):
+        assert service.reconcile_job(apply=False, batch_size=2)["customers"] == 2
+        harness.clock.advance(seconds=1)
+    # Two runs of two cover all three customers: none waits behind the others.
+    assert sorted(set(checked)) == sorted(customers)
+
+
+def test_reconcile_job_skips_customers_stripe_rejects(harness: Harness) -> None:
+    make_pro(harness, "user_a")
+    harness.billing.fail_with = lambda: InvalidRequestError("The billing request was rejected.")
+    summary = harness.container.billing.service.reconcile_job(apply=True, batch_size=10)
+    assert (summary["customers"], summary["rejected"]) == (1, 1)
+
+
+def test_cli_reconcile_prints_divergences(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import argparse
+
+    import app.bootstrap
+    from app import cli
+
+    customer = make_pro(harness, "user_a")
+    harness.billing.set_subscriptions(customer, [snapshot(customer, SubscriptionStatus.CANCELED)])
+    monkeypatch.setattr(app.bootstrap, "bootstrap", lambda: harness.container)
+    monkeypatch.setattr(harness.container, "close", lambda: None)
+    assert cli.cmd_reconcile(argparse.Namespace(user=None, apply=False)) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["divergences"][0]["kind"] == "differs"
+    assert report["divergences"][0]["remote_status"] == "canceled"
+
+
+def test_trialing_and_duplicate_subscriptions_are_logged(harness: Harness, caplog: pytest.LogCaptureFixture) -> None:
+    customer = make_pro(harness, "user_a")
+    harness.billing.set_subscriptions(
+        customer,
+        [
+            snapshot(customer, SubscriptionStatus.ACTIVE),
+            snapshot(customer, SubscriptionStatus.ACTIVE, stripe_subscription_id="sub_second"),
+            snapshot(customer, SubscriptionStatus.TRIALING, stripe_subscription_id="sub_trial"),
+        ],
+    )
+    with caplog.at_level("WARNING"):
+        send_webhook(harness, event_payload(customer))
+    messages = {r.getMessage() for r in caplog.records}
+    assert {"billing_trialing_anomaly", "billing_multiple_entitling_subscriptions"} <= messages
+
+
+def test_unresolvable_flags_never_stop_the_job_from_covering_every_customer(harness: Harness) -> None:
+    customers = [make_pro(harness, f"user_{i}") for i in range(2)]
+    for n in range(4):  # flagged customers that no user can be linked to
+        assert send_webhook(harness, event_payload(f"cus_orphan{n}")).json()["status"] == "needs_reconciliation"
+    checked: list[str] = []
+    original = InMemoryBillingProvider.list_customer_subscriptions
+
+    def recording(self: InMemoryBillingProvider, customer_id: str) -> list[SubscriptionSnapshot]:
+        checked.append(customer_id)
+        return original(self, customer_id)
+
+    harness.billing.list_customer_subscriptions = recording.__get__(harness.billing)  # type: ignore[method-assign]
+    service = harness.container.billing.service
+    for _ in range(2):
+        service.reconcile_job(apply=True, batch_size=2)
+        harness.clock.advance(seconds=1)
+    assert set(customers) <= set(checked)

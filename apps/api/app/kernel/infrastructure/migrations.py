@@ -1,29 +1,49 @@
 """Ordered, checksummed SQL migrations and production-targeting guards (MIG-01, ENV-05).
 
 Applied migrations are recorded with a checksum; editing a migration after it
-has been applied is detected and refused.
+has been applied is detected and refused, and so is a new migration numbered
+before one already applied. Concurrent runs are serialized per migration with
+a transaction-level advisory lock, which also works through a transaction-mode
+pooler.
 """
 
 from __future__ import annotations
 
 import hashlib
+import os
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlparse
 
 import psycopg
+from psycopg.conninfo import conninfo_to_dict
 
 from app.kernel.infrastructure.config import REPO_ROOT
 
 LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "host.docker.internal"})
+_LOCAL_ADDRESSES = frozenset({"127.0.0.1", "::1"})
 
+# The ledger lives in ``public`` so it exists before the first migration. On
+# Supabase, ``public`` is exposed through the Data API with default grants, so
+# row-level security (with no policies) and revoked grants keep it private.
 _LEDGER_DDL = """
 CREATE TABLE IF NOT EXISTS public.app_schema_migrations (
   version    text PRIMARY KEY,
   checksum   text NOT NULL,
   applied_at timestamptz NOT NULL DEFAULT now()
-)
+);
+ALTER TABLE public.app_schema_migrations ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON public.app_schema_migrations FROM PUBLIC;
+DO $$
+DECLARE r text;
+BEGIN
+  FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
+      EXECUTE format('REVOKE ALL ON public.app_schema_migrations FROM %I', r);
+    END IF;
+  END LOOP;
+END $$;
 """
+_LOCK = "SELECT pg_advisory_xact_lock(hashtextextended('app_schema_migrations', 0))"
 
 
 class MigrationError(RuntimeError):
@@ -42,7 +62,23 @@ class Migration:
 
 
 def is_local_database(url: str) -> bool:
-    return (urlparse(url).hostname or "") in LOCAL_HOSTS
+    """True only if every host libpq could connect to is this machine.
+
+    The URL's host is not enough: ``host``/``hostaddr`` query parameters and the
+    ``PGHOST``/``PGHOSTADDR``/``PGSERVICE`` environment variables override it,
+    and a service file can name any server.
+    """
+    try:
+        params = conninfo_to_dict(url)
+    except psycopg.Error:
+        return False
+    if params.get("service") or os.environ.get("PGSERVICE"):
+        return False
+    hosts = str(params.get("host") or os.environ.get("PGHOST") or "localhost")
+    addresses = str(params.get("hostaddr") or os.environ.get("PGHOSTADDR") or "")
+    return all(h in LOCAL_HOSTS or h.startswith("/") for h in hosts.split(",")) and all(
+        a in _LOCAL_ADDRESSES for a in addresses.split(",") if a
+    )
 
 
 def require_local_database(url: str, operation: str) -> None:
@@ -79,23 +115,30 @@ def migrate(url: str, directory: Path | None = None) -> list[str]:
     """Apply pending migrations in order, each in its own transaction."""
     applied_now: list[str] = []
     with psycopg.connect(url, autocommit=True) as conn:
-        conn.execute(_LEDGER_DDL)
-        applied = {
-            row[0]: row[1]
-            for row in conn.execute("SELECT version, checksum FROM public.app_schema_migrations").fetchall()
-        }
+        with conn.transaction():
+            conn.execute(_LOCK)
+            conn.execute(_LEDGER_DDL)
         for migration in discover(directory):
-            known = applied.get(migration.version)
-            if known is not None:
-                if known != migration.checksum:
-                    raise MigrationError(
-                        f"Migration {migration.path.name} was modified after being applied. "
-                        "Create a new migration instead of editing an applied one."
-                    )
-                continue
-            sql = migration.path.read_text(encoding="utf-8")
             with conn.transaction():
-                conn.execute(sql)
+                # Serializes concurrent runs; the ledger is re-read under the lock.
+                conn.execute(_LOCK)
+                rows = conn.execute("SELECT version, checksum FROM public.app_schema_migrations").fetchall()
+                applied: dict[str, str] = {str(version): str(checksum) for version, checksum in rows}
+                known = applied.get(migration.version)
+                if known is not None:
+                    if known != migration.checksum:
+                        raise MigrationError(
+                            f"Migration {migration.path.name} was modified after being applied. "
+                            "Create a new migration instead of editing an applied one."
+                        )
+                    continue
+                latest = max(applied, key=int, default=None)
+                if latest is not None and int(migration.version) < int(latest):
+                    raise MigrationError(
+                        f"Migration {migration.path.name} is numbered before {latest}, which is already applied. "
+                        "Give it a version after the latest applied migration."
+                    )
+                conn.execute(migration.path.read_text(encoding="utf-8"))
                 conn.execute(
                     "INSERT INTO public.app_schema_migrations (version, checksum) VALUES (%s, %s)",
                     (migration.version, migration.checksum),
