@@ -1,0 +1,58 @@
+"""__Module__ use cases."""
+
+from __future__ import annotations
+
+from uuid import UUID
+
+from app.kernel.authorization import authorize, is_allowed
+from app.kernel.errors import ForbiddenError, NotFoundError
+from app.kernel.pagination import PageCursor, bounded_limit
+from app.kernel.ports import AuditEntry, Transactions
+from app.kernel.tenancy import ContextKind, Role, TenantContext
+from app.modules.__module__.domain import (
+    __ENTITY___CREATE,
+    __ENTITY___DELETE,
+    __ENTITY___READ,
+    __Entity__,
+    __Entity__Created,
+    clean_name,
+)
+from app.modules.__module__.ports import __Module__Repository
+
+
+class __Module__Service:
+    def __init__(self, tx: Transactions[__Module__Repository]) -> None:
+        self._tx = tx
+
+    def list(self, ctx: TenantContext, limit: int, after: PageCursor | None) -> list[__Entity__]:
+        authorize(ctx, __ENTITY___READ)
+        with self._tx.as_tenant(ctx) as t:
+            return t.repo.list(ctx, bounded_limit(limit), after)
+
+    def create(self, ctx: TenantContext, name: str) -> __Entity__:
+        authorize(ctx, __ENTITY___CREATE)
+        clean = clean_name(name)
+        with self._tx.as_tenant(ctx) as t:
+            item = t.repo.create(ctx, clean)
+            t.record(__Entity__Created(__entity___id=item.id, user_id=ctx.user_id, org_id=ctx.org_id, context=ctx.kind))
+        return item
+
+    def delete(self, ctx: TenantContext, item_id: UUID, request_id: str | None) -> None:
+        if not is_allowed(ctx, __ENTITY___DELETE):
+            with self._tx.as_tenant(ctx) as t:
+                t.audit(_audit(ctx, item_id, "denied", request_id))
+            raise ForbiddenError()
+        with self._tx.as_tenant(ctx) as t:
+            # Re-check the role inside the writing transaction (TEN-07, NT-06).
+            if ctx.kind is ContextKind.ORGANIZATION and (
+                ctx.org_id is None or t.lock_my_role(ctx.org_id) is not Role.ADMIN
+            ):
+                raise ForbiddenError()
+            if not t.repo.delete(ctx, item_id):
+                raise NotFoundError()
+            if ctx.kind is ContextKind.ORGANIZATION:
+                t.audit(_audit(ctx, item_id, "succeeded", request_id))
+
+
+def _audit(ctx: TenantContext, item_id: UUID, outcome: str, request_id: str | None) -> AuditEntry:
+    return AuditEntry(ctx.user_id, ctx.org_id, __ENTITY___DELETE.name, "__entity__", str(item_id), outcome, request_id)

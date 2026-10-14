@@ -1,0 +1,75 @@
+"""__Module__ module: tenancy, authorization, audit, events, and RLS (generated)."""
+
+from __future__ import annotations
+
+from typing import Any
+
+import psycopg
+import pytest
+
+from app.kernel.tenancy import Role
+from app.modules.identity.domain import ExternalMembership
+from tests.conftest import Harness, superuser_query
+
+pytestmark = pytest.mark.db
+
+ORG = "org_generated"
+PERSONAL = "/api/v1/__path__"
+IN_ORG = f"/api/v1/orgs/{ORG}/__path__"
+
+
+@pytest.fixture
+def people(harness: Harness) -> dict[str, Any]:
+    harness.directory.set("user_admin", [ExternalMembership(ORG, Role.ADMIN)])
+    harness.directory.set("user_member", [ExternalMembership(ORG, Role.MEMBER)])
+    return {name: harness.login(f"user_{name}") for name in ("admin", "member", "outsider")}
+
+
+def test_personal_create_list_delete(harness: Harness, people: dict[str, Any]) -> None:
+    created = harness.client.post(PERSONAL, json={"name": "first"}, headers=people["admin"])
+    assert created.status_code == 201
+    item = created.json()
+    assert item["organization_scoped"] is False
+    listing = harness.client.get(PERSONAL, headers=people["admin"]).json()
+    assert [i["id"] for i in listing["items"]] == [item["id"]]
+    assert harness.client.delete(f"{PERSONAL}/{item['id']}", headers=people["admin"]).status_code == 204
+    assert harness.client.get(PERSONAL, headers=people["admin"]).json()["items"] == []
+
+
+def test_personal_items_are_private(harness: Harness, people: dict[str, Any]) -> None:
+    item = harness.client.post(PERSONAL, json={"name": "mine"}, headers=people["admin"]).json()
+    assert harness.client.get(PERSONAL, headers=people["outsider"]).json()["items"] == []
+    assert harness.client.delete(f"{PERSONAL}/{item['id']}", headers=people["outsider"]).status_code == 404
+
+
+def test_members_create_but_only_admins_delete(harness: Harness, people: dict[str, Any]) -> None:
+    item = harness.client.post(IN_ORG, json={"name": "shared"}, headers=people["member"]).json()
+    assert item["organization_scoped"] is True
+    assert harness.client.delete(f"{IN_ORG}/{item['id']}", headers=people["member"]).status_code == 403
+    assert ("__entity__:delete", "denied") in superuser_query(
+        harness.database_url, "SELECT action, outcome FROM app.audit_log"
+    )
+    assert harness.client.delete(f"{IN_ORG}/{item['id']}", headers=people["admin"]).status_code == 204
+
+
+def test_non_members_cannot_see_the_organization(harness: Harness, people: dict[str, Any]) -> None:
+    assert harness.client.get(IN_ORG, headers=people["outsider"]).status_code == 404
+
+
+def test_create_records_an_event(harness: Harness, people: dict[str, Any]) -> None:
+    harness.client.post(PERSONAL, json={"name": "evented"}, headers=people["admin"])
+    rows = superuser_query(harness.database_url, "SELECT event_type, status FROM app.outbox")
+    assert ("__module__.created", "processed") in rows
+
+
+def test_name_is_validated(harness: Harness, people: dict[str, Any]) -> None:
+    for name in ("", "   ", "x" * 121):
+        r = harness.client.post(PERSONAL, json={"name": name}, headers=people["admin"])
+        assert r.status_code in (400, 422)
+
+
+def test_api_role_without_context_sees_nothing(harness: Harness, people: dict[str, Any]) -> None:
+    harness.client.post(PERSONAL, json={"name": "hidden"}, headers=people["admin"])
+    with psycopg.connect(harness.database_url) as conn, conn.transaction():
+        conn.execute("SET LOCAL ROLE app_api")
+        assert conn.execute("SELECT count(*) FROM app.__module__").fetchone() == (0,)

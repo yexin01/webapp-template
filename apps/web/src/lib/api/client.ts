@@ -116,6 +116,7 @@ export function createApiClient(getToken: TokenGetter) {
     integrations: () => send(client.GET("/api/v1/diagnostics/integrations")),
     runIntegrationCheck: (key: Schemas["IntegrationKey"]) =>
       send(client.POST("/api/v1/diagnostics/integrations/{key}/check", { params: { path: { key } } })),
+    // new:module:client (pnpm new:module adds methods above this line)
   };
 }
 

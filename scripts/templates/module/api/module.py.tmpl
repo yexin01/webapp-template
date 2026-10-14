@@ -1,0 +1,25 @@
+"""Wiring for the __module__ module."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from app.kernel.http.auth import AuthDeps
+from app.kernel.wiring import Contribution, Kernel
+from app.modules.__module__.adapters import Pg__Module__Repository
+from app.modules.__module__.routes import build_router
+from app.modules.__module__.service import __Module__Service
+
+
+@dataclass
+class __Module__Module:
+    service: __Module__Service
+    contribution: Contribution
+
+
+def build___module__(kernel: Kernel, auth: AuthDeps) -> __Module__Module:
+    service = __Module__Service(kernel.transactions(Pg__Module__Repository))
+    # Subscribe outbox handlers here, for example:
+    # kernel.handlers.subscribe(__Entity__Created, "__module__.notify", handler)
+    contribution = Contribution(routers=[build_router(service, auth, kernel.request_transaction)])
+    return __Module__Module(service, contribution)

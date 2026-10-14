@@ -164,12 +164,12 @@ def test_unknown_job_is_not_found(cron: Harness) -> None:
 
 
 def test_job_runs_and_reports_a_summary(cron: Harness) -> None:
-    r = cron.client.get("/api/v1/jobs/prune-rate-limits", headers={"Authorization": f"Bearer {CRON_SECRET}"})
+    r = cron.client.get("/api/v1/jobs/prune-expired", headers={"Authorization": f"Bearer {CRON_SECRET}"})
     assert r.status_code == 200
     body = r.json()
-    assert body["job"] == "prune-rate-limits"
+    assert body["job"] == "prune-expired"
     assert body["ok"] is True
-    assert body["summary"] == {"deleted": 0}
+    assert body["summary"] == {"rate_limit_windows": 0, "outbox_events": 0}
 
 
 def test_jobs_are_not_in_the_public_contract(cron: Harness) -> None:
@@ -217,8 +217,18 @@ def test_cli_lists_jobs(capsys: pytest.CaptureFixture[str], monkeypatch: pytest.
     monkeypatch.setattr(harness.container, "close", lambda: None)
     assert cli.main(["job"]) == 0
     names = {j["name"] for j in json.loads(capsys.readouterr().out)}
-    assert names == {"drain-outbox", "prune-rate-limits", "reconcile-billing", "reconcile-memberships"}
+    assert names == {"drain-outbox", "prune-expired", "reconcile-billing", "reconcile-memberships"}
 
 
 def test_repo_root_is_resolved() -> None:
     assert (Path(REPO_ROOT) / "supabase" / "migrations").is_dir()
+
+
+def test_prune_deletes_processed_events_past_retention_only(cron: Harness) -> None:
+    cron.client.post("/api/v1/projects", json={"name": "old"}, headers=cron.login("user_a"))
+    _record(cron)  # stays pending
+    auth = {"Authorization": f"Bearer {CRON_SECRET}"}
+    assert cron.client.get("/api/v1/jobs/prune-expired", headers=auth).json()["summary"]["outbox_events"] == 0
+    cron.clock.advance(days=cron.container.settings.outbox_retention_days, seconds=1)
+    assert cron.client.get("/api/v1/jobs/prune-expired", headers=auth).json()["summary"]["outbox_events"] == 1
+    assert [r[1] for r in outbox_rows(cron)] == ["pending"]

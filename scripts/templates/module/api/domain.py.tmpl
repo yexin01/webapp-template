@@ -1,0 +1,44 @@
+"""__Module__ rules: permissions, validation, and events. No frameworks."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+from typing import ClassVar
+from uuid import UUID
+
+from app.kernel.authorization import ADMIN_ONLY, ALL_ROLES, Permission
+from app.kernel.errors import InvalidRequestError
+from app.kernel.events import DomainEvent
+from app.kernel.tenancy import ContextKind
+
+MAX_NAME_LENGTH = 120
+
+__ENTITY___READ = Permission("__entity__:read", personal=True, org_roles=ALL_ROLES)
+__ENTITY___CREATE = Permission("__entity__:create", personal=True, org_roles=ALL_ROLES)
+__ENTITY___DELETE = Permission("__entity__:delete", personal=True, org_roles=ADMIN_ONLY)
+
+
+@dataclass(frozen=True, slots=True)
+class __Entity__:
+    id: UUID
+    name: str
+    org_id: UUID | None
+    created_by: UUID
+    created_at: datetime
+
+
+def clean_name(name: str) -> str:
+    clean = name.strip()
+    if not 1 <= len(clean) <= MAX_NAME_LENGTH:
+        raise InvalidRequestError(f"Name must be 1 to {MAX_NAME_LENGTH} characters.")
+    return clean
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class __Entity__Created(DomainEvent):
+    event_type: ClassVar[str] = "__module__.created"
+    __entity___id: UUID
+    user_id: UUID
+    org_id: UUID | None
+    context: ContextKind

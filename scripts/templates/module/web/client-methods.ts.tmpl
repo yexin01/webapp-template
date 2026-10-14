@@ -1,0 +1,22 @@
+    list__Module__: (orgId: string | null, cursor?: string | null) => {
+      const query = { limit: 20, cursor: cursor || undefined };
+      return send(
+        orgId
+          ? client.GET("/api/v1/orgs/{org_id}/__path__", { params: { ...org(orgId), query } })
+          : client.GET("/api/v1/__path__", { params: { query } }),
+      );
+    },
+    create__Entity__: (orgId: string | null, name: string) =>
+      send(
+        orgId
+          ? client.POST("/api/v1/orgs/{org_id}/__path__", { params: org(orgId), body: { name } })
+          : client.POST("/api/v1/__path__", { body: { name } }),
+      ),
+    delete__Entity__: (orgId: string | null, id: string): Promise<void> =>
+      send(
+        orgId
+          ? client.DELETE("/api/v1/orgs/{org_id}/__path__/{item_id}", {
+              params: { path: { org_id: orgId, item_id: id } },
+            })
+          : client.DELETE("/api/v1/__path__/{item_id}", { params: { path: { item_id: id } } }),
+      ),

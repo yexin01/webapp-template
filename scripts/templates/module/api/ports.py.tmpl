@@ -1,0 +1,18 @@
+"""__Module__ persistence port."""
+
+from __future__ import annotations
+
+from typing import Protocol
+from uuid import UUID
+
+from app.kernel.pagination import PageCursor
+from app.kernel.tenancy import TenantContext
+from app.modules.__module__.domain import __Entity__
+
+
+class __Module__Repository(Protocol):
+    """Tenant-scoped storage. Row-level security enforces the tenant again in the database."""
+
+    def list(self, ctx: TenantContext, limit: int, after: PageCursor | None) -> list[__Entity__]: ...
+    def create(self, ctx: TenantContext, name: str) -> __Entity__: ...
+    def delete(self, ctx: TenantContext, item_id: UUID) -> bool: ...

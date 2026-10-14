@@ -56,6 +56,11 @@ class OutboxDispatcher:
         self._max_attempts = max_attempts
         self._lease_seconds = lease_seconds
 
+    def prune(self, retention: timedelta) -> int:
+        """Delete processed events older than ``retention``; they hold internal user IDs."""
+        with self._tx.as_system() as t:
+            return t.repo.prune_outbox(self._clock.now() - retention)
+
     def drain(self, ids: Sequence[UUID] | None = None) -> DrainReport:
         """Dispatch due events: only ``ids`` if given, otherwise up to one batch."""
         report = DrainReport()
@@ -85,7 +90,7 @@ class OutboxDispatcher:
 
         with self._tx.as_system() as t:
             if not failed:
-                t.repo.complete_outbox(event.id)
+                t.repo.complete_outbox(event.id, self._clock.now())
                 report.processed += 1
                 return
             error = "handlers failed: " + ", ".join(failed)

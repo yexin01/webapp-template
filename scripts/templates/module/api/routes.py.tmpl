@@ -1,0 +1,92 @@
+"""__Module__ endpoints, available in personal and organization contexts."""
+
+# No ``from __future__ import annotations`` here: FastAPI must evaluate the
+# dependency aliases defined inside the router factories at definition time.
+
+from datetime import datetime
+from typing import Annotated, Any, Self
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, Query, Response
+from pydantic import BaseModel, Field
+
+from app.kernel.http.auth import AuthDeps
+from app.kernel.http.schemas import StrictInput, errors
+from app.kernel.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, decode_cursor, encode_cursor
+from app.kernel.request_context import request_id_var
+from app.kernel.tenancy import TenantContext
+from app.modules.__module__.domain import MAX_NAME_LENGTH
+from app.modules.__module__.domain import __Entity__ as __Entity__Record
+from app.modules.__module__.service import __Module__Service
+
+Limit = Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)]
+Cursor = Annotated[str | None, Query(max_length=200)]
+ERRORS = errors(401, 403, 404)
+
+
+class __Entity__(BaseModel):
+    id: UUID
+    name: str
+    organization_scoped: bool
+    created_at: datetime
+
+    @classmethod
+    def from_record(cls, record: __Entity__Record) -> Self:
+        return cls(
+            id=record.id,
+            name=record.name,
+            organization_scoped=record.org_id is not None,
+            created_at=record.created_at,
+        )
+
+
+class __Entity__Page(BaseModel):
+    items: list[__Entity__]
+    next_cursor: str | None
+
+
+class __Entity__Create(StrictInput):
+    name: str = Field(min_length=1, max_length=MAX_NAME_LENGTH)
+
+
+def build_router(service: __Module__Service, auth: AuthDeps, request_transaction: Any) -> APIRouter:
+    # Database-only: each request is one request-scoped transaction.
+    router = APIRouter(tags=["__path__"], dependencies=[Depends(request_transaction, scope="function")])
+    Personal = Annotated[TenantContext, Depends(auth.personal)]
+    Organization = Annotated[TenantContext, Depends(auth.organization)]
+
+    def page(ctx: TenantContext, limit: int, cursor: str | None) -> __Entity__Page:
+        records = service.list(ctx, limit, decode_cursor(cursor))
+        last = records[-1] if len(records) == limit else None
+        return __Entity__Page(
+            items=[__Entity__.from_record(r) for r in records],
+            next_cursor=encode_cursor(last.created_at, last.id) if last else None,
+        )
+
+    @router.get("/__path__", response_model=__Entity__Page, responses=ERRORS)
+    def list___module___personal(ctx: Personal, limit: Limit = DEFAULT_PAGE_SIZE, cursor: Cursor = None) -> __Entity__Page:
+        return page(ctx, limit, cursor)
+
+    @router.post("/__path__", response_model=__Entity__, status_code=201, responses=ERRORS)
+    def create___entity___personal(body: __Entity__Create, ctx: Personal) -> __Entity__:
+        return __Entity__.from_record(service.create(ctx, body.name))
+
+    @router.delete("/__path__/{item_id}", status_code=204, responses=ERRORS)
+    def delete___entity___personal(item_id: UUID, ctx: Personal) -> Response:
+        service.delete(ctx, item_id, request_id_var.get())
+        return Response(status_code=204)
+
+    @router.get("/orgs/{org_id}/__path__", response_model=__Entity__Page, responses=ERRORS)
+    def list___module___org(ctx: Organization, limit: Limit = DEFAULT_PAGE_SIZE, cursor: Cursor = None) -> __Entity__Page:
+        return page(ctx, limit, cursor)
+
+    @router.post("/orgs/{org_id}/__path__", response_model=__Entity__, status_code=201, responses=ERRORS)
+    def create___entity___org(body: __Entity__Create, ctx: Organization) -> __Entity__:
+        return __Entity__.from_record(service.create(ctx, body.name))
+
+    @router.delete("/orgs/{org_id}/__path__/{item_id}", status_code=204, responses=ERRORS)
+    def delete___entity___org(item_id: UUID, ctx: Organization) -> Response:
+        service.delete(ctx, item_id, request_id_var.get())
+        return Response(status_code=204)
+
+    return router

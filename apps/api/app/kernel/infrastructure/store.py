@@ -102,13 +102,13 @@ class PgKernelStore:
             for r in sorted(rows, key=lambda r: (r["occurred_at"], r["id"]))
         ]
 
-    def complete_outbox(self, event_id: UUID) -> None:
+    def complete_outbox(self, event_id: UUID, processed_at: datetime) -> None:
         self._one(
             """
-            UPDATE app.outbox SET status = 'processed', processed_at = now(), locked_until = NULL, last_error = NULL
+            UPDATE app.outbox SET status = 'processed', processed_at = %s, locked_until = NULL, last_error = NULL
             WHERE id = %s RETURNING id
             """,
-            (event_id,),
+            (processed_at, event_id),
         )
 
     def fail_outbox(self, event_id: UUID, error: str, retry_at: datetime | None) -> None:
@@ -123,6 +123,12 @@ class PgKernelStore:
             """,
             {"retry_at": retry_at, "error": error[:_MAX_ERROR_LENGTH], "id": event_id},
         )
+
+    def prune_outbox(self, processed_before: datetime) -> int:
+        """Delete processed events past retention. Dead events stay for inspection."""
+        with self._conn.cursor() as cur:
+            cur.execute("DELETE FROM app.outbox WHERE status = 'processed' AND processed_at < %s", (processed_before,))
+            return cur.rowcount
 
     def outbox_counts(self) -> Mapping[str, int]:
         rows = self._all("SELECT status, count(*) AS n FROM app.outbox GROUP BY status")

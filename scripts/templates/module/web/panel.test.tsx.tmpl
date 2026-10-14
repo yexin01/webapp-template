@@ -1,0 +1,51 @@
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+
+import type { Schemas } from "@/lib/api/client";
+
+import { __Module__Panel } from "./__path__-panel";
+
+const api = {
+  list__Module__: vi.fn<(orgId: string | null) => Promise<Schemas["__Entity__Page"]>>(),
+  create__Entity__: vi.fn<(orgId: string | null, name: string) => Promise<Schemas["__Entity__"]>>(),
+  delete__Entity__: vi.fn<(orgId: string | null, id: string) => Promise<void>>(),
+};
+
+vi.mock("@/lib/api/use-api", () => ({ useApi: () => api }));
+
+const item: Schemas["__Entity__"] = {
+  id: "00000000-0000-4000-8000-000000000001",
+  name: "First",
+  organization_scoped: false,
+  created_at: "2026-01-01T00:00:00Z",
+};
+
+beforeEach(() => {
+  api.list__Module__.mockReset().mockResolvedValue({ items: [], next_cursor: null });
+  api.create__Entity__.mockReset().mockResolvedValue(item);
+  api.delete__Entity__.mockReset().mockResolvedValue(undefined);
+});
+
+describe("__path__ panel", () => {
+  it("shows the empty state, then creates an item", async () => {
+    render(<__Module__Panel orgId={null} canDelete />);
+    expect(await screen.findByText("Nothing here yet")).toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText("Name"), "First");
+    await userEvent.click(screen.getByRole("button", { name: "Create" }));
+    expect(api.create__Entity__).toHaveBeenCalledWith(null, "First");
+  });
+
+  it("rejects an empty name without calling the API", async () => {
+    render(<__Module__Panel orgId={null} canDelete />);
+    await userEvent.click(await screen.findByRole("button", { name: "Create" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("1 to 120 characters");
+    expect(api.create__Entity__).not.toHaveBeenCalled();
+  });
+
+  it("hides delete for members", async () => {
+    api.list__Module__.mockResolvedValue({ items: [item], next_cursor: null });
+    render(<__Module__Panel orgId="org_1" canDelete={false} />);
+    expect(await screen.findByText("First")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Delete/ })).toBeNull();
+  });
+});

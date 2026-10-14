@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import Any
 
 from fastapi import Depends, FastAPI
@@ -42,6 +43,8 @@ from app.modules.diagnostics.module import DiagnosticsModule, build_diagnostics
 from app.modules.identity.module import IdentityModule, build_identity
 from app.modules.llm.module import LLMModule, build_llm
 from app.modules.projects.module import ProjectsModule, build_projects
+
+# new:module:imports (pnpm new:module adds imports above this line)
 from app.settings import Settings, load_settings
 
 API_TITLE = "SaaS Template API"
@@ -56,6 +59,7 @@ class Container:
     projects: ProjectsModule
     llm: LLMModule
     diagnostics: DiagnosticsModule
+    # new:module:fields
     closers: list[Callable[[], None]] = field(default_factory=list)
 
     def contributions(self) -> list[Contribution]:
@@ -65,6 +69,7 @@ class Container:
             self.projects.contribution,
             self.llm.contribution,
             self.diagnostics.contribution,
+            # new:module:contributions
         ]
 
     def close(self) -> None:
@@ -104,19 +109,22 @@ def build_container(settings: Settings, **overrides: Any) -> Container:
         on_record=note_recorded_event,
         request_transaction=request_transaction(database),
     )
-    jobs.register(Job("drain-outbox", "Dispatch outbox events left after requests.", "15 * * * *", _drain(outbox)))
+    # Daily schedules work on every Vercel plan; tighten drain-outbox where the plan allows.
+    jobs.register(Job("drain-outbox", "Dispatch outbox events left after requests.", "15 2 * * *", _drain(outbox)))
+    retention = timedelta(days=settings.outbox_retention_days)
     jobs.register(
         Job(
-            "prune-rate-limits",
-            "Delete expired rate-limit windows.",
+            "prune-expired",
+            "Delete expired rate-limit windows and processed outbox events past retention.",
             "0 5 * * *",
-            lambda: {"deleted": rate_limiter.prune()},
+            lambda: {"rate_limit_windows": rate_limiter.prune(), "outbox_events": outbox.prune(retention)},
         )
     )
 
     identity = build_identity(settings, settings, kernel, overrides)
     billing = build_billing(settings, settings, kernel, identity.auth, overrides)
     projects = build_projects(kernel, identity.auth)
+    # new:module:build
     llm = build_llm(settings, kernel, identity.auth, overrides)
     probes = [
         DatabaseProbe(describe_database(settings), store),
@@ -127,7 +135,17 @@ def build_container(settings: Settings, **overrides: Any) -> Container:
         ErrorReportingProbe(describe_error_reporting(settings), error_reporter),
     ]
     diagnostics = build_diagnostics(settings, settings, kernel, identity.auth, probes)
-    return Container(settings, kernel, identity, billing, projects, llm, diagnostics, closers)
+    return Container(
+        settings=settings,
+        kernel=kernel,
+        identity=identity,
+        billing=billing,
+        projects=projects,
+        llm=llm,
+        diagnostics=diagnostics,
+        # new:module:container
+        closers=closers,
+    )
 
 
 def create_app(container: Container) -> FastAPI:

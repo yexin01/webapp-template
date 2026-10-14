@@ -94,6 +94,7 @@ class CoreSettings(BaseSettings):
     cron_secret: SecretStr | None = None
     outbox_batch_size: int = Field(default=100, ge=1, le=1_000)
     outbox_max_attempts: int = Field(default=10, ge=1, le=100)
+    outbox_retention_days: int = Field(default=7, ge=1, le=365)
 
     @model_validator(mode="before")
     @classmethod
