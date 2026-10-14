@@ -11,8 +11,9 @@
  *   pnpm new:module <name> [--entity EntityName] [--dry-run]
  *
  * <name> is snake_case and plural: notes, time_entries. The generated code
- * follows the projects module. `pnpm test:new-module` checks this generator
- * end to end.
+ * follows the projects module. Names that would collide with existing code
+ * are refused before anything is written. `pnpm test:new-module` checks this
+ * generator end to end.
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
@@ -26,12 +27,39 @@ const RESERVED = new Set([
   "api", "app", "audit", "billing", "diagnostics", "events", "identity", "jobs", "kernel", "llm", "modules",
   "organizations", "outbox", "projects", "settings", "subscriptions", "users", "webhooks",
 ]);
+// Python's keyword.kwlist: such a module cannot be imported, and such an entity cannot be declared.
+const PYTHON_KEYWORDS = new Set([
+  "False", "None", "True", "and", "as", "assert", "async", "await", "break", "class", "continue", "def", "del",
+  "elif", "else", "except", "finally", "for", "from", "global", "if", "import", "in", "is", "lambda", "nonlocal",
+  "not", "or", "pass", "raise", "return", "try", "while", "with", "yield",
+]);
+
+// PostgreSQL reserved key words: the module name is the table name, which the
+// generated policy uses unquoted (`WHERE m.org_id = <name>.org_id`).
+const POSTGRES_RESERVED = new Set([
+  "all", "analyse", "analyze", "and", "any", "array", "as", "asc", "asymmetric", "authorization", "binary", "both",
+  "case", "cast", "check", "collate", "collation", "column", "concurrently", "constraint", "create", "cross",
+  "current_catalog", "current_date", "current_role", "current_schema", "current_time", "current_timestamp",
+  "current_user", "default", "deferrable", "desc", "distinct", "do", "else", "end", "except", "false", "fetch", "for",
+  "foreign", "freeze", "from", "full", "grant", "group", "having", "ilike", "in", "initially", "inner", "intersect",
+  "into", "is", "isnull", "join", "lateral", "leading", "left", "like", "limit", "localtime", "localtimestamp",
+  "natural", "not", "notnull", "null", "offset", "on", "only", "or", "order", "outer", "overlaps", "placing",
+  "primary", "references", "returning", "right", "select", "session_user", "similar", "some", "symmetric",
+  "system_user", "table", "tablesample", "then", "to", "trailing", "true", "union", "unique", "user", "using",
+  "variadic", "verbose", "when", "where", "window", "with",
+]);
 
 function fail(message) {
   console.error(message);
   console.error("Usage: pnpm new:module <name> [--entity EntityName] [--dry-run]   e.g. pnpm new:module notes");
   process.exit(2);
 }
+
+const read = (rel) => readFileSync(path.join(root, rel), "utf8");
+const tree = (rel) => readdirSync(path.join(root, rel), { recursive: true }).filter((f) => !f.includes("__pycache__"));
+/** Identifiers in Python source, ignoring comments and string literals. */
+const pythonNames = (source) =>
+  new Set(source.replace(/("""|''')[\s\S]*?\1|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|#.*/g, " ").match(/\b[A-Za-z_]\w*/g));
 
 const { values, positionals } = parseArgs({
   allowPositionals: true,
@@ -42,6 +70,12 @@ const dryRun = values["dry-run"];
 
 if (!name || !/^[a-z][a-z0-9]*(_[a-z0-9]+)*$/.test(name) || name.length > 30) {
   fail("<name> must be snake_case, start with a letter, and be at most 30 characters.");
+}
+if (PYTHON_KEYWORDS.has(name)) fail(`"${name}" is a Python keyword.`);
+if (POSTGRES_RESERVED.has(name)) fail(`"${name}" is a PostgreSQL reserved word, so it cannot name the table.`);
+if (existsSync(path.join(root, "apps/api/app/modules", name))) fail(`"${name}" is an existing module.`);
+if (tree("apps/api/app/kernel").some((f) => path.basename(f, ".py") === name)) {
+  fail(`"${name}" is a kernel name (apps/api/app/kernel).`);
 }
 if (RESERVED.has(name)) fail(`"${name}" is reserved.`);
 
@@ -55,19 +89,77 @@ if (Entity === undefined) {
   else fail(`Cannot derive a singular entity name from "${name}"; pass --entity, e.g. --entity ${pascal(name)}Item.`);
 }
 if (!/^[A-Z][A-Za-z0-9]{1,40}$/.test(Entity)) fail("--entity must be PascalCase, e.g. TimeEntry.");
-if (Entity === pascal(name)) fail("The entity name must differ from the module name; pass --entity.");
+for (const id of [Entity, snake(Entity)]) {
+  if (PYTHON_KEYWORDS.has(id)) fail(`--entity ${Entity}: "${id}" is a Python keyword.`);
+}
+const M = pascal(name);
+if ([M, `${M}Module`, `${M}Service`, `${M}Repository`, `Pg${M}Repository`].includes(Entity)) {
+  fail("The entity name must differ from the module name and its generated classes; pass --entity.");
+}
 
 const tokens = {
   __ENTITY__: snake(Entity).toUpperCase(),
   __Entity__: Entity,
   __entity__: snake(Entity),
-  __Module__: pascal(name),
+  __Module__: M,
   __module__: name,
   __path__: name.replaceAll("_", "-"),
   __label__: name.replaceAll("_", " "),
 };
 const render = (text) => Object.entries(tokens).reduce((out, [token, value]) => out.replaceAll(token, value), text);
-const template = (rel) => render(readFileSync(path.join(templates, rel), "utf8"));
+const raw = (rel) => readFileSync(path.join(templates, rel), "utf8");
+const template = (rel) => render(raw(rel));
+
+// -- Collisions -------------------------------------------------------------------
+// Generated names must be new. Otherwise bootstrap.py shadows a local, field,
+// or import; FastAPI renames both clashing schemas (breaking `Schemas["X"]` in
+// existing web code); or the generated code shadows its own imports. Schema
+// names stay readable (`TimeEntry`, as in the projects module) instead of being
+// namespaced, so a clash is refused and the user picks a distinct --entity.
+
+const wiring = pythonNames(read("apps/api/app/bootstrap.py"));
+for (const id of [name, `build_${name}`, `${M}Module`]) {
+  if (wiring.has(id)) fail(`"${name}" would collide with "${id}" in apps/api/app/bootstrap.py; pick another name.`);
+}
+const contract = JSON.parse(read("packages/contracts/openapi.json"));
+if (Object.keys(contract.paths).some((p) => p.split("/")[3] === tokens.__path__)) {
+  fail(`The route /api/v1/${tokens.__path__} is already used (packages/contracts/openapi.json); pick another name.`);
+}
+const feature = `apps/web/src/features/${tokens.__path__}`;
+if (existsSync(path.join(root, feature))) fail(`${feature} already exists; pick another name.`);
+
+const defined = new Map();
+for (const schema of Object.keys(contract.components?.schemas ?? {})) {
+  defined.set(schema.replace(/-(Input|Output)$/, "").split("__").at(-1), "packages/contracts/openapi.json");
+}
+for (const file of tree("apps/api/app").filter((f) => f.endsWith(".py"))) {
+  for (const [, cls] of read(`apps/api/app/${file}`).matchAll(/^\s*class (\w+)/gm)) {
+    if (!defined.has(cls)) defined.set(cls, `apps/api/app/${file}`);
+  }
+}
+const clash = (reason) => fail(`${reason}. Pass a distinct --entity, e.g. --entity ${Entity}Item.`);
+const schemas = [Entity, `${Entity}Page`, `${Entity}Create`];
+for (const id of schemas) {
+  if (defined.has(id)) clash(`"${id}" is already defined in ${defined.get(id)}`);
+}
+// Names the generated module imports or declares itself, such as Response, Field, or Organization.
+const used = new Set(
+  readdirSync(path.join(templates, "api"))
+    .flatMap((f) => [...pythonNames(raw(`api/${f}`))])
+    .filter((id) => !/__\w+__/.test(id)),
+);
+for (const id of [...schemas, `${Entity}Created`, `${Entity}Record`]) {
+  if (used.has(id)) clash(`"${id}" would shadow a name the generated module uses`);
+}
+if (pythonNames(raw("api/domain.py.tmpl")).has(`${tokens.__entity__}_id`)) {
+  clash(`"${tokens.__entity__}_id" would duplicate a field of the ${Entity}Created event`);
+}
+const client = read("apps/web/src/lib/api/client.ts");
+const hasMethod = (id) => new RegExp(`\\b${id}\\s*:`).test(client);
+if (hasMethod(`list${M}`)) fail(`apps/web/src/lib/api/client.ts already has list${M}; pick another name.`);
+for (const id of [`create${Entity}`, `delete${Entity}`]) {
+  if (hasMethod(id)) clash(`apps/web/src/lib/api/client.ts already has ${id}`);
+}
 
 // -- Plan -------------------------------------------------------------------------
 
@@ -81,7 +173,6 @@ const last = migrations.at(-1)?.slice(0, 14) ?? "0";
 const stamp = now > last ? now : String(BigInt(last) + 1n);
 
 const api = `apps/api/app/modules/${name}`;
-const feature = `apps/web/src/features/${tokens.__path__}`;
 const files = {
   [`${api}/__init__.py`]: template("api/__init__.py.tmpl"),
   [`${api}/domain.py`]: template("api/domain.py.tmpl"),
@@ -100,7 +191,6 @@ for (const rel of Object.keys(files)) {
   if (existsSync(path.join(root, rel))) fail(`${rel} already exists.`);
 }
 
-const M = tokens.__Module__;
 const edits = [
   ["apps/api/app/bootstrap.py", "# new:module:imports", `from app.modules.${name}.module import ${M}Module, build_${name}\n`],
   ["apps/api/app/bootstrap.py", "    # new:module:fields", `    ${name}: ${M}Module\n`],

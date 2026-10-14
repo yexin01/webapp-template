@@ -2,16 +2,18 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import type { Schemas } from "@/lib/api/client";
+import { ApiError } from "@/lib/api/errors";
 
 import { __Module__Panel } from "./__path__-panel";
 
 const api = {
-  list__Module__: vi.fn<(orgId: string | null) => Promise<Schemas["__Entity__Page"]>>(),
+  list__Module__: vi.fn<(orgId: string | null, cursor?: string | null) => Promise<Schemas["__Entity__Page"]>>(),
   create__Entity__: vi.fn<(orgId: string | null, name: string) => Promise<Schemas["__Entity__"]>>(),
   delete__Entity__: vi.fn<(orgId: string | null, id: string) => Promise<void>>(),
 };
 
 vi.mock("@/lib/api/use-api", () => ({ useApi: () => api }));
+vi.mock("next/navigation", () => ({ usePathname: () => "/dashboard" }));
 
 const item: Schemas["__Entity__"] = {
   id: "00000000-0000-4000-8000-000000000001",
@@ -19,11 +21,16 @@ const item: Schemas["__Entity__"] = {
   organization_scoped: false,
   created_at: "2026-01-01T00:00:00Z",
 };
+const older: Schemas["__Entity__"] = { ...item, id: "00000000-0000-4000-8000-000000000002", name: "Older" };
 
 beforeEach(() => {
   api.list__Module__.mockReset().mockResolvedValue({ items: [], next_cursor: null });
   api.create__Entity__.mockReset().mockResolvedValue(item);
   api.delete__Entity__.mockReset().mockResolvedValue(undefined);
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 describe("__path__ panel", () => {
@@ -33,12 +40,15 @@ describe("__path__ panel", () => {
     await userEvent.type(screen.getByLabelText("Name"), "First");
     await userEvent.click(screen.getByRole("button", { name: "Create" }));
     expect(api.create__Entity__).toHaveBeenCalledWith(null, "First");
+    expect(await screen.findByText("First")).toBeInTheDocument();
+    expect(screen.getByLabelText("Name")).toHaveValue("");
   });
 
   it("rejects an empty name without calling the API", async () => {
     render(<__Module__Panel orgId={null} canDelete />);
     await userEvent.click(await screen.findByRole("button", { name: "Create" }));
     expect(screen.getByRole("alert")).toHaveTextContent("1 to 120 characters");
+    expect(screen.getByLabelText("Name")).toHaveAttribute("aria-invalid", "true");
     expect(api.create__Entity__).not.toHaveBeenCalled();
   });
 
@@ -47,5 +57,46 @@ describe("__path__ panel", () => {
     render(<__Module__Panel orgId="org_1" canDelete={false} />);
     expect(await screen.findByText("First")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Delete/ })).toBeNull();
+  });
+
+  it("loads the next page from the cursor", async () => {
+    api.list__Module__
+      .mockResolvedValueOnce({ items: [item], next_cursor: "cursor-1" })
+      .mockResolvedValueOnce({ items: [older], next_cursor: null });
+    render(<__Module__Panel orgId="org_1" canDelete={false} />);
+    await userEvent.click(await screen.findByRole("button", { name: "Load more" }));
+    expect(api.list__Module__).toHaveBeenLastCalledWith("org_1", "cursor-1");
+    expect(await screen.findByText("Older")).toBeInTheDocument();
+    expect(screen.getByText("First")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
+  });
+
+  it("deletes only after confirmation", async () => {
+    api.list__Module__.mockResolvedValue({ items: [item], next_cursor: null });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+    render(<__Module__Panel orgId="org_1" canDelete />);
+    const remove = await screen.findByRole("button", { name: "Delete First" });
+    await userEvent.click(remove);
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("First"));
+    expect(api.delete__Entity__).not.toHaveBeenCalled();
+    await userEvent.click(remove);
+    expect(api.delete__Entity__).toHaveBeenCalledWith("org_1", item.id);
+    expect(await screen.findByText("Nothing here yet")).toBeInTheDocument();
+  });
+
+  it("presents failed actions with the shared error copy, not as a name error", async () => {
+    api.list__Module__
+      .mockResolvedValueOnce({ items: [item], next_cursor: "cursor-1" })
+      .mockRejectedValueOnce(ApiError.network());
+    api.delete__Entity__.mockRejectedValue(new ApiError(403, "FORBIDDEN", "Only admins can delete.", null));
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<__Module__Panel orgId="org_1" canDelete />);
+    await userEvent.click(await screen.findByRole("button", { name: "Load more" }));
+    expect(await screen.findByText("Temporarily unavailable")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Delete First" }));
+    expect(await screen.findByText("Not allowed")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Only admins can delete.");
+    expect(screen.getByText("First")).toBeInTheDocument();
+    expect(screen.getByLabelText("Name")).not.toHaveAttribute("aria-invalid");
   });
 });
