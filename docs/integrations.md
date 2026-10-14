@@ -10,6 +10,38 @@ Each integration has a mode in `.env`:
 
 Results obtained with `mock` never prove connectivity (spec TEST-04).
 
+## Checking your setup: the Integrations page
+
+After filling in `.env` and running `pnpm dev`, sign in and open `/integrations`.
+
+**Server checks.** Each server check uses the keys in `.env`:
+
+| Service | What the check does | Side effects |
+|---|---|---|
+| PostgreSQL | Confirms queries run as `app_api` with row-level security and the tenant context applied | None |
+| Clerk | Reads your organization memberships from the Clerk Backend API (your session token was already verified) | None |
+| Stripe | Retrieves both Pro prices and checks they are active, recurring monthly and yearly, in one currency, and in the right mode | None |
+| LLM provider | Retrieves the model's metadata (no tokens generated) | None; counts toward the LLM check limits |
+| PostHog | Sends the allowlisted event `integration_test_sent` and flushes it | One event in your project |
+| Sentry | Sends a synthetic `IntegrationTestError` and flushes it | One issue in your project |
+
+**Browser checks.** These show the Clerk session state and send a PostHog event and a Sentry error from the browser SDKs.
+
+**Outcomes:**
+
+- **Passed**: the provider confirmed the request.
+- **Sent (unconfirmed)**: the SDK sent it, but the provider gives no confirmation. Look it up in the dashboard; Sentry checks show the event ID.
+- **Failed**: shows the reason and an error code.
+- **Skipped**: the integration is `mock` or `disabled`.
+
+**Access.** Diagnostics are an operator tool:
+
+- Set `DIAGNOSTICS_OPERATOR_IDS` to your Clerk user ID or IDs.
+- With `APP_ENV=local` and no operators listed, any signed-in user may use them.
+- Everyone else gets "not available".
+- Checks are rate-limited (`DIAGNOSTICS_RUNS_PER_USER_PER_MINUTE`, `DIAGNOSTICS_RUNS_GLOBAL_PER_DAY`).
+- They are off in production unless `DIAGNOSTICS_ENABLED=true`.
+
 | Service | Mode variable | Needed for |
 |---|---|---|
 | Clerk | (always on outside tests) | Sign-in, organizations |
@@ -40,7 +72,7 @@ Sign-in and sign-up pages live at `/sign-in` and `/sign-up`.
 
 1. Use a **sandbox** or test mode account.
 2. Create a **Pro** product with two recurring prices: monthly and yearly. Put the price IDs in `STRIPE_PRICE_PRO_MONTHLY` and `STRIPE_PRICE_PRO_YEARLY`. Only these two prices are purchasable, and subscriptions to any other price never grant Pro.
-3. Put the test secret key in `STRIPE_SECRET_KEY` (`sk_test_…`, or a restricted `rk_test_…` key). A restricted key needs write access to Customers, Checkout Sessions, and Customer Portal sessions, and read access to Subscriptions.
+3. Put the test secret key in `STRIPE_SECRET_KEY` (`sk_test_…`, or a restricted `rk_test_…` key). A restricted key needs write access to Customers, Checkout Sessions, and Customer Portal sessions, and read access to Subscriptions and Prices (Prices is used by the Integrations page check).
 4. Configure the **Customer Portal** (Settings → Billing → Customer portal), following ADR-0001 / DEC-010:
    - Allow updating payment methods and viewing invoices.
    - Allow cancellation **at the end of the billing period**.
@@ -130,5 +162,6 @@ Record evidence in `dev-docs/evidence/` (spec §20). Do not paste keys, tokens, 
    - Upgrade (monthly), then cancel at period end in the portal.
    - Advance a test clock past the period end, and confirm the plan becomes Free.
    - Repeat with a declining test card to observe `past_due`, then `unpaid`.
-3. **Sentry / PostHog**: trigger a test error and a tracked event, then confirm in the dashboards that no emails, tokens, or query strings were captured.
-4. **LLM**: run the check from the dashboard and confirm `ok: true`.
+3. **Sentry / PostHog**: use the server and browser checks on `/integrations`. Then confirm in the dashboards that the events arrived, and that no emails, tokens, or query strings were captured.
+4. **LLM**: run the LLM check on `/integrations` and confirm it passes.
+5. **All**: select **Run all server checks** on `/integrations`. Record each outcome, with mode `sandbox`, in your evidence file.

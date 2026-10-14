@@ -27,9 +27,9 @@ Read it before making changes. Do not restate its requirements in other files; l
 pnpm db:up                       # local PostgreSQL for API tests
 pnpm lint && pnpm typecheck
 pnpm test && pnpm test:e2e       # API + web; e2e browser/sandbox suites need E2E_SANDBOX=1
-pnpm contracts:check
+pnpm contracts:check && pnpm test:init-template
 pnpm build && pnpm check:bundle-secrets
 pnpm security:audit && pnpm security:licenses
 ```
 
-Record results in `dev-docs/evidence/` and label each integration as mocked, sandbox, or live.
+Record results in `dev-docs/evidence/` and label each integration as mocked, sandbox, or live. With sandbox keys in `.env`, the `/integrations` page runs a live check per service.

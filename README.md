@@ -4,6 +4,13 @@ An open-source SaaS starter: a **Next.js** (TypeScript, strict) web app and a **
 
 It is secure by default: every API operation is authorized on the server, tenants are isolated by the database as well as the application, and Pro access is granted only from verified Stripe data.
 
+A minimal UI exercises every integration:
+
+- sign-in and organizations;
+- a per-tenant project list;
+- Free/Pro billing and a Pro-only page;
+- an **Integrations** page (`/integrations`) that shows each service's mode and runs a live check against it.
+
 > **Status:** pre-release. Local development and the automated test suites work. Deployment to Vercel has **not** been verified yet (DEC-001), and external integrations have been exercised only with mocks. See [Verification status](#verification-status).
 
 ## Architecture
@@ -40,6 +47,7 @@ You also need your **own** accounts for the services you enable. The automated t
 ```bash
 pnpm bootstrap             # install JS and Python dependencies from lockfiles
 pnpm init-template --name "Your Product" --slug your-product   # optional: rename, creates .env
+                           # add --db-port 54330 to run several projects side by side
 cp -n .env.example .env    # if you skipped init-template
 pnpm db:up                 # start local PostgreSQL (127.0.0.1:54329)
 pnpm db:migrate            # apply migrations
@@ -52,6 +60,15 @@ pnpm dev                   # API on :8000, web on :3000
 ```
 
 Open http://localhost:3000. The API refuses to start if configuration is missing or inconsistent, and the error names the variables involved without printing their values.
+
+Then open **http://localhost:3000/integrations** and select **Run all server checks**. Each service reports one of:
+
+- **Passed**: the provider confirmed the request.
+- **Sent (unconfirmed)**: handed to the SDK, but the provider does not confirm delivery.
+- **Failed**: with a reason.
+- **Skipped**: mock or disabled; nothing was contacted.
+
+Diagnostics are open to any signed-in user only when `APP_ENV=local` and `DIAGNOSTICS_OPERATOR_IDS` is empty. Everywhere else, list operator Clerk user IDs in `DIAGNOSTICS_OPERATOR_IDS`. In production they are off unless `DIAGNOSTICS_ENABLED=true`.
 
 ## Commands
 
@@ -69,13 +86,16 @@ Open http://localhost:3000. The API refuses to start if configuration is missing
 | `pnpm db:migrate` | Apply pending migrations (local databases only unless `--allow-remote`) |
 | `pnpm db:seed` | Load deterministic synthetic data (local only) |
 | `pnpm db:reset` | Drop, migrate, and seed the **local** database |
+| `pnpm db:restore-drill` | Dump the local database, restore it into a scratch database, and verify it |
+| `pnpm test:init-template` | Check that `init-template` leaves no original identifiers (runs on temporary copies) |
+| `pnpm perf:server` / `pnpm perf:run` | Local performance server and k6 scenarios ([perf/README.md](perf/README.md)) |
 | `pnpm billing:reconcile` | Compare billing records with Stripe (dry run; add `--apply`) |
 
 ## Testing
 
 - **API (`apps/api/tests`)**:
   - unit tests (entitlement matrix, authorization policy, configuration safety, token verification, adapters, redaction);
-  - integration tests against a throwaway PostgreSQL database (row-level security, negative security tests NT-01 to NT-12, webhooks, concurrency, resilience, telemetry leakage, migration safety).
+  - integration tests against a throwaway PostgreSQL database (row-level security, negative security tests NT-01 to NT-12, webhooks, concurrency, resilience, telemetry leakage, migration safety, query counts, integration diagnostics).
 - **Web (`apps/web`)**: Vitest component and library tests; Playwright end-to-end tests with axe accessibility checks.
 
 Tests never use your `.env`. Database tests create and drop their own database, and refuse non-local servers.
@@ -85,9 +105,11 @@ Tests never use your `.env`. Database tests create and drop their own database, 
 | Area | Status |
 |---|---|
 | Unit, integration, and security tests | Run locally (see the latest evidence in `dev-docs/evidence/`) |
-| Clerk, Stripe, Supabase, PostHog, Sentry, LLM | **Mocked only.** Sandbox verification is pending (DEC-006) |
+| Clerk, Stripe, Supabase, PostHog, Sentry, LLM | **Mocked only.** Sandbox verification is pending (DEC-006); the `/integrations` page is the tool for it |
 | Vercel deployment (Python runtime) | **Not verified** (DEC-001) |
-| Performance targets | **Not defined** (DEC-003) |
+| Performance | Local baseline recorded; targets **not defined** (DEC-003) |
+| Backup and restore | Local restore drill only; objectives **not defined** (DEC-005) |
+| Data retention, deletion, export | Inventory in [docs/data-inventory.md](docs/data-inventory.md); policy **not defined** (DEC-004) |
 
 ## Troubleshooting
 
@@ -99,6 +121,8 @@ Tests never use your `.env`. Database tests create and drop their own database, 
 | Signed in but API returns 401 | Add your web origin to `CLERK_AUTHORIZED_PARTIES` |
 | Organization pages return 404 | You are not a member in Clerk, or the API cannot reach Clerk; check `CLERK_SECRET_KEY` |
 | Upgrade succeeded but plan still Free | Webhooks are not reaching the API; see the Stripe CLI section in docs/integrations.md |
+| Integrations page says diagnostics are not available | Add your Clerk user ID to `DIAGNOSTICS_OPERATOR_IDS`, or use `APP_ENV=local` |
+| A check is "Skipped" | That integration is in `mock` or `disabled` mode; set it to `sandbox` in `.env` |
 
 ## Contributing and security
 

@@ -41,6 +41,7 @@ const PORT_FILES = [
   "docs/integrations.md",
   "apps/api/tests/conftest.py",
   "apps/web/playwright.config.ts",
+  "perf/server.py",
 ];
 
 function usage(message) {

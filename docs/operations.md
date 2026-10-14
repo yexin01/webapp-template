@@ -98,6 +98,14 @@ Vulnerability reports from outside the team follow [SECURITY.md](../SECURITY.md)
 
 Required before production: confirm the backup capabilities of your Supabase plan, approve the objectives, and perform a timed restore into an isolated project with synthetic data. Record the results in `dev-docs/evidence/`.
 
+**Local restore drill.** `pnpm db:restore-drill` dumps the local Docker database and restores it into a scratch database. It then verifies:
+
+- per-table row counts and content checksums;
+- row-level-security flags;
+- the migration ledger.
+
+It proves that the dump format and the restore procedure work for this schema. It says nothing about a hosted provider's backups or recovery objectives.
+
 ## Data retention and deletion
 
 > **DEC-004 is open.** Account deletion, data export, and retention periods have not been defined.
@@ -107,6 +115,18 @@ Current behavior:
 - `user.deleted` from Clerk revokes all of the user's organization memberships. Application data and billing records are retained.
 - Webhook ledgers store event IDs and types only, not payloads.
 - Telemetry retention follows each provider's project settings.
+
+## Integration diagnostics
+
+The `/integrations` page and `/api/v1/diagnostics/*` expose configuration facts and call external services.
+
+- **Access.** Only Clerk user IDs listed in `DIAGNOSTICS_OPERATOR_IDS` may use them. The one exception is `APP_ENV=local` with no operators listed.
+- **Production.** They are disabled unless `DIAGNOSTICS_ENABLED=true`.
+- **When disabled or not permitted**, every diagnostics route returns `404`.
+
+## Performance testing
+
+See [perf/README.md](../perf/README.md). Local runs are for relative comparisons only. Runs against deployed environments need an owner-approved run plan, and production load testing is prohibited without explicit authorization.
 
 ## Python runtime limitations
 
