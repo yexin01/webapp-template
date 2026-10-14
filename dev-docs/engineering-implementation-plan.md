@@ -44,7 +44,7 @@ Requirements carry stable identifiers (for example `AUTH-03`). Identifiers are n
 | Performance test plan | §15.2 of this document | Maintained here |
 | Requirements traceability matrix | §21 of this document | Maintained here |
 | Architecture Decision Records | `dev-docs/adr/NNNN-short-title.md` | ADR-0001 (approved recommendations for DEC-007 to DEC-012); ADR-0002 (DEC-002 option (b), DEC-009 value, DEC-012 contacts, DEC-003 to DEC-005 adopter-owned); ADR-0003 (modular monolith, request-scoped transactions, outbox, jobs, generator) |
-| Evidence records | `dev-docs/evidence/` | `2026-10-14-local-verification.md`, `2026-10-14-diagnostics-perf-local.md`, `2026-10-14-adr-0002-perf07-local.md`, `2026-10-14-adr-0003-modular-architecture.md`, and `dec-001-vercel-python.md` (the DEC-001 local proof) (mocked integrations, local only) |
+| Evidence records | `dev-docs/evidence/` | `2026-10-14-local-verification.md`, `2026-10-14-diagnostics-perf-local.md`, `2026-10-14-adr-0002-perf07-local.md`, `2026-10-14-adr-0003-modular-architecture.md`, `dec-001-vercel-python.md` (the DEC-001 local proof), and `2026-10-15-review-fixes.md` (a full review and its fixes) (mocked integrations, local only) |
 | Adopter-facing documentation | `README.md`, `docs/architecture.md`, `docs/integrations.md`, `docs/operations.md`, `docs/data-inventory.md`, `perf/README.md`, `perf/run-plan-template.md` | Exists |
 | Community files | `LICENSE`, `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, `.github/` | Exist. Contacts are adopter placeholders that `init-template` fills in and `check:placeholders` enforces (DEC-012, ADR-0002) |
 
@@ -132,6 +132,7 @@ These decisions are confirmed. A confirmed technology choice is not evidence tha
 | DEC-010 | Billing state and plan-change policy | RESOLVED 2026-10-14 — recommendation approved (ADR-0001) | — | — |
 | DEC-011 | Rate limiting and shared counters | RESOLVED 2026-10-14 — option A approved (ADR-0001) | — | Configure platform rate-limit rules at deployment time |
 | DEC-012 | License and community contacts | RESOLVED 2026-10-14 — Apache-2.0 (ADR-0001); contacts are adopter placeholders (ADR-0002) | — | — |
+| DEC-013 | Preventing a second subscription while one is unsettled | OPEN (recorded 2026-10-15) | Any change to when checkout is refused beyond BILL-07 | Owner chooses an option (below) |
 
 ### 3.3 Decision entries
 
@@ -458,6 +459,22 @@ These decisions are confirmed. A confirmed technology choice is not evidence tha
 - **Required evidence:** owner choice.
 - **Resolution criteria:** the files exist with approved content, and no personal contact details are added without consent.
 - **Interim rule:** no license file. Gate A remains `BLOCKED`.
+
+#### DEC-013 — Preventing a Second Subscription While One Is Unsettled
+
+- **Status:** OPEN — recorded 2026-10-15 by the review of the billing module.
+- **Owner:** Repository owner.
+- **Blocks:** any change to when checkout is refused beyond BILL-07.
+- **Rationale:** BILL-07 refuses checkout only when the user already has an *entitling* subscription. A user whose subscription is `incomplete` (an asynchronous or authentication-pending payment), `unpaid`, or `paused`, or who starts two checkouts in two tabs, can complete a second checkout. Stripe then holds two subscriptions and charges both. The entitlement decision picks one, so nothing visible goes wrong except the second charge.
+- **Already in place (no policy change):** synchronization logs `billing_multiple_entitling_subscriptions` when one user has more than one entitling subscription, and `docs/operations.md` tells operators to cancel and refund the duplicate.
+- **Options:**
+  - **(A)** Refuse checkout while any non-terminal subscription exists (`incomplete`, `past_due`, `unpaid`, `paused`), and send the user to the Customer Portal instead.
+  - **(B)** (A) plus storing the open Checkout Session per user and expiring it before creating another, which closes the two-tab case.
+  - **(C)** Keep BILL-07 as is and rely on detection and manual refunds.
+- **Recommendation:** (B).
+- **Required evidence:** owner choice; sandbox verification of the chosen flow with Stripe test cards for asynchronous and authentication-required payments (DEC-006).
+- **Resolution criteria:** BILL-07 updated, tests for each refused state and for the two-tab case.
+- **Interim rule:** BILL-07 as written, with detection and the operator procedure.
 
 ---
 
@@ -1338,14 +1355,14 @@ Status as of 2026-10-14. Evidence: [`dev-docs/evidence/2026-10-14-local-verifica
 | ARCH-03 to ARCH-07, ARCH-09 to ARCH-12 | Single rules, adapters, no global state, bounded calls, ADRs | Review; LLM retry tests; timeouts configured; database round-trip deadline (`test_database_faults.py`) | B | — | PASS (review; database deadline tested) |
 | ARCH-08 | No N+1 queries | Query-count tests (project lists, billing status, organization entitlement); single-statement transaction setup; at most 8 statements per request | B | — | PASS |
 | ARCH-13 | Modular monolith boundaries | import-linter contracts; `tests/architecture` (api-only cross-module imports, module shape, unique permissions and event types); mutation-checked | B | — | PASS |
-| ARCH-14 | Transactions: one-statement setup, request scope, release, two pools, admission gate, nesting guard | `test_request_scope.py` (16), `test_query_counts.py`, `test_database_faults.py` (hung database, dead idle connections); PERF-07 and PERF-03 local (starvation fix measured); DEC-001 local proof through PgBouncer | B, D | — | PASS (local); platform behavior NOT VERIFIED (DEC-001) |
-| ARCH-15 | Transactional outbox | `test_outbox_jobs.py` (recording, RLS, dispatch, retries, dead letters, leases, retention, billing event) | B, C | — | PASS (local); after-response dispatch on Vercel NOT VERIFIED (D-002) |
-| ARCH-16 | Scheduled jobs | `test_outbox_jobs.py` (secret auth, 404 when off, each job, registry and `vercel.json` parity, CLI) | B, C, E | — | PASS (local); Vercel Cron NOT VERIFIED (DEC-001) |
+| ARCH-14 | Transactions: one-statement setup, request scope, release, two pools, admission gate, nesting guard | `test_request_scope.py` (20: also swallowed statement errors, `release()` inside a block, admission given back on `release()`), `test_query_counts.py`, `test_database_faults.py` (hung database, dead idle connections); PERF-07 and PERF-03 local (starvation fix measured); DEC-001 local proof through PgBouncer | B, D | — | PASS (local); platform behavior NOT VERIFIED (DEC-001) |
+| ARCH-15 | Transactional outbox | `test_outbox_jobs.py` (recording, RLS, dispatch, retries, dead letters, leases, retention, billing event; crash-looping events dead-lettered, one lease per event, batched pruning) | B, C | — | PASS (local); after-response dispatch on Vercel NOT VERIFIED (D-002) |
+| ARCH-16 | Scheduled jobs | `test_outbox_jobs.py` (secret auth, 404 when off, each job, registry and `vercel.json` parity, CLI); every job bounded per run (`test_billing.py` batch rotation, drain and prune budgets) | B, C, E | — | PASS (local); Vercel Cron NOT VERIFIED (DEC-001) |
 | ARCH-17 | Module generator | `pnpm test:new-module` (CI step); mutation-checked | A, B | — | PASS |
 | DEC-001 (local part) | Packaging, Services routing, runtime shim, transaction pooling, faults, cold-start baseline | `proofs/dec-001/run.sh`; [evidence](evidence/dec-001-vercel-python.md); `test_deployed_layout.py` | E | DEC-001 (preview deployment) | PASS (local); platform NOT VERIFIED |
 | API-01 to API-06 | Versioning, problem details, pagination, bearer-only, idempotency, health | Contract and platform tests; account-free e2e | B | — | PASS |
 | ENV-01 | Separate credentials per environment | Operational | E | DEC-006 | NOT VERIFIED |
-| ENV-02 to ENV-06 | Modes, validation, key/mode consistency, production guards, `.env.example` | Config tests; migration guard tests | A, C | — | PASS |
+| ENV-02 to ENV-06 | Modes, validation, key/mode consistency, production guards, `.env.example` | Config tests; migration guard tests (libpq `host`/`hostaddr`/`service` overrides, `APP_ENV` for seed and reset); web `env.ts`/`env.server.ts` tests | A, C | — | PASS (2026-10-15 review fixes) |
 | ENV-07 | No server-only values in the bundle | `check:bundle-secrets` (plus negative test) | C | — | PASS |
 | ENV-08 | No test-only auth path in the application | Review | C | — | PASS (review) |
 | REPO-01 to REPO-08, REPO-10, REPO-12 | Docs, commands, lockfiles, migrations, seed, reset, init (including contacts), mock-mode tests, no credentials | Clean clone; `test:init-template` (also a CI step); gitleaks history and tracked files | A | — | PASS |
@@ -1368,12 +1385,12 @@ Status as of 2026-10-14. Evidence: [`dev-docs/evidence/2026-10-14-local-verifica
 | OBS-01 to OBS-08 | Telemetry configuration, redaction, allowlists, non-blocking, leakage | Unit and leakage tests; outage tests | C, D | — | PASS (mocked transports) |
 | OBS real services | PostHog and Sentry capture without personal data | Sandbox inspection | E | DEC-006 | NOT VERIFIED |
 | OBS-09 | Telemetry retention | Documentation; adopter checklist | E | — | PASS (documented; adopters set the periods) |
-| FE-02, FE-03, FE-05 to FE-07, FE-10 | Boundaries, states, protected routes, paywall, 404, error mapping | ESLint bans; Vitest; account-free e2e | B | — | PASS |
+| FE-02, FE-03, FE-05 to FE-07, FE-10 | Boundaries, states, protected routes, paywall, 404, error mapping | ESLint bans; Vitest; account-free e2e | B | Owner applies the `eslint.config.mjs` change (§23) | PASS, except the stricter FE-02/ENV-07 lint guards (`eslint.guards.mjs`), which are written and tested but not yet enabled |
 | FE-01, FE-04, FE-08, FE-09, FE-11 | Accessibility, session UX, error boundaries, keyboard, browser flows | axe and Playwright page and authenticated suites | B | DEC-006 (Clerk sandbox) | NOT VERIFIED |
 | FE-13 | Feature folders and import boundaries | ESLint `import/no-restricted-paths` (`eslint.boundaries.mjs`); 23 tests lint real snippets through the real configuration; mutation-checked | B | — | PASS |
 | FE-14 | Typed API client generated from OpenAPI | `tsc` with `@ts-expect-error` checks on paths and params; client tests | B | — | PASS |
 | FE-12 | Frontend performance budgets | Measurements | D | Preview environment (DEC-001) | NOT VERIFIED (budgets adopter-owned; Core Web Vitals not measured) |
-| SEC-01 to SEC-05, SEC-07 to SEC-10, SEC-13 to SEC-15 | Validation, headers, secrets, audits, lockfiles, errors, limits, licenses, webhooks, redirects | Tests; audits; gitleaks; license check | C | — | PASS (as of 2026-10-14) |
+| SEC-01 to SEC-05, SEC-07 to SEC-10, SEC-13 to SEC-15 | Validation, headers, secrets, audits, lockfiles, errors, limits, licenses, webhooks, redirects | Tests; audits; gitleaks (CI, and a pre-commit hook installed with `pnpm hooks:install`); license allowlist with reviewed exceptions | C | Owner reviews the license exceptions (§23) | PASS (as of 2026-10-15); the pre-commit hook was not run locally (gitleaks not installed) |
 | SEC-06 | Static analysis (CodeQL) | Workflow defined | C | Remote CI not authorized | NOT VERIFIED |
 | SEC-11 | Vulnerability reporting | SECURITY.md with an adopter placeholder enforced by `check:placeholders` | A | — | PASS (ADR-0002) |
 | SEC-12 | Required review of migrations and workflows | CODEOWNERS and branch protection | A | Remote settings not authorized | NOT VERIFIED |
@@ -1432,7 +1449,7 @@ The report clearly distinguishes verified behavior from assumptions, mocks, and 
     - the local restore drill.
 - **Integrations:** all **mocked**. No sandbox or live service has been contacted.
 - **Local evidence:**
-  - API 286 tests, web 74 unit tests (including 23 import-boundary tests), 20 account-free e2e checks, and the generator check pass.
+  - API 344 tests, web 146 unit tests (1 skipped until the lint-guard wiring in next step 4), 20 account-free e2e checks, and the generator check pass (2026-10-15, after the review fixes in [`2026-10-15-review-fixes.md`](evidence/2026-10-15-review-fixes.md)).
   - The DEC-001 local proof passes ([`dec-001-vercel-python.md`](evidence/dec-001-vercel-python.md)).
   - Lint, strict types, build, contract drift, init-template, placeholder, bundle-secret, audit, and license checks pass.
   - At 20 ms DB RTT (local), request scope cut p50 latency by 25% to 33% beyond the one-statement setup.
@@ -1451,7 +1468,7 @@ The report clearly distinguishes verified behavior from assumptions, mocks, and 
 - **Decisions:**
   - DEC-002 to DEC-012: RESOLVED (ADR-0001, ADR-0002). DEC-003 to DEC-005 are adopter-owned.
   - Architecture: ADR-0003.
-  - **Open:** DEC-001 and DEC-006, which need owner action.
+  - **Open:** DEC-001 and DEC-006, which need owner action, and DEC-013 (preventing a second subscription while one is unsettled), recorded by the 2026-10-15 review.
 - **Deviations:** D-001 and D-002 (§18).
 - **Remote actions:** none. No push, publication, deployment, or release has occurred.
 - **Next steps (owner action required):**
@@ -1465,5 +1482,8 @@ The report clearly distinguishes verified behavior from assumptions, mocks, and 
      - Vercel Cron;
      - after-response dispatch;
      - preview performance runs.
+  4. Enable the stricter web lint guards: in `apps/web/eslint.config.mjs`, spread `guardConfigs(import.meta.dirname)` from `eslint.guards.mjs` and remove the inline env and import rules, then remove `.skip` from the wiring test in `src/boundaries.test.ts`. Agents are not permitted to edit lint configuration in this repository.
+  5. Review the license exceptions in `scripts/check-licenses.mjs`: the Sentry CLI (`sentry`, FSL-1.1-Apache-2.0, build time only) and the weak-copyleft packages (psycopg, certifi, libvips, tzdata).
+  6. Decide DEC-013.
 
 **Final principle:** build a template that is secure by default, modular by design, reproducible from a clean clone, and honest about its verified limits. Do not trade correctness, security, or maintainability for superficial completion.

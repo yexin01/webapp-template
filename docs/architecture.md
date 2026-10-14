@@ -160,7 +160,7 @@ Errors anywhere map to RFC 9457 problem details with a stable `code` and the req
 
 **Roles.** Requests run as `app_api` and system work runs as `app_worker`. Neither role owns tables or has `BYPASSRLS`. Each transaction sets the role, the statement timeout, and the full tenant context (`app.clerk_user_id`, `app.user_id`, `app.org_id`) in **one statement**, which is one round trip.
 
-**Faults.** The server enforces the statement timeout, so it cannot end a call when the server, or a pooler in front of it, stops responding. Every round trip, including `COMMIT` and `ROLLBACK`, therefore also has a client-side deadline (statement timeout plus connect timeout); past it, the connection is closed and the call fails with `503`. A `503` from a failed `COMMIT` means the outcome is unknown: the server may have committed before the connection failed. So a client should re-read before it retries a create, and a mutation with external side effects takes an idempotency key (API-05). A pooled connection that died while idle (after a pooler restart or failover) fails on its first round trip, before any work has run, so the transaction starts again on another connection. Transaction-mode pooling works because every setting is transaction-local and prepared statements are off. The DEC-001 proof checked this through PgBouncer in transaction mode.
+**Faults.** The server enforces the statement timeout, so it cannot end a call when the server, or a pooler in front of it, stops responding. Every round trip, including `COMMIT` and `ROLLBACK`, therefore also has a client-side deadline (statement timeout plus connect timeout); past it, the connection is closed and the call fails with `503`. A `503` from a failed `COMMIT` means the outcome is unknown: the server may have committed before the connection failed. So a client should re-read before it retries a create, and a mutation with external side effects takes an idempotency key (API-05). A pooled connection that died while idle (after a pooler restart or failover) fails on its first round trip, before any work has run, so the transaction starts again on another connection. TCP keepalives (probing after 30 s idle, about a minute to detect) notice a peer that vanished without closing the connection, so an idle connection to it is also replaced on first use instead of waiting out the deadline. Transaction-mode pooling works because every setting is transaction-local and prepared statements are off. The DEC-001 proof checked this through PgBouncer in transaction mode.
 
 **`Transactions[R]`.** Each module gets transactions that build its own repository: `kernel.transactions(PgProjectRepository)`. A block yields a `Tx` with:
 
@@ -173,11 +173,12 @@ Errors anywhere map to RFC 9457 problem details with a stable `code` and the req
 
 - every block in the request joins it;
 - the context is re-applied only when it changes;
-- a block that raises rolls the request back;
-- it commits after the handler returns, **before** the response is sent, so a failed commit is a 503, never a false 201;
-- `Transactions.release()` commits early. The identity resolver calls it before contacting Clerk.
+- a block that raises rolls the request back. The earlier blocks' work is gone, so a later block is refused, and a handler that catches the error and returns anyway gets a 500, never a success for work that was rolled back. Let errors from a block propagate;
+- a statement error caught *inside* a block (PostgreSQL would turn the `COMMIT` into a silent `ROLLBACK`) fails the block instead. This holds for every transaction, scoped or not. To try a statement and carry on after it fails, wrap it in a savepoint (`conn.transaction()`);
+- it commits after the handler returns, **before** the response is sent, so a failed commit is a 503, never a false 201. The commit is shielded from cancellation, so a client that disconnects cannot leave the transaction open;
+- `Transactions.release()` commits early and **ends** the scope: the rest of the request runs as ordinary short transactions. The identity resolver calls it before contacting Clerk. Calling it inside a block is refused, because the block still uses the connection.
 - **Admission and commit threads.** A scoped request holds its connection across several threadpool hops. To keep connection holders from starving behind threads that wait for a connection:
-  - at most `DATABASE_POOL_MAX_SIZE` scoped requests are admitted at once, and the rest wait asynchronously, holding no thread;
+  - at most `DATABASE_POOL_MAX_SIZE` scoped requests are admitted at once, and the rest wait asynchronously, holding no thread. `release()` gives the place back, so a request waiting on Clerk never holds up other requests;
   - the commit runs on its own thread limiter;
   - nested blocks inside a request transaction are refused.
 
@@ -203,8 +204,8 @@ flowchart LR
 
 - **Exactly-once recording.** An event row exists if and only if its transaction committed.
 - **At-least-once handling.** Handlers run after commit, and a retry re-runs every handler for that event. Make handlers idempotent: key side effects by `event.id`, or make them naturally idempotent.
-- **Concurrency.** Events are leased with `FOR UPDATE SKIP LOCKED`, so after-response dispatch in many instances and the job can drain together. A lease that is never completed (the process died) expires and the event is retried. Completion is fenced to the lease: a worker whose lease expired cannot overwrite the outcome recorded by the worker that re-leased the event.
-- **Failures.** Retries use exponential backoff (2^attempt seconds, capped at an hour). After `OUTBOX_MAX_ATTEMPTS` the event is marked `dead` and kept for inspection.
+- **Concurrency.** Events are leased with `FOR UPDATE SKIP LOCKED`, so after-response dispatch in many instances and the job can drain together. Each event is leased just before its handlers run, one at a time, so a lease covers exactly one event. A lease that is never completed (the process died, or the platform stopped the function) expires and the event is retried. Completion is fenced to the lease: a worker whose lease expired cannot overwrite the outcome recorded by the worker that re-leased the event.
+- **Failures.** Retries use exponential backoff (2^attempt seconds, capped at an hour). After `OUTBOX_MAX_ATTEMPTS` the event is marked `dead` and kept for inspection. So is an event whose lease expires on its last attempt, which bounds a handler that crashes the process or outlives the function.
 - **Retention.** `prune-expired` deletes processed events after `OUTBOX_RETENTION_DAYS` (default 7), because payloads hold internal user IDs.
 - **Ordering.** Not guaranteed across events. Handlers must not assume an order.
 - **Payloads.** Internal IDs and small facts only: no personal data beyond IDs, no secrets.
@@ -222,7 +223,7 @@ Jobs are registered in code (`kernel.jobs.register(Job(...))`), and every job mu
 - the CLI: `uv run python -m app.cli job` lists jobs, and `job <name>` runs one;
 - `GET /api/v1/jobs/<name>` with `Authorization: Bearer <CRON_SECRET>`. This is what Vercel Cron calls, using `apps/api/vercel.json`. A test fails if that file drifts from the registry.
 
-Without `CRON_SECRET`, the endpoint returns 404. Default schedules are daily so the config deploys on any Vercel plan; on plans that allow it, run `drain-outbox` more often.
+Without `CRON_SECRET`, the endpoint returns 404. Default schedules are daily so the config deploys on any Vercel plan; on plans that allow it, run `drain-outbox` more often. Every job bounds its work per run: open-ended work (`drain-outbox`, `prune-expired`) stops after 60 s, and the reconciliation jobs check a fixed-size batch, least recently checked first; the next run continues.
 
 ## Settings
 

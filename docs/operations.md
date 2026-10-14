@@ -59,8 +59,8 @@ Deploying, promoting, or changing hosting and Git settings are remote actions. T
 
 | Provider down | Behavior |
 |---|---|
-| Clerk | New sign-ins fail. Requests with valid tokens continue while cached keys are valid, then fail closed (`503`). Stale organization memberships cannot be re-verified, so organization requests fail closed (`503`). |
-| Stripe | Checkout and portal return `503`. Existing entitlements (from synchronized records) are unaffected. Stripe retries webhooks; run reconciliation afterwards. |
+| Clerk | New sign-ins fail. Requests with valid tokens continue while the cached key set is valid (up to an hour; indefinitely with `CLERK_JWT_KEY`), then fail closed (`503`). Stale organization memberships cannot be re-verified, so organization requests fail closed (`503`). A request waiting on Clerk never holds up other requests. |
+| Stripe | Checkout and portal return `503`. Existing entitlements (from synchronized records) are unaffected. Stripe retries webhooks; run reconciliation afterwards. Webhook synchronization runs in at most `DATABASE_WORKER_POOL_MAX_SIZE - 1` slots per instance; a delivery that finds no free slot gets `503` and Stripe retries it, so a burst never takes the database connections that readiness and rate limits need. |
 | Database | Readiness fails. Data requests return `503`. No partial writes. A database or pooler that stops responding fails each call after the round-trip deadline: `DATABASE_STATEMENT_TIMEOUT_MS` plus `DATABASE_CONNECT_TIMEOUT_SECONDS` (15 s by default). After a pooler restart or failover, connections that died while idle are replaced on first use, without failing the request. |
 | PostHog / Sentry | No user-visible impact. Exports fail silently and are logged. |
 | LLM provider | Only the connectivity check reports failure. |
@@ -71,8 +71,20 @@ Deploying, promoting, or changing hosting and Git settings are remote actions. T
 |---|---|---|
 | Billing reconciliation (dry run) | `pnpm billing:reconcile` | After incidents or missed webhooks |
 | Apply reconciliation | `pnpm billing:reconcile --apply` | When a dry run shows divergences you have reviewed |
-| Prune rate-limit counters | Job `prune-rate-limits` (see [Scheduled jobs](#scheduled-jobs)) | Daily |
+| Prune rate-limit counters and processed outbox events | Job `prune-expired` (see [Scheduled jobs](#scheduled-jobs)) | Daily |
 | Dependency audit | `pnpm security:audit` | Weekly and before releases |
+
+### Reading a reconciliation report
+
+`pnpm billing:reconcile` checks every customer, first those with webhook events flagged `needs_reconciliation`. With `--apply`, it reads Stripe under the same per-customer lock as webhook processing, so it never overwrites a newer webhook result, and it records plan changes like a webhook does.
+
+| Field | Meaning | What to do |
+|---|---|---|
+| `divergences`, kind `differs` or `missing_locally` | Stripe and the local record disagree | `--apply` stores Stripe's state |
+| `divergences`, kind `missing_remotely` | A local subscription that Stripe does not list for that customer | Never applied automatically. It usually means the keys belong to a different Stripe account (for example, a new sandbox). Investigate before changing data |
+| `unlinked_customers` | Flagged Stripe customers that no user could be linked to | `--apply` links a customer whose Stripe metadata names an existing user; others need investigation in Stripe |
+| `rejected_customers` | Stripe rejected the request for that customer (for example, it was deleted) | Investigate in Stripe |
+| more than one Pro subscription for one user | Logged as `billing_multiple_entitling_subscriptions` | Cancel and refund the duplicate in Stripe |
 
 ## Secret rotation
 
@@ -145,9 +157,9 @@ Jobs are registered in code ([architecture](architecture.md#jobs)). Run them in 
 
 | Job | Default schedule (UTC) | What it does |
 |---|---|---|
-| `drain-outbox` | 02:15 daily | Dispatches outbox events left after requests (failed or not yet dispatched) |
-| `prune-expired` | 05:00 daily | Deletes expired rate-limit windows, and processed outbox events older than `OUTBOX_RETENTION_DAYS` |
-| `reconcile-billing` | 04:00 daily | Compares billing records with Stripe and reports divergences. It applies Stripe's state only when `BILLING_RECONCILE_APPLY=true` |
+| `drain-outbox` | 02:15 daily | Dispatches outbox events left after requests (failed or not yet dispatched), until none is due or 60 s have passed. Dead-letters events whose lease expired on their last attempt |
+| `prune-expired` | 05:00 daily | Deletes expired rate-limit windows, and processed outbox events older than `OUTBOX_RETENTION_DAYS`, in batches of 1,000 for up to 60 s; the next run continues |
+| `reconcile-billing` | 04:00 daily | Compares a batch of `BILLING_RECONCILE_BATCH_SIZE` customers with Stripe: up to half are customers with recently flagged (`needs_reconciliation`) webhook events, the rest the least recently checked, so every customer is checked in turn. It applies Stripe's state only when `BILLING_RECONCILE_APPLY=true` |
 | `reconcile-memberships` | 03:30 daily | Re-verifies the stalest organization-membership mirrors against Clerk (`MEMBERSHIP_RECONCILE_BATCH_SIZE` per run) |
 
 `apps/api/vercel.json` holds the schedules, and a test fails if it drifts from the registry. Schedules are daily so the configuration deploys on any Vercel plan. If your plan allows it, run `drain-outbox` every few minutes. With Vercel Services (one project), crons must be in the root `vercel.json`: the DEC-001 proof found that a service's own `vercel.json` crons are not registered.

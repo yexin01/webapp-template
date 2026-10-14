@@ -83,7 +83,8 @@ Sign-in and sign-up pages live at `/sign-in` and `/sign-up`.
      Put the printed `whsec_…` in `STRIPE_WEBHOOK_SECRET`.
    - **Deployed**: add an endpoint `https://<your-api-host>/api/v1/webhooks/stripe` with the events below, and use that endpoint's own signing secret in that environment.
    - Events: `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, `checkout.session.expired`, `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`, `customer.subscription.paused`, `customer.subscription.resumed`, `customer.subscription.pending_update_applied`, `customer.subscription.pending_update_expired`, `invoice.paid`, `invoice.payment_failed`, `invoice.payment_action_required`.
-6. Set `BILLING_MODE=sandbox`.
+6. In Stripe's subscription settings, set what happens **after all payment retries fail** to cancel the subscription or mark it unpaid. Under DEC-010, `past_due` keeps Pro while Stripe retries, so "leave the subscription past due" would keep Pro indefinitely.
+7. Set `BILLING_MODE=sandbox`.
 
 **How billing state flows.**
 
@@ -103,7 +104,8 @@ Sign-in and sign-up pages live at `/sign-in` and `/sign-up`.
   3. Apply migrations with a direct (non-pooled) connection:
      `DATABASE_URL=<direct-connection-string> pnpm db:migrate --allow-remote`.
      Only run this against a database you are authorized to change.
-  4. Tables live in the `app` schema, which is **not** exposed through Supabase's Data API. The browser never connects to the database (DEC-008). Do not grant the `anon` or `authenticated` roles access to `app`.
+  4. Tables live in the `app` schema, which is **not** exposed through Supabase's Data API. The browser never connects to the database (DEC-008). Do not grant the `anon` or `authenticated` roles access to `app`. The migration ledger, `public.app_schema_migrations`, has row-level security with no policies, and the migration runner revokes every grant on it from `anon`, `authenticated`, and `PUBLIC`.
+  5. Migrations are applied in version order. A new migration numbered before one already applied is refused: give it a later version. Concurrent runs are safe; each migration is applied once.
 - The migration creates two `NOLOGIN` roles, `app_api` and `app_worker`, and grants them to the connecting role. Every API transaction switches into one of them transaction-locally, setting the role, statement timeout, and tenant context in a single `set_config` statement.
 
 ## PostHog
