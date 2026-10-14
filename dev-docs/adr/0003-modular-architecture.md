@@ -48,6 +48,11 @@ TanStack Query was offered and not selected.
   - `release()` commits early, before external calls; the identity resolver releases before contacting Clerk.
   - Routes with external calls (checkout, portal, LLM, diagnostics, webhooks) keep short explicit transactions.
 - **Two connection pools per process**, `app_api` and `app_worker`. A request that holds an API connection and needs worker work (rate limits, membership refresh) never waits on its own pool.
+- **Thread starvation guard,** added after an independent review and confirmed by measurement. A scoped request holds its connection across several threadpool hops, and the commit itself needed a thread from the shared pool. Under load, threads waiting for connections could starve the holders: locally, a 5-connection pool under stress gave a 55 s worst case and 3% failures. The fixes:
+  - an asynchronous admission gate of `DATABASE_POOL_MAX_SIZE` scoped requests;
+  - commits on a one-off thread limiter, and no thread hop when nothing was opened.
+
+  After the fixes: no failures, a 1.6 s worst case, and 2.7 times the throughput. Nested blocks inside a request transaction are now refused.
 
 ### 3. Domain events with a transactional outbox (no new infrastructure)
 
@@ -56,7 +61,7 @@ TanStack Query was offered and not selected.
 - Dispatch is at least once:
   - after the response, for the request's own events, through a request-scope dependency;
   - from the `drain-outbox` job, for leftovers.
-- Leases use `FOR UPDATE SKIP LOCKED` and expire. Retries use exponential backoff, and events are marked `dead` after `OUTBOX_MAX_ATTEMPTS`.
+- Leases use `FOR UPDATE SKIP LOCKED` and expire. Completion and failure are fenced to the current lease, by status and attempt. Retries use exponential backoff, and events are marked `dead` after `OUTBOX_MAX_ATTEMPTS`.
 - Processed events are pruned after `OUTBOX_RETENTION_DAYS`.
 - The application clock drives every outbox timestamp, which keeps behavior deterministic in tests.
 - **Initial events:**

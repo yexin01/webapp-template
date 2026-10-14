@@ -90,16 +90,18 @@ class OutboxDispatcher:
 
         with self._tx.as_system() as t:
             if not failed:
-                t.repo.complete_outbox(event.id, self._clock.now())
+                t.repo.complete_outbox(event.id, event.attempts, self._clock.now())
                 report.processed += 1
                 return
             error = "handlers failed: " + ", ".join(failed)
             report.failures.append(f"{event.event_type}:{event.id}")
             if event.attempts >= self._max_attempts:
-                t.repo.fail_outbox(event.id, error, retry_at=None)
+                t.repo.fail_outbox(event.id, event.attempts, error, retry_at=None)
                 report.dead += 1
                 logger.error("outbox_event_dead", extra={"event_id": str(event.id), "event_type": event.event_type})
             else:
                 delay = min(2**event.attempts, _MAX_BACKOFF_SECONDS)
-                t.repo.fail_outbox(event.id, error, retry_at=self._clock.now() + timedelta(seconds=delay))
+                t.repo.fail_outbox(
+                    event.id, event.attempts, error, retry_at=self._clock.now() + timedelta(seconds=delay)
+                )
                 report.retried += 1

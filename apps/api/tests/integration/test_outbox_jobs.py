@@ -232,3 +232,21 @@ def test_prune_deletes_processed_events_past_retention_only(cron: Harness) -> No
     cron.clock.advance(days=cron.container.settings.outbox_retention_days, seconds=1)
     assert cron.client.get("/api/v1/jobs/prune-expired", headers=auth).json()["summary"]["outbox_events"] == 1
     assert [r[1] for r in outbox_rows(cron)] == ["pending"]
+
+
+def test_completion_is_fenced_to_the_current_lease(harness: Harness) -> None:
+    """A worker whose lease expired cannot overwrite the outcome of the worker that re-leased the event."""
+    _record(harness)
+    store = harness.container.kernel.store
+    with store.as_system() as t:
+        first = t.repo.claim_outbox(limit=1, now=harness.clock.now(), lease_seconds=1, ids=None)[0]
+    harness.clock.advance(seconds=2)  # the first lease expires; a second worker re-leases
+    with store.as_system() as t:
+        second = t.repo.claim_outbox(limit=1, now=harness.clock.now(), lease_seconds=60, ids=None)[0]
+    assert second.attempts == first.attempts + 1
+    with store.as_system() as t:
+        assert t.repo.complete_outbox(second.id, second.attempts, harness.clock.now()) is True
+        # The stale worker finishes late: nothing changes.
+        assert t.repo.fail_outbox(first.id, first.attempts, "late failure", retry_at=None) is False
+        assert t.repo.complete_outbox(first.id, first.attempts, harness.clock.now()) is False
+    assert [r[1] for r in outbox_rows(harness)] == ["processed"]

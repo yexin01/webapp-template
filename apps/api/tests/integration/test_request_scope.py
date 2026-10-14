@@ -93,6 +93,12 @@ def test_commit_failure_is_reported_before_the_response(harness: Harness, member
     assert rows[0][0] == 0
 
 
+def _finish(database: Database, token: Any) -> None:
+    commit = database.end_request_scope(token)
+    if commit is not None:
+        commit()
+
+
 def _database(url: str) -> Database:
     return Database(url, api_pool_size=2, worker_pool_size=2, connect_timeout=3, statement_timeout_ms=5000)
 
@@ -105,7 +111,7 @@ def test_block_exception_rolls_back_pending_request_work(db: str) -> None:
             conn.execute("INSERT INTO app.users (clerk_user_id) VALUES ('user_rollback')")
         with pytest.raises(ZeroDivisionError), database.transaction(API_ROLE, {"app.clerk_user_id": "user_rollback"}):
             _ = 1 / 0
-        database.end_request_scope(token)()
+        _finish(database, token)
         assert superuser_query(db, "SELECT count(*) FROM app.users WHERE clerk_user_id = 'user_rollback'")[0][0] == 0
     finally:
         database.close()
@@ -123,7 +129,7 @@ def test_worker_blocks_never_join_and_commit_independently(db: str) -> None:
         # The worker row is committed while the request transaction is still open.
         assert superuser_query(db, "SELECT count(*) FROM app.users WHERE clerk_user_id = 'user_worker'")[0][0] == 1
         assert superuser_query(db, "SELECT count(*) FROM app.users WHERE clerk_user_id = 'user_scope'")[0][0] == 0
-        database.end_request_scope(token)()
+        _finish(database, token)
         assert superuser_query(db, "SELECT count(*) FROM app.users WHERE clerk_user_id = 'user_scope'")[0][0] == 1
     finally:
         database.close()
@@ -142,7 +148,7 @@ def test_context_is_fully_reapplied_between_blocks(db: str) -> None:
                 "SELECT current_setting('app.user_id'), current_setting('app.org_id'), current_user"
             ).fetchone()
             assert row == ("", "", "app_api")
-        database.end_request_scope(token)()
+        _finish(database, token)
     finally:
         database.close()
 
@@ -159,7 +165,7 @@ def test_release_commits_early_and_reopens(db: str) -> None:
         assert superuser_query(db, "SELECT count(*) FROM app.users WHERE clerk_user_id = 'user_release'")[0][0] == 1
         with database.transaction(API_ROLE, {"app.clerk_user_id": "user_release"}) as conn:
             assert conn.execute("SELECT count(*) FROM app.users").fetchone() == (1,)
-        database.end_request_scope(token)()
+        _finish(database, token)
     finally:
         database.close()
 
@@ -177,3 +183,32 @@ def test_stale_membership_refresh_releases_the_request_transaction(harness: Harn
     harness.directory.list_user_memberships = spy  # type: ignore[method-assign]
     assert harness.client.get("/api/v1/orgs/org_q/projects", headers=member).status_code == 200
     assert seen == [False]
+
+
+def test_nested_blocks_are_refused_inside_a_request_transaction(db: str) -> None:
+    """Nesting would switch the shared transaction's context under the outer block."""
+    database = _database(db)
+    try:
+        token = database.begin_request_scope()
+        with (
+            database.transaction(API_ROLE, {"app.clerk_user_id": "outer"}),
+            pytest.raises(RuntimeError, match="Nested"),
+            database.transaction(API_ROLE, {"app.clerk_user_id": "inner"}),
+        ):
+            pass
+        _finish(database, token)
+    finally:
+        database.close()
+
+
+def test_no_thread_hop_or_commit_when_no_transaction_was_opened(db: str) -> None:
+    database = _database(db)
+    try:
+        token = database.begin_request_scope()
+        assert database.end_request_scope(token) is None
+    finally:
+        database.close()
+
+
+def test_admission_is_bounded_by_the_api_pool(harness: Harness) -> None:
+    assert harness.container.kernel.database.api_pool_size == harness.container.settings.database_pool_max_size

@@ -1337,7 +1337,7 @@ Status as of 2026-10-14. Evidence: [`dev-docs/evidence/2026-10-14-local-verifica
 | ARCH-03 to ARCH-07, ARCH-09 to ARCH-12 | Single rules, adapters, no global state, bounded calls, ADRs | Review; LLM retry tests; timeouts configured | B | — | PASS (review) |
 | ARCH-08 | No N+1 queries | Query-count tests (project lists, billing status, organization entitlement); single-statement transaction setup; at most 8 statements per request | B | — | PASS |
 | ARCH-13 | Modular monolith boundaries | import-linter contracts; `tests/architecture` (api-only cross-module imports, module shape, unique permissions and event types); mutation-checked | B | — | PASS |
-| ARCH-14 | Transactions: one-statement setup, request scope, release, two pools | `test_request_scope.py` (13), `test_query_counts.py`; PERF-07 local | B, D | — | PASS (local); platform behavior NOT VERIFIED (DEC-001) |
+| ARCH-14 | Transactions: one-statement setup, request scope, release, two pools, admission gate, nesting guard | `test_request_scope.py` (16), `test_query_counts.py`; PERF-07 and PERF-03 local (starvation fix measured) | B, D | — | PASS (local); platform behavior NOT VERIFIED (DEC-001) |
 | ARCH-15 | Transactional outbox | `test_outbox_jobs.py` (recording, RLS, dispatch, retries, dead letters, leases, retention, billing event) | B, C | — | PASS (local); after-response dispatch on Vercel NOT VERIFIED (D-002) |
 | ARCH-16 | Scheduled jobs | `test_outbox_jobs.py` (secret auth, 404 when off, each job, registry and `vercel.json` parity, CLI) | B, C, E | — | PASS (local); Vercel Cron NOT VERIFIED (DEC-001) |
 | ARCH-17 | Module generator | `pnpm test:new-module` (CI step); mutation-checked | A, B | — | PASS |
@@ -1429,7 +1429,7 @@ The report clearly distinguishes verified behavior from assumptions, mocks, and 
     - the local restore drill.
 - **Integrations:** all **mocked**. No sandbox or live service has been contacted.
 - **Local evidence:**
-  - API 270 tests, web 51 unit tests, 20 account-free e2e checks, and the generator check pass.
+  - API 274 tests, web 51 unit tests, 20 account-free e2e checks, and the generator check pass.
   - Lint, strict types, build, contract drift, init-template, placeholder, bundle-secret, audit, and license checks pass.
   - At 20 ms DB RTT (local), request scope cut p50 latency by 25% to 33% beyond the one-statement setup.
 

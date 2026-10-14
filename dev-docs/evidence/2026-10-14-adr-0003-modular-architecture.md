@@ -16,7 +16,7 @@ All checks ran after the final code change.
 |---|---|---|
 | Lint, format, import contracts | `pnpm lint` | PASS. **8 import-linter contracts** (was 4): framework-free kernel core, kernel independent of modules, layered modules (`exhaustive`), pure domains, framework-free services and ports, routes without SDKs, acyclic modules |
 | Strict type checks | `pnpm typecheck` | PASS (mypy strict, 84 files; tsc) |
-| API and web tests | `pnpm test` | PASS. **270** API tests (was 226) and **51** web tests (was 43) |
+| API and web tests | `pnpm test` | PASS. **274** API tests (was 226) and **51** web tests (was 43) |
 | E2E, account-free | `pnpm test:e2e` | PASS: 20; 18 skipped (sandbox only) |
 | Contract drift | `pnpm contracts:check` | PASS. The refactor kept every path, schema, operation ID, tag, and response identical. Only the `IntegrationKey` description changed |
 | Template init, placeholders | `pnpm test:init-template`, `pnpm check:placeholders` | PASS |
@@ -25,9 +25,9 @@ All checks ran after the final code change.
 | Dependency audit | `pnpm security:audit` | PASS: no known vulnerabilities as of this date |
 | Licenses | `pnpm security:licenses` | PASS: 134 npm (adds `openapi-fetch`, MIT), 40 PyPI; `tzdata` needs manual review, as before |
 
-**New API tests (44):**
+**New API tests (48):**
 
-- **Request scope (13):**
+- **Request scope (16):**
   - one transaction for each database-only route;
   - a write commits;
   - **a failed commit returns 503 before any response is sent**, and the row is absent;
@@ -35,8 +35,11 @@ All checks ran after the final code change.
   - worker blocks never join and commit independently;
   - the context is fully re-applied, with no leak between blocks;
   - `release()` commits early and reopens;
-  - the resolver releases before calling Clerk.
-- **Outbox and jobs (21):**
+  - the resolver releases before calling Clerk;
+  - nested blocks are refused;
+  - there is no commit and no thread hop when nothing was opened;
+  - admission is bounded by the API pool.
+- **Outbox and jobs (22):**
   - an event is recorded with its change and dispatched after the response;
   - no event without the change;
   - the request role can only append, and needs a user context;
@@ -47,7 +50,8 @@ All checks ran after the final code change.
   - jobs are excluded from OpenAPI;
   - the drain, prune-retention, membership-reconcile, and billing-reconcile jobs (report-only by default) work;
   - `vercel.json` matches the registry;
-  - the CLI lists the jobs.
+  - the CLI lists the jobs;
+  - completion is fenced to the current lease.
 - **Architecture (9):**
   - cross-module imports only through `api.py`;
   - every module has the required shape and a `build_*` wiring function;
@@ -97,6 +101,39 @@ Observations:
 - At 20 ms RTT, request scope cuts p50 by 25% (personal list) and 33% (organization list). This matches the round-trip arithmetic: a personal list goes from 8 to 6 round trips, and an organization list from 12 to 8.
 - Write latency improved despite the extra outbox insert. Analytics now runs after the response, not on the request path.
 - Peak database connections stayed within the pools: 3 in control, 10 at 20 ms RTT.
+
+## Independent review and stress test (after the commits above)
+
+An independent read-only review of the transaction, outbox, and jobs code found one load-dependent defect and two latent hazards. All three are fixed, with tests.
+
+| Finding | Severity | Fix | Evidence |
+|---|---|---|---|
+| Request-scoped requests hold a pooled connection across threadpool hops, and the commit needed a shared thread. Under load, threads waiting for connections starve the holders | Important | Async admission gate (`DATABASE_POOL_MAX_SIZE` scoped requests); commit on a one-off thread limiter; no hop when nothing was opened | PERF-03 shape, local, pool 5, `MAX_RATE=100`, `STEP=20s` (below) |
+| A nested block inside a request transaction would switch context under the outer block, and its rollback would release a connection still in use | Latent (no caller) | Nested blocks raise `RuntimeError` | `test_nested_blocks_are_refused_inside_a_request_transaction` |
+| Outbox completion was not fenced to the lease, so a stale worker could overwrite a newer outcome | Low (within at-least-once) | `complete_outbox` and `fail_outbox` require `status='processing' AND attempts=<lease>` | `test_completion_is_fenced_to_the_current_lease` |
+
+The review also confirmed that the following hold:
+
+- tenant context never leaks (transaction-local GUCs, fully re-applied);
+- worker blocks never join a request transaction;
+- the job secret check is constant-time and comes before the job lookup;
+- the outbox RLS is append-only for `app_api`;
+- all SQL uses bound parameters.
+
+**Stress test before and after the starvation fix** (local, same machine, perf server with `--pool-size 5`):
+
+| Metric | Before | After |
+|---|---|---|
+| Requests completed | 15,146 | 34,240 |
+| Throughput | 100.9 req/s | 277.2 req/s |
+| Failed requests | 3.08% | **0.00%** |
+| Dropped iterations | 3,157 | 969 |
+| `health` p95 / max (no database) | 16,924 ms / 35,102 ms | 14 ms / 190 ms |
+| `tenant_list` p95 / max | 35,051 ms / 50,116 ms | 993 ms / 1,553 ms |
+| Worst case across classes | 55,298 ms | 1,583 ms |
+| Peak database connections | — | 8 (5 request + 3 worker pool) |
+
+Before the fix, even the database-free health check stalled, because the whole threadpool was blocked. After it, saturation shows up as bounded queueing at the admission gate instead of collapse.
 
 ## Not verified by this record
 

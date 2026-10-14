@@ -14,6 +14,7 @@ import logging
 from collections.abc import AsyncIterator, Callable
 from uuid import UUID
 
+import anyio
 from starlette.concurrency import run_in_threadpool
 
 from app.kernel.application.outbox import OutboxDispatcher
@@ -37,15 +38,32 @@ def request_transaction(database: Database) -> Callable[[], AsyncIterator[None]]
     Register it with ``Depends(..., scope="function")``, so the commit happens
     after the handler returns but **before** the response is sent. A failed
     commit therefore surfaces as an error, never as a false success.
+
+    A request-scoped request holds a pooled connection across several
+    threadpool hops (dependencies, endpoint, commit). Two measures keep
+    connection holders from starving behind threads that are waiting for a
+    connection:
+
+    - **Admission:** at most ``api_pool_size`` scoped requests run at once.
+      Others wait asynchronously, holding neither a thread nor a connection.
+    - **Commit:** runs on its own one-off thread limiter, the pattern FastAPI
+      uses for dependency exits, so it never queues behind the shared
+      threadpool.
     """
+    admission: anyio.Semaphore | None = None
 
     async def dependency() -> AsyncIterator[None]:
-        token = database.begin_request_scope()
-        try:
-            yield
-        finally:
-            commit = database.end_request_scope(token)
-            await run_in_threadpool(commit)
+        nonlocal admission
+        if admission is None:
+            admission = anyio.Semaphore(database.api_pool_size)
+        async with admission:
+            token = database.begin_request_scope()
+            try:
+                yield
+            finally:
+                commit = database.end_request_scope(token)
+                if commit is not None:
+                    await anyio.to_thread.run_sync(commit, limiter=anyio.CapacityLimiter(1))
 
     return dependency
 

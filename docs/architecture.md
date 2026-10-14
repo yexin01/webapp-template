@@ -174,6 +174,12 @@ Errors anywhere map to RFC 9457 problem details with a stable `code` and the req
 - a block that raises rolls the request back;
 - it commits after the handler returns, **before** the response is sent, so a failed commit is a 503, never a false 201;
 - `Transactions.release()` commits early. The identity resolver calls it before contacting Clerk.
+- **Admission and commit threads.** A scoped request holds its connection across several threadpool hops. To keep connection holders from starving behind threads that wait for a connection:
+  - at most `DATABASE_POOL_MAX_SIZE` scoped requests are admitted at once, and the rest wait asynchronously, holding no thread;
+  - the commit runs on its own thread limiter;
+  - nested blocks inside a request transaction are refused.
+
+  Under local stress with a 5-connection pool, this took the API from 3% failures and 55 s worst-case latency to no failures and a 1.6 s worst case.
 
 Routes that call external services use explicit short transactions instead: checkout, the portal, LLM, diagnostics, and webhooks.
 
@@ -195,7 +201,7 @@ flowchart LR
 
 - **Exactly-once recording.** An event row exists if and only if its transaction committed.
 - **At-least-once handling.** Handlers run after commit, and a retry re-runs every handler for that event. Make handlers idempotent: key side effects by `event.id`, or make them naturally idempotent.
-- **Concurrency.** Events are leased with `FOR UPDATE SKIP LOCKED`, so after-response dispatch in many instances and the job can drain together. A lease that is never completed (the process died) expires and the event is retried.
+- **Concurrency.** Events are leased with `FOR UPDATE SKIP LOCKED`, so after-response dispatch in many instances and the job can drain together. A lease that is never completed (the process died) expires and the event is retried. Completion is fenced to the lease: a worker whose lease expired cannot overwrite the outcome recorded by the worker that re-leased the event.
 - **Failures.** Retries use exponential backoff (2^attempt seconds, capped at an hour). After `OUTBOX_MAX_ATTEMPTS` the event is marked `dead` and kept for inspection.
 - **Retention.** `prune-expired` deletes processed events after `OUTBOX_RETENTION_DAYS` (default 7), because payloads hold internal user IDs.
 - **Ordering.** Not guaranteed across events. Handlers must not assume an order.

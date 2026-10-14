@@ -102,27 +102,32 @@ class PgKernelStore:
             for r in sorted(rows, key=lambda r: (r["occurred_at"], r["id"]))
         ]
 
-    def complete_outbox(self, event_id: UUID, processed_at: datetime) -> None:
-        self._one(
+    # Completion and failure are fenced to the lease: a worker whose lease
+    # expired (and whose event another worker re-leased) changes nothing.
+
+    def complete_outbox(self, event_id: UUID, attempt: int, processed_at: datetime) -> bool:
+        row = self._one(
             """
             UPDATE app.outbox SET status = 'processed', processed_at = %s, locked_until = NULL, last_error = NULL
-            WHERE id = %s RETURNING id
+            WHERE id = %s AND status = 'processing' AND attempts = %s RETURNING id
             """,
-            (processed_at, event_id),
+            (processed_at, event_id, attempt),
         )
+        return row is not None
 
-    def fail_outbox(self, event_id: UUID, error: str, retry_at: datetime | None) -> None:
-        self._one(
+    def fail_outbox(self, event_id: UUID, attempt: int, error: str, retry_at: datetime | None) -> bool:
+        row = self._one(
             """
             UPDATE app.outbox
             SET status = CASE WHEN %(retry_at)s::timestamptz IS NULL THEN 'dead' ELSE 'pending' END,
                 available_at = coalesce(%(retry_at)s::timestamptz, available_at),
                 locked_until = NULL,
                 last_error = %(error)s
-            WHERE id = %(id)s RETURNING id
+            WHERE id = %(id)s AND status = 'processing' AND attempts = %(attempt)s RETURNING id
             """,
-            {"retry_at": retry_at, "error": error[:_MAX_ERROR_LENGTH], "id": event_id},
+            {"retry_at": retry_at, "error": error[:_MAX_ERROR_LENGTH], "id": event_id, "attempt": attempt},
         )
+        return row is not None
 
     def prune_outbox(self, processed_before: datetime) -> int:
         """Delete processed events past retention. Dead events stay for inspection."""

@@ -56,10 +56,6 @@ R = TypeVar("R")
 _UNAVAILABLE = "The database is temporarily unavailable."
 
 
-def _noop() -> None:
-    return None
-
-
 class Database:
     """Lazily opened, concurrency-safe connection pools (one per process)."""
 
@@ -138,15 +134,20 @@ class Database:
     def begin_request_scope(self) -> contextvars.Token[RequestScope | None]:
         return self._scope.set(RequestScope(self))
 
-    def end_request_scope(self, token: contextvars.Token[RequestScope | None]) -> Callable[[], None]:
-        """End the scope in the caller's context; return the (blocking) commit to run.
+    @property
+    def api_pool_size(self) -> int:
+        return self._sizes[API_ROLE]
+
+    def end_request_scope(self, token: contextvars.Token[RequestScope | None]) -> Callable[[], None] | None:
+        """End the scope in the caller's context; return the blocking commit to run, if any.
 
         The context variable must be reset in the context that set it (the
-        event loop), while the commit belongs in a worker thread.
+        event loop), while the commit belongs in a worker thread. Returns
+        ``None`` when no transaction was opened, so no thread hop is needed.
         """
         scope = self._scope.get()
         self._scope.reset(token)
-        return scope.commit if scope is not None else _noop
+        return scope.commit if scope is not None and scope.is_open else None
 
     def release_request_transaction(self) -> None:
         scope = self._scope.get()
@@ -172,6 +173,7 @@ class RequestScope:
         self._stack: ExitStack | None = None
         self._conn: psycopg.Connection | None = None
         self._applied: list[str] | None = None
+        self._depth = 0
 
     @property
     def is_open(self) -> bool:
@@ -179,6 +181,18 @@ class RequestScope:
 
     @contextmanager
     def block(self, query: sql.Composed, params: list[str]) -> Iterator[psycopg.Connection]:
+        if self._depth:
+            # A nested block would switch the shared transaction's context
+            # under the outer block, and its rollback would release the
+            # connection the outer block still uses.
+            raise RuntimeError("Nested database blocks are not supported inside a request transaction.")
+        self._depth += 1
+        try:
+            yield from self._block(query, params)
+        finally:
+            self._depth -= 1
+
+    def _block(self, query: sql.Composed, params: list[str]) -> Iterator[psycopg.Connection]:
         try:
             conn = self._open()
             if params != self._applied:
