@@ -16,7 +16,6 @@ from app.domain.entitlements import (
     decide,
     summarize,
 )
-from app.domain.tenancy import ContextKind
 
 NOW = datetime(2026, 6, 1, 12, 0, tzinfo=UTC)
 LATER = NOW + timedelta(days=20)
@@ -52,41 +51,35 @@ def sub(status: SubscriptionStatus, **kw: object) -> SubscriptionSnapshot:
     ],
 )
 def test_status_matrix(status: SubscriptionStatus, expected: Plan) -> None:
-    assert decide(ContextKind.PERSONAL, [sub(status)], NOW).plan is expected
+    assert decide([sub(status)], NOW).plan is expected
 
 
 def test_no_subscription_is_free() -> None:
-    decision = decide(ContextKind.PERSONAL, [], NOW)
+    decision = decide([], NOW)
     assert decision.plan is Plan.FREE
     assert decision.reason == "no_entitling_subscription"
 
 
 def test_cancel_at_period_end_keeps_pro_until_period_end() -> None:
     s = sub(SubscriptionStatus.ACTIVE, cancel_at_period_end=True)
-    assert decide(ContextKind.PERSONAL, [s], NOW).plan is Plan.PRO
-    assert decide(ContextKind.PERSONAL, [s], LATER + timedelta(seconds=1)).plan is Plan.FREE
+    assert decide([s], NOW).plan is Plan.PRO
+    assert decide([s], LATER + timedelta(seconds=1)).plan is Plan.FREE
 
 
 def test_cancel_at_in_past_revokes_even_if_status_not_yet_updated() -> None:
     s = sub(SubscriptionStatus.ACTIVE, cancel_at=EARLIER)
-    assert decide(ContextKind.PERSONAL, [s], NOW).plan is Plan.FREE
+    assert decide([s], NOW).plan is Plan.FREE
 
 
 def test_unknown_price_never_entitles() -> None:
     s = sub(SubscriptionStatus.ACTIVE, plan_key=PlanKey.UNKNOWN)
-    assert decide(ContextKind.PERSONAL, [s], NOW).plan is Plan.FREE
-
-
-def test_organization_context_is_never_entitled_until_dec_002() -> None:
-    decision = decide(ContextKind.ORGANIZATION, [sub(SubscriptionStatus.ACTIVE)], NOW)
-    assert decision.plan is Plan.FREE
-    assert decision.reason == "organization_context_not_entitled"
+    assert decide([s], NOW).plan is Plan.FREE
 
 
 def test_entitled_subscription_wins_over_canceled_history() -> None:
     old = sub(SubscriptionStatus.CANCELED, stripe_subscription_id="sub_old", current_period_end=EARLIER)
     current = sub(SubscriptionStatus.ACTIVE, stripe_subscription_id="sub_new")
-    decision = decide(ContextKind.PERSONAL, [old, current], NOW)
+    decision = decide([old, current], NOW)
     assert decision.plan is Plan.PRO
     assert decision.subscription is not None
     assert decision.subscription.stripe_subscription_id == "sub_new"

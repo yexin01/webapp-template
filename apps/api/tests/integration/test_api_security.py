@@ -222,14 +222,16 @@ def test_nt11_revoked_token_rejected(harness: Harness) -> None:
     assert harness.client.get("/api/v1/me", headers=headers).status_code == 401
 
 
-def test_nt12_org_context_never_entitled_even_for_subscriber(harness: Harness, world: dict[str, Any]) -> None:
+def test_nt12_subscribers_pro_is_not_shared_with_org_members(harness: Harness, world: dict[str, Any]) -> None:
+    """DEC-002 (b): Alice's Pro covers her own actions in Acme, never Bob's (full table: test_org_entitlements)."""
     from tests.integration.test_billing import make_pro
 
     make_pro(harness, "user_alice")
-    assert harness.client.get("/api/v1/pro/insight", headers=world["alice"]).status_code == 200
-    r = harness.client.get(f"/api/v1/orgs/{ACME}/pro/insight", headers=world["alice"])
+    assert harness.client.get(f"/api/v1/orgs/{ACME}/pro/insight", headers=world["alice"]).status_code == 200
+    r = harness.client.get(f"/api/v1/orgs/{ACME}/pro/insight", headers=world["bob"])
     assert r.status_code == 403
-    assert harness.client.get(f"/api/v1/orgs/{ACME}/entitlement", headers=world["alice"]).json()["plan"] == "free"
+    assert r.json()["code"] == "ENTITLEMENT_REQUIRED"
+    assert harness.client.get(f"/api/v1/orgs/{ACME}/entitlement", headers=world["bob"]).json()["plan"] == "free"
 
 
 def test_real_verifier_end_to_end(make_harness: Any) -> None:

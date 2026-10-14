@@ -11,8 +11,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
-from app.domain.tenancy import ContextKind
-
 
 class Plan(StrEnum):
     FREE = "free"
@@ -107,19 +105,16 @@ def _latest(subs: Sequence[SubscriptionSnapshot]) -> SubscriptionSnapshot:
 
 
 def decide(
-    context_kind: ContextKind,
     subscriptions: Sequence[SubscriptionSnapshot],
     now: datetime,
 ) -> EntitlementDecision:
-    """Decide the effective plan for an actor in a context.
+    """Decide the effective plan for an actor from the actor's own subscriptions.
 
-    Organization contexts are never entitled until DEC-002 is resolved
-    (BILL-ORG-01): an individual's subscription is not shared with, or used
-    inside, organizations.
+    DEC-002 option (b), ADR-0002 (BILL-ORG-02): the same decision applies in
+    the personal context and in every organization the actor belongs to.
+    Callers pass only the actor's subscriptions, so Pro is never shared with
+    other members; membership itself is checked before this is reached.
     """
-    if context_kind is ContextKind.ORGANIZATION:
-        return EntitlementDecision(Plan.FREE, "organization_context_not_entitled")
-
     entitling = [s for s in subscriptions if _is_entitling(s, now)]
     if entitling:
         sub = _latest(entitling)
@@ -144,7 +139,7 @@ def summarize(
     now: datetime,
 ) -> BillingSummary:
     """Summarize personal billing state for presentation."""
-    decision = decide(ContextKind.PERSONAL, subscriptions, now)
+    decision = decide(subscriptions, now)
     sub = decision.subscription
     if sub is not None:
         end = _scheduled_end(sub)

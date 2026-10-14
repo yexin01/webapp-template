@@ -66,10 +66,11 @@ describe("paywall", () => {
     expect(screen.getByRole("link", { name: "See plans" })).toHaveAttribute("href", "/billing");
   });
 
-  it("explains organization limitation without an upgrade link", () => {
+  it("explains in organizations that Pro is personal and not shared, with an upgrade link", () => {
     render(<Paywall feature="pro_insight" inOrganization />);
-    expect(screen.getByText(/not available inside organizations/)).toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "See plans" })).toBeNull();
+    expect(screen.getByText(/your own Pro plan/)).toBeInTheDocument();
+    expect(screen.getByText(/not shared with other members/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "See plans" })).toHaveAttribute("href", "/billing");
   });
 });
 

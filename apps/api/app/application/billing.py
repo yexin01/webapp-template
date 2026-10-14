@@ -139,7 +139,7 @@ class BillingService:
     def entitlement(self, ctx: TenantContext) -> EntitlementDecision:
         with self._uow.as_tenant(ctx) as repo:
             subs = repo.list_subscriptions(ctx.user_id)
-        return decide(ctx.kind, subs, self._clock.now())
+        return decide(subs, self._clock.now())
 
     def require_pro(self, ctx: TenantContext) -> None:
         authorize(ctx, Action.PRO_FEATURE_USE)
@@ -161,7 +161,7 @@ class BillingService:
         with self._uow.as_tenant(ctx) as repo:
             subs = repo.list_subscriptions(ctx.user_id)
             customer_id = repo.get_billing_customer_id(ctx.user_id)
-        if decide(ctx.kind, subs, self._clock.now()).plan is Plan.PRO:
+        if decide(subs, self._clock.now()).plan is Plan.PRO:
             raise ConflictError("You already have Pro. Manage your plan from the billing page.")
 
         if customer_id is None:

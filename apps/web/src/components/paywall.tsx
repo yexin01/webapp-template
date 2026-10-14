@@ -18,17 +18,15 @@ export function Paywall({ feature, inOrganization = false }: Props) {
       <h2 id="paywall-title">Upgrade to Pro</h2>
       {inOrganization ? (
         <p>
-          Pro features are not available inside organizations yet. Switch to your personal workspace to use
-          your Pro plan.
+          This feature needs your own Pro plan. Pro covers your actions in every organization you belong to and
+          is not shared with other members.
         </p>
       ) : (
         <p>This feature is part of the Pro plan. Upgrade monthly or yearly; you can cancel anytime.</p>
       )}
-      {!inOrganization && (
-        <Link className="button button-primary" href="/billing">
-          See plans
-        </Link>
-      )}
+      <Link className="button button-primary" href="/billing">
+        See plans
+      </Link>
     </section>
   );
 }

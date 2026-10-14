@@ -35,9 +35,6 @@ export function Workspace() {
         <h1>{organization ? organization.name : "Personal workspace"}</h1>
         {plan && <PlanBadge plan={plan} />}
       </div>
-      {organization && plan === "free" && (
-        <p className="muted">Pro features are not yet available inside organizations.</p>
-      )}
       <ProjectsPanel key={orgId ?? "personal"} orgId={orgId} canDelete={canDelete} />
       <LlmCheck />
     </div>

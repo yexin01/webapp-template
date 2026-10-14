@@ -56,6 +56,6 @@ def pro_insight(ctx: PersonalContext, container: ContainerDep) -> ProInsight:
 
 @router.get("/orgs/{org_id}/pro/insight", response_model=ProInsight, responses=ERRORS)
 def org_pro_insight(ctx: OrganizationContext, container: ContainerDep) -> ProInsight:
-    # Always denied until DEC-002 defines organization entitlements.
+    # The caller's own subscription decides, as in the personal context (DEC-002, ADR-0002).
     container.billing.require_pro(ctx)
     return ProInsight(message="This content is only available on the Pro plan.", generated_at=container.clock.now())
