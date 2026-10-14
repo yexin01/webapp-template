@@ -16,11 +16,10 @@ from enum import StrEnum
 
 from app.application.llm import LLMService
 from app.application.rate_limit import RateLimiter
-from app.domain.authorization import Action, authorize
 from app.domain.catalog import PriceCatalog
 from app.domain.entitlements import PlanKey
 from app.domain.errors import DomainError, NotFoundError
-from app.domain.tenancy import TenantContext
+from app.domain.tenancy import ContextKind, TenantContext
 from app.ports import Analytics, BillingProvider, ErrorReporter, MembershipDirectory, UnitOfWork
 
 _DAY = 86_400
@@ -75,6 +74,18 @@ class CheckResult:
 
 
 @dataclass(frozen=True, slots=True)
+class OperatorPolicy:
+    """Who may use diagnostics. They expose configuration and call external
+    services, so they are an operator tool, not a user feature."""
+
+    operator_ids: frozenset[str]
+    allow_any_signed_in_user: bool = False
+
+    def permits(self, external_user_id: str) -> bool:
+        return self.allow_any_signed_in_user or external_user_id in self.operator_ids
+
+
+@dataclass(frozen=True, slots=True)
 class _Verdict:
     outcome: Outcome
     summary: str
@@ -87,6 +98,7 @@ class DiagnosticsService:
         self,
         *,
         enabled: bool,
+        operators: OperatorPolicy,
         integrations: Sequence[IntegrationInfo],
         uow: UnitOfWork,
         directory: MembershipDirectory,
@@ -101,6 +113,7 @@ class DiagnosticsService:
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self._enabled = enabled
+        self._operators = operators
         self._integrations = {info.key: info for info in integrations}
         self._uow = uow
         self._directory = directory
@@ -146,10 +159,12 @@ class DiagnosticsService:
         )
 
     def _guard(self, ctx: TenantContext) -> None:
-        # Disabled diagnostics are indistinguishable from a missing route.
-        if not self._enabled:
+        # Disabled diagnostics, other contexts, and non-operators are all
+        # indistinguishable from a missing route (deny by default).
+        if not self._enabled or ctx.kind is not ContextKind.PERSONAL:
             raise NotFoundError()
-        authorize(ctx, Action.DIAGNOSTICS_RUN)
+        if not self._operators.permits(ctx.external_user_id):
+            raise NotFoundError()
 
     def _check(self, ctx: TenantContext, key: IntegrationKey) -> _Verdict:
         checks: dict[IntegrationKey, Callable[[TenantContext], _Verdict]] = {

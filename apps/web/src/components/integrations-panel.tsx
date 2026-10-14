@@ -53,8 +53,8 @@ export function IntegrationsPanel() {
       <div className="stack">
         <h1>Integrations</h1>
         <p className="notice">
-          Diagnostics are disabled in this environment. Set <code>DIAGNOSTICS_ENABLED=true</code> to enable
-          them.
+          Diagnostics are not available: they are disabled in this environment, or your account is not listed
+          in <code>DIAGNOSTICS_OPERATOR_IDS</code>.
         </p>
       </div>
     );

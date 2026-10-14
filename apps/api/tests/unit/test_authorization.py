@@ -27,6 +27,21 @@ def test_personal_context_allows_own_actions() -> None:
         assert is_allowed(personal(), action)
 
 
+def test_personal_actions_are_listed_explicitly() -> None:
+    """A new action must be granted deliberately, never inherited from the enum."""
+    import ast
+    import inspect
+
+    from app.domain import authorization
+
+    tree = ast.parse(inspect.getsource(authorization))
+    assignments = [
+        n for n in ast.walk(tree) if isinstance(n, ast.AnnAssign) and getattr(n.target, "id", "") == "_PERSONAL_ALLOWED"
+    ]
+    assert assignments, "_PERSONAL_ALLOWED not found"
+    assert "frozenset(Action)" not in ast.unparse(assignments[0].value)
+
+
 def test_member_cannot_delete_or_manage_billing() -> None:
     ctx = org(Role.MEMBER)
     assert is_allowed(ctx, Action.PROJECT_READ)

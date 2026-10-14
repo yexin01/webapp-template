@@ -16,12 +16,13 @@ from app.application.diagnostics import (
     IntegrationInfo,
     IntegrationKey,
     IntegrationMode,
+    OperatorPolicy,
     Outcome,
 )
 from app.application.llm import LLMService
 from app.application.rate_limit import RateLimiter
 from app.domain.catalog import PriceCatalog
-from app.domain.errors import ForbiddenError
+from app.domain.errors import NotFoundError
 from app.domain.tenancy import ContextKind, Role, TenantContext
 from app.infrastructure.fakes import StaticMembershipDirectory
 from app.infrastructure.llm_providers import MockLLMProvider
@@ -58,11 +59,12 @@ class _Clock:
         return datetime(2026, 1, 1, tzinfo=UTC)
 
 
-def service(description: ConnectionDescription) -> DiagnosticsService:
+def service(description: ConnectionDescription, operators: OperatorPolicy | None = None) -> DiagnosticsService:
     uow: Any = _UoW(description)
     limiter = RateLimiter(uow, _Clock())
     return DiagnosticsService(
         enabled=True,
+        operators=operators or OperatorPolicy(frozenset({"user_a"})),
         integrations=[IntegrationInfo(IntegrationKey.DATABASE, "PostgreSQL", IntegrationMode.LOCAL)],
         uow=uow,
         directory=StaticMembershipDirectory(),
@@ -102,7 +104,21 @@ def test_safe_session_passes() -> None:
     assert service(SAFE).run(PERSONAL, IntegrationKey.DATABASE).outcome is Outcome.PASSED
 
 
-def test_organization_context_is_forbidden() -> None:
+def test_organization_context_is_not_found() -> None:
     org = TenantContext(uuid.uuid4(), "user_a", ContextKind.ORGANIZATION, uuid.uuid4(), "org_1", Role.ADMIN)
-    with pytest.raises(ForbiddenError):
+    with pytest.raises(NotFoundError):
         service(SAFE).integrations(org)
+
+
+def test_non_operator_is_not_found() -> None:
+    outsider = TenantContext(uuid.uuid4(), "user_b", ContextKind.PERSONAL)
+    with pytest.raises(NotFoundError):
+        service(SAFE).integrations(outsider)
+    with pytest.raises(NotFoundError):
+        service(SAFE).run(outsider, IntegrationKey.DATABASE)
+
+
+def test_open_policy_admits_any_signed_in_user() -> None:
+    anyone = TenantContext(uuid.uuid4(), "user_z", ContextKind.PERSONAL)
+    open_policy = OperatorPolicy(frozenset(), allow_any_signed_in_user=True)
+    assert service(SAFE, open_policy).run(anyone, IntegrationKey.DATABASE).outcome is Outcome.PASSED

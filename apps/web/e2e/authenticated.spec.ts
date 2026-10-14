@@ -7,6 +7,8 @@ import { expect, test } from "@playwright/test";
  * Stripe checkout initiation. Skipped unless these are set:
  *   E2E_CLERK_USER_EMAIL, E2E_CLERK_USER_PASSWORD (a dedicated test user)
  *   plus the normal sandbox keys in the root .env.
+ * The integrations test also needs APP_ENV=local, or the test user's Clerk ID
+ * in DIAGNOSTICS_OPERATOR_IDS.
  * Results from this file are "sandbox" evidence, never "live" evidence.
  */
 const email = process.env.E2E_CLERK_USER_EMAIL;

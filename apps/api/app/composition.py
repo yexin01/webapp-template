@@ -15,7 +15,13 @@ from urllib.parse import urlparse
 
 from app.application.billing import BillingService, BillingUrls
 from app.application.context import ContextResolver
-from app.application.diagnostics import DiagnosticsService, IntegrationInfo, IntegrationKey, IntegrationMode
+from app.application.diagnostics import (
+    DiagnosticsService,
+    IntegrationInfo,
+    IntegrationKey,
+    IntegrationMode,
+    OperatorPolicy,
+)
 from app.application.identity_sync import IdentitySyncService
 from app.application.llm import LLMService
 from app.application.projects import ProjectService
@@ -146,6 +152,10 @@ def build_container(settings: Settings, **overrides: Any) -> Container:
         llm=llm,
         diagnostics=DiagnosticsService(
             enabled=settings.diagnostics_active,
+            operators=OperatorPolicy(
+                frozenset(settings.diagnostics_operator_ids),
+                allow_any_signed_in_user=settings.diagnostics_open_to_any_user,
+            ),
             integrations=pick("integrations", lambda: describe_integrations(settings)),
             uow=uow,
             directory=directory,

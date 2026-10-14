@@ -27,7 +27,9 @@ SECRETS = {
     "llm_api_key": "llm-" + "k" * 30,
     "sentry_dsn": "https://" + "d" * 32 + "@o1.ingest.sentry.invalid/2",
 }
+OPERATORS = {"diagnostics_operator_ids": "user_a,user_b"}
 SANDBOX = {
+    **OPERATORS,
     "clerk_publishable_key": PUBLISHABLE,
     "clerk_authorized_parties": "http://localhost:3000",
     "billing_mode": "sandbox",
@@ -74,6 +76,11 @@ def sandbox(make_harness: Callable[..., Harness]) -> Callable[..., Harness]:
     return factory
 
 
+@pytest.fixture
+def operator_harness(make_harness: Callable[..., Harness]) -> Harness:
+    return make_harness(OPERATORS)
+
+
 def check(h: Harness, key: str, user: str = "user_a") -> dict[str, Any]:
     response = h.client.post(f"{BASE}/{key}/check", headers=h.login(user))
     assert response.status_code == 200, response.text
@@ -109,17 +116,32 @@ def test_report_lists_every_integration_without_secrets(sandbox: Callable[..., H
     assert "postgres:postgres" not in raw
 
 
-def test_mock_and_disabled_integrations_are_skipped_not_passed(harness: Harness) -> None:
+def test_non_operators_cannot_see_or_run_diagnostics(make_harness: Callable[..., Harness]) -> None:
+    """Diagnostics expose configuration and call providers: deny by default."""
+    h = make_harness({"diagnostics_operator_ids": "user_ops"})
+    outsider = h.login("user_a")
+    assert h.client.get(BASE, headers=outsider).status_code == 404
+    assert h.client.post(f"{BASE}/database/check", headers=outsider).status_code == 404
+    operator = h.login("user_ops")
+    assert h.client.get(BASE, headers=operator).status_code == 200
+
+    # Without any operator, only APP_ENV=local opens diagnostics to signed-in users.
+    closed = make_harness()
+    assert closed.client.get(BASE, headers=closed.login("user_a")).status_code == 404
+
+
+def test_mock_and_disabled_integrations_are_skipped_not_passed(operator_harness: Harness) -> None:
+    h = operator_harness
     for key in ("billing", "llm", "identity", "analytics", "error_reporting"):
-        body = check(harness, key)
+        body = check(h, key)
         assert body["outcome"] == "skipped", key
         assert body["mode"] in ("mock", "disabled")
-    assert harness.billing.calls == []
-    assert harness.analytics.events == []
+    assert h.billing.calls == []
+    assert h.analytics.events == []
 
 
-def test_database_check_runs_as_least_privileged_role_with_rls(harness: Harness) -> None:
-    body = check(harness, "database")
+def test_database_check_runs_as_least_privileged_role_with_rls(operator_harness: Harness) -> None:
+    body = check(operator_harness, "database")
     assert body["outcome"] == "passed", body
     assert body["mode"] == "local"
     assert "as app_api" in body["summary"]
@@ -209,7 +231,7 @@ def test_error_reporting_check_returns_event_reference(sandbox: Callable[..., Ha
 
 
 def test_checks_are_rate_limited_per_user(make_harness: Callable[..., Harness]) -> None:
-    h = make_harness({"diagnostics_runs_per_user_per_minute": 2})
+    h = make_harness({**OPERATORS, "diagnostics_runs_per_user_per_minute": 2})
     headers = h.login("user_a")
     assert h.client.post(f"{BASE}/database/check", headers=headers).status_code == 200
     assert h.client.post(f"{BASE}/database/check", headers=headers).status_code == 200
@@ -221,16 +243,28 @@ def test_checks_are_rate_limited_per_user(make_harness: Callable[..., Harness]) 
 
 
 def test_disabled_diagnostics_are_not_found(make_harness: Callable[..., Harness]) -> None:
-    h = make_harness({"diagnostics_enabled": False})
+    h = make_harness({**OPERATORS, "diagnostics_enabled": False})
     headers = h.login("user_a")
     assert h.client.get(BASE, headers=headers).status_code == 404
     assert h.client.post(f"{BASE}/database/check", headers=headers).status_code == 404
 
 
-def test_unknown_integration_is_rejected(harness: Harness) -> None:
-    response = harness.client.post(f"{BASE}/smtp/check", headers=harness.login("user_a"))
+def test_unknown_integration_is_rejected(operator_harness: Harness) -> None:
+    response = operator_harness.client.post(f"{BASE}/smtp/check", headers=operator_harness.login("user_a"))
     assert response.status_code == 422
     assert json.loads(response.text)["code"] == "VALIDATION_FAILED"
+
+
+def test_operator_ids_parsed_and_local_default_is_open_only_locally() -> None:
+    from tests.conftest import make_settings
+
+    assert make_settings(diagnostics_operator_ids=" user_1, ,user_2 ").diagnostics_operator_ids == ["user_1", "user_2"]
+    assert Settings.model_construct(app_env=AppEnv.LOCAL, diagnostics_operator_ids=[]).diagnostics_open_to_any_user
+    assert not Settings.model_construct(
+        app_env=AppEnv.LOCAL, diagnostics_operator_ids=["user_1"]
+    ).diagnostics_open_to_any_user
+    for env in (AppEnv.TEST, AppEnv.PREVIEW, AppEnv.PRODUCTION):
+        assert not Settings.model_construct(app_env=env, diagnostics_operator_ids=[]).diagnostics_open_to_any_user
 
 
 def test_diagnostics_default_off_in_production_only() -> None:

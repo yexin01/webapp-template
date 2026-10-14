@@ -90,10 +90,10 @@ describe("integrations panel", () => {
     expect(within(card("PostgreSQL")).getByRole("alert")).toHaveTextContent("Slow down");
   });
 
-  it("explains when diagnostics are disabled", async () => {
+  it("explains when diagnostics are unavailable", async () => {
     api.integrations.mockRejectedValue(new ApiError(404, "NOT_FOUND", "Not found.", null));
     render(<IntegrationsPanel />);
-    expect(await screen.findByText(/Diagnostics are disabled in this environment/)).toBeInTheDocument();
+    expect(await screen.findByText(/Diagnostics are not available/)).toBeInTheDocument();
   });
 
   it("reports disabled browser telemetry as skipped", async () => {

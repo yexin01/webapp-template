@@ -20,13 +20,22 @@ class Action(StrEnum):
     BILLING_MANAGE = "billing:manage"
     PRO_FEATURE_USE = "pro_feature:use"
     LLM_CHECK = "llm:check"
-    DIAGNOSTICS_RUN = "diagnostics:run"
 
 
-_PERSONAL_ALLOWED: frozenset[Action] = frozenset(Action)
+# Listed explicitly so that a new action is never granted implicitly.
+_PERSONAL_ALLOWED: frozenset[Action] = frozenset(
+    {
+        Action.PROJECT_READ,
+        Action.PROJECT_CREATE,
+        Action.PROJECT_DELETE,
+        Action.BILLING_MANAGE,
+        Action.PRO_FEATURE_USE,
+        Action.LLM_CHECK,
+    }
+)
 
 # Billing is owned by individuals, so it is never managed from an
-# organization context. Integration diagnostics are a personal-context tool.
+# organization context.
 _ORGANIZATION_ALLOWED: dict[Role, frozenset[Action]] = {
     Role.MEMBER: frozenset({Action.PROJECT_READ, Action.PROJECT_CREATE, Action.PRO_FEATURE_USE, Action.LLM_CHECK}),
     Role.ADMIN: frozenset(

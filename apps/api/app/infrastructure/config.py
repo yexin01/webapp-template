@@ -109,6 +109,9 @@ class Settings(BaseSettings):
 
     # Integration diagnostics page. Unset means enabled everywhere except production.
     diagnostics_enabled: bool | None = None
+    # Clerk user IDs allowed to use diagnostics. Empty: only when APP_ENV=local,
+    # where any signed-in user (the developer) may use them.
+    diagnostics_operator_ids: Annotated[list[str], NoDecode] = Field(default_factory=list)
     diagnostics_runs_per_user_per_minute: int = Field(default=20, ge=1, le=600)
     diagnostics_runs_global_per_day: int = Field(default=1_000, ge=1, le=100_000)
 
@@ -123,6 +126,8 @@ class Settings(BaseSettings):
                     continue
                 if key.lower() == "clerk_authorized_parties" and isinstance(data[key], str):
                     data[key] = [p.strip().rstrip("/") for p in data[key].split(",") if p.strip()]
+                if key.lower() == "diagnostics_operator_ids" and isinstance(data[key], str):
+                    data[key] = [p.strip() for p in data[key].split(",") if p.strip()]
         return data
 
     @model_validator(mode="after")
@@ -235,6 +240,10 @@ class Settings(BaseSettings):
         if self.diagnostics_enabled is None:
             return self.app_env is not AppEnv.PRODUCTION
         return self.diagnostics_enabled
+
+    @property
+    def diagnostics_open_to_any_user(self) -> bool:
+        return self.app_env is AppEnv.LOCAL and not self.diagnostics_operator_ids
 
     @property
     def clerk_issuer(self) -> str | None:
