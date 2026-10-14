@@ -15,11 +15,6 @@ import psycopg
 
 from app.kernel.infrastructure.config import REPO_ROOT
 
-if REPO_ROOT is None:
-    # Migrations ship in supabase/, which a deployed bundle does not contain.
-    raise RuntimeError("Migrations run from a repository checkout, not from a deployed bundle.")
-MIGRATIONS_DIR = REPO_ROOT / "supabase" / "migrations"
-SEED_FILE = REPO_ROOT / "supabase" / "seed.sql"
 LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "host.docker.internal"})
 
 _LEDGER_DDL = """
@@ -59,9 +54,16 @@ def require_local_database(url: str, operation: str) -> None:
         )
 
 
-def discover(directory: Path = MIGRATIONS_DIR) -> list[Migration]:
+def repository_file(*parts: str) -> Path:
+    """A path in the repository checkout. Migrations ship in supabase/, which a deployed bundle does not contain."""
+    if REPO_ROOT is None:
+        raise RuntimeError("Migrations run from a repository checkout, not from a deployed bundle.")
+    return REPO_ROOT.joinpath(*parts)
+
+
+def discover(directory: Path | None = None) -> list[Migration]:
     migrations: list[Migration] = []
-    for path in sorted(directory.glob("*.sql")):
+    for path in sorted((directory or repository_file("supabase", "migrations")).glob("*.sql")):
         version = path.name.split("_", 1)[0]
         if not version.isdigit():
             raise MigrationError(f"Migration file name must start with a numeric version: {path.name}")
@@ -73,7 +75,7 @@ def discover(directory: Path = MIGRATIONS_DIR) -> list[Migration]:
     return migrations
 
 
-def migrate(url: str, directory: Path = MIGRATIONS_DIR) -> list[str]:
+def migrate(url: str, directory: Path | None = None) -> list[str]:
     """Apply pending migrations in order, each in its own transaction."""
     applied_now: list[str] = []
     with psycopg.connect(url, autocommit=True) as conn:
@@ -102,8 +104,9 @@ def migrate(url: str, directory: Path = MIGRATIONS_DIR) -> list[str]:
     return applied_now
 
 
-def seed(url: str, seed_file: Path = SEED_FILE) -> None:
+def seed(url: str, seed_file: Path | None = None) -> None:
     require_local_database(url, "seed synthetic data")
+    seed_file = seed_file or repository_file("supabase", "seed.sql")
     # Runs as the local connecting role: seeding inserts rows into every
     # table, which neither runtime role is permitted to do.
     with psycopg.connect(url) as conn, conn.transaction():

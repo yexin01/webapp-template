@@ -31,7 +31,7 @@ BOUND_SECONDS = STATEMENT_TIMEOUT_MS / 1000 + CONNECT_TIMEOUT + 2.0
 
 
 class FaultProxy:
-    """A loopback TCP proxy that can freeze traffic or drop every connection."""
+    """A loopback TCP proxy that can freeze traffic, on demand or at a given message, or drop every connection."""
 
     def __init__(self, upstream: tuple[str, int]) -> None:
         self._upstream = upstream
@@ -41,12 +41,19 @@ class FaultProxy:
         self._closed = threading.Event()
         self._lock = threading.Lock()
         self._sockets: list[socket.socket] = []
+        self._freeze_on: bytes | None = None
+        self.connections = 0  # accepted client connections
         threading.Thread(target=self._accept, daemon=True).start()
 
     def freeze(self) -> None:
         self._frozen.set()
 
+    def freeze_on(self, marker: bytes) -> None:
+        """Freeze when a client message containing ``marker`` arrives; that message never reaches the server."""
+        self._freeze_on = marker
+
     def thaw(self) -> None:
+        self._freeze_on = None
         self._frozen.clear()
 
     def drop_connections(self) -> None:
@@ -71,11 +78,12 @@ class FaultProxy:
                 return
             upstream = socket.create_connection(self._upstream)
             with self._lock:
+                self.connections += 1
                 self._sockets += [client, upstream]
-            for source, target in ((client, upstream), (upstream, client)):
-                threading.Thread(target=self._pump, args=(source, target), daemon=True).start()
+            for source, target, from_client in ((client, upstream, True), (upstream, client, False)):
+                threading.Thread(target=self._pump, args=(source, target, from_client), daemon=True).start()
 
-    def _pump(self, source: socket.socket, target: socket.socket) -> None:
+    def _pump(self, source: socket.socket, target: socket.socket, from_client: bool) -> None:
         try:
             while not self._closed.is_set():
                 if self._frozen.is_set():
@@ -87,6 +95,12 @@ class FaultProxy:
                 data = source.recv(65536)
                 if not data:
                     break
+                marker = self._freeze_on
+                if from_client and marker is not None and marker in data:
+                    self._frozen.set()
+                    continue
+                while self._frozen.is_set() and not self._closed.is_set():
+                    time.sleep(0.01)  # bytes read just as the freeze began wait for the thaw
                 target.sendall(data)
         except OSError:
             pass
@@ -142,11 +156,13 @@ def test_a_database_that_stops_responding_fails_within_bounds(proxy: tuple[Fault
     database = make_database(url)
     try:
         assert select_one(database) == 1
+        connections = fault.connections
         fault.freeze()
         finished, error, elapsed = finishes_within(10, lambda: select_one(database))
         assert finished, "a database call hung past every timeout"
         assert isinstance(error, DependencyUnavailableError), error
         assert elapsed < BOUND_SECONDS, f"took {elapsed:.1f} s"
+        assert fault.connections == connections, "a timed-out call was retried on a new connection"
         fault.thaw()
         assert select_one(database) == 1  # the abandoned connection was discarded
     finally:
@@ -211,4 +227,64 @@ def test_a_request_transaction_survives_connections_that_died_while_idle(proxy: 
                 commit()
         assert row == (1,)
     finally:
+        database.close()
+
+
+@pytest.mark.parametrize("scoped", [False, True], ids=["transaction", "request-scope"])
+def test_a_rollback_that_never_completes_reports_unavailable(proxy: tuple[FaultProxy, str], scoped: bool) -> None:
+    """A block raises a non-database error, and the pooler stops responding at the cleanup ROLLBACK."""
+    fault, url = proxy
+    database = make_database(url)
+
+    def request() -> None:
+        token = database.begin_request_scope() if scoped else None
+        try:
+            with database.transaction(API_ROLE, {}) as conn:
+                conn.execute("SELECT 1")
+                fault.freeze_on(b"ROLLBACK")
+                raise LookupError("not found")
+        finally:
+            if token is not None:
+                commit = database.end_request_scope(token)
+                if commit is not None:
+                    commit()
+
+    try:
+        finished, error, elapsed = finishes_within(10, request)
+        assert finished, "a rollback hung past every timeout"
+        assert isinstance(error, DependencyUnavailableError), repr(error)
+        assert elapsed < BOUND_SECONDS, f"took {elapsed:.1f} s"
+        fault.thaw()
+        assert select_one(database) == 1
+    finally:
+        fault.thaw()
+        database.close()
+
+
+@pytest.mark.parametrize("scoped", [False, True], ids=["transaction", "request-scope"])
+def test_a_commit_that_never_completes_reports_unavailable(proxy: tuple[FaultProxy, str], scoped: bool) -> None:
+    fault, url = proxy
+    database = make_database(url)
+
+    def request() -> None:
+        token = database.begin_request_scope() if scoped else None
+        try:
+            with database.transaction(API_ROLE, {}) as conn:
+                conn.execute("SELECT 1")
+                fault.freeze_on(b"COMMIT")
+        finally:
+            if token is not None:
+                commit = database.end_request_scope(token)
+                if commit is not None:
+                    commit()
+
+    try:
+        finished, error, elapsed = finishes_within(10, request)
+        assert finished, "a commit hung past every timeout"
+        assert isinstance(error, DependencyUnavailableError), repr(error)
+        assert elapsed < BOUND_SECONDS, f"took {elapsed:.1f} s"
+        fault.thaw()
+        assert select_one(database) == 1
+    finally:
+        fault.thaw()
         database.close()

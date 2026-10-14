@@ -16,11 +16,16 @@ from pathlib import Path
 from pydantic import AliasChoices, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-_HERE = Path(__file__).resolve()
-# In a repository checkout this file is apps/api/app/kernel/infrastructure/config.py.
-# A deployed bundle holds only the API package (index.py and app/ at the function
-# root), so it has no repository root and no .env file (DEC-001).
-REPO_ROOT: Path | None = _HERE.parents[5] if _HERE.parents[3].parts[-2:] == ("apps", "api") else None
+# In a repository checkout this file is apps/api/app/kernel/infrastructure/config.py,
+# five levels below the root, which holds pnpm-workspace.yaml. A deployed bundle
+# holds only the API package (index.py and app/ at the function root), so it has
+# no repository root and no .env file (DEC-001). Symlinks are kept, not resolved,
+# so a symlinked checkout still finds its root.
+_HERE = Path(__file__).absolute()
+_CANDIDATE = _HERE.parents[5] if len(_HERE.parents) > 5 else None
+REPO_ROOT: Path | None = (
+    _CANDIDATE if _CANDIDATE is not None and (_CANDIDATE / "pnpm-workspace.yaml").is_file() else None
+)
 if REPO_ROOT is not None and not (REPO_ROOT / "supabase" / "migrations").is_dir():  # pragma: no cover - layout guard
     raise RuntimeError(f"repository root not found from {__file__}")
 ENV_FILE: Path | None = REPO_ROOT / ".env" if REPO_ROOT is not None else None
@@ -115,6 +120,10 @@ class CoreSettings(BaseSettings):
 def core_problems(s: CoreSettings) -> list[str]:
     problems: list[str] = []
     production = s.app_env is AppEnv.PRODUCTION
+    if ENV_FILE is None and "app_env" not in s.model_fields_set:
+        # A deployed bundle has no .env. Falling back to `local` there would
+        # allow mock integrations and open diagnostics to every signed-in user.
+        problems.append("APP_ENV is required outside a repository checkout (set preview or production)")
     problems += mode_problems("ANALYTICS_MODE", s.analytics_mode, s.app_env)
     problems += mode_problems("ERROR_REPORTING_MODE", s.error_reporting_mode, s.app_env)
     if s.database_url is None:

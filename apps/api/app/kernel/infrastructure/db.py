@@ -75,14 +75,19 @@ class BoundedConnection(psycopg.Connection[TupleRow]):
 
     psycopg sends every round trip (execute, fetch, commit, rollback) through
     ``wait``. Past the deadline the request is still in flight, so the
-    connection is closed: the caller gets ``OperationalError`` (a 503), the
-    server aborts the transaction, and the pool replaces the connection.
+    connection is closed, the caller gets ``OperationalError`` (a 503), and
+    the pool replaces the connection. The server then discards any open
+    transaction, except that a ``COMMIT`` it had already applied stays
+    committed: after a deadline on ``COMMIT``, the outcome is unknown.
     """
 
     round_trip_timeout: float = 15.0  # set per pool by ``Database``
 
     def wait(self, gen: PQGen[RV], interval: float = _PSYCOPG_WAIT_INTERVAL, timeout: float | None = None) -> RV:
-        deadline = self.round_trip_timeout if timeout is None else timeout
+        if timeout is not None:
+            # psycopg's own timed waits (``notifies``) expect its timeout error and a usable connection.
+            return super().wait(gen, interval, timeout)
+        deadline = self.round_trip_timeout
         started = time.monotonic()
         try:
             return super().wait(gen, interval, deadline)
@@ -302,7 +307,13 @@ class RequestScope:
     def _rollback(self, exc: BaseException) -> None:
         stack, self._stack, self._conn, self._applied = self._stack, None, None, None
         if stack is not None:
-            stack.__exit__(type(exc), exc, exc.__traceback__)
+            try:
+                stack.__exit__(type(exc), exc, exc.__traceback__)
+            except psycopg.OperationalError as rollback_error:
+                # The ROLLBACK itself failed, so the connection is closed and the
+                # server discards the transaction. Report the outage, as an
+                # unscoped transaction does.
+                raise DependencyUnavailableError(_UNAVAILABLE) from rollback_error
 
 
 # ---------------------------------------------------------------------------

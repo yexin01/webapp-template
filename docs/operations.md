@@ -28,7 +28,7 @@ The proof also built and ran a second candidate: one Vercel project with [Servic
 Before a first deployment:
 
 1. Complete the DEC-001 proof in a preview environment and record the findings.
-2. Configure environment variables per environment in the hosting provider. Never copy production values elsewhere.
+2. Configure environment variables per environment in the hosting provider. Never copy production values elsewhere. Set `APP_ENV` explicitly (`preview` or `production`): a deployed bundle has no `.env` file, so it refuses to start without it.
 3. Apply migrations (below) **before** deploying code that depends on them.
 4. Add platform rate-limit rules for coarse per-IP limits (DEC-011). Application-level limits use PostgreSQL counters.
 
@@ -190,7 +190,7 @@ From the DEC-001 local proof ([evidence](../dev-docs/evidence/dec-001-vercel-pyt
 | Runtime | `python3.12` on x86_64. Vercel's runtime shim (`vercel_runtime`, with a vendored uvicorn) serves the ASGI app, and one instance serves concurrent requests. Local: verified in an Amazon Linux 2023 container. |
 | Bundle | Local: 74.3 MiB uncompressed, installed from `uv.lock` with Linux wheels. Documented limit: 500 MB. `excludeFiles` keeps `tests/` out. |
 | Function root | Read-only. The API writes nothing there, and in a bundle it reads no `.env` file: configuration comes from environment variables only. |
-| Cold start | Local: about 1.9 s to the first response under x86_64 emulation, and 0.4 s natively. Platform cold starts are not measured: pre-warming and bytecode caching differ. |
+| Cold start | Local: 2 to 4 s to the first response under x86_64 emulation (it varies with machine load), and about 0.5 s natively. Platform cold starts are not measured: pre-warming and bytecode caching differ. |
 | Duration | Documented: 300 s by default (the maximum on Hobby); up to 800 s on Pro and Enterprise. |
 | Payload | Documented: 4.5 MB request and response bodies. The API rejects bodies over `MAX_REQUEST_BODY_BYTES` (1 MB) first. |
 | Database | Use the transaction pooler. Every setting is transaction-local and prepared statements are off (local: verified with PgBouncer in transaction mode). A database or pooler that stops responding fails each call after the round-trip deadline (15 s by default). |
