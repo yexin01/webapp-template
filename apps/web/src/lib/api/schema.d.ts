@@ -55,6 +55,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/diagnostics/integrations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Integrations */
+        get: operations["list_integrations_api_v1_diagnostics_integrations_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/diagnostics/integrations/{key}/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Run Check */
+        post: operations["run_check_api_v1_diagnostics_integrations__key__check_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/entitlement": {
         parameters: {
             query?: never;
@@ -347,6 +381,52 @@ export interface components {
              */
             status: "ok";
         };
+        /** IntegrationCheck */
+        IntegrationCheck: {
+            /** Error Code */
+            error_code: string | null;
+            key: components["schemas"]["IntegrationKey"];
+            /** Latency Ms */
+            latency_ms: number;
+            mode: components["schemas"]["IntegrationMode"];
+            outcome: components["schemas"]["Outcome"];
+            /**
+             * Reference
+             * @description Provider reference for this run, such as a Sentry event ID
+             */
+            reference: string | null;
+            /** Summary */
+            summary: string;
+        };
+        /**
+         * IntegrationKey
+         * @enum {string}
+         */
+        IntegrationKey: "database" | "identity" | "billing" | "llm" | "analytics" | "error_reporting";
+        /**
+         * IntegrationMode
+         * @enum {string}
+         */
+        IntegrationMode: "local" | "mock" | "sandbox" | "live" | "disabled";
+        /** IntegrationStatus */
+        IntegrationStatus: {
+            /** Details */
+            details: string[];
+            key: components["schemas"]["IntegrationKey"];
+            mode: components["schemas"]["IntegrationMode"];
+            /** Name */
+            name: string;
+        };
+        /** IntegrationsReport */
+        IntegrationsReport: {
+            /**
+             * Environment
+             * @enum {string}
+             */
+            environment: "local" | "test" | "preview" | "production";
+            /** Integrations */
+            integrations: components["schemas"]["IntegrationStatus"][];
+        };
         /** LLMCheck */
         LLMCheck: {
             /** Error Code */
@@ -368,6 +448,11 @@ export interface components {
              */
             user_id: string;
         };
+        /**
+         * Outcome
+         * @enum {string}
+         */
+        Outcome: "passed" | "sent" | "failed" | "skipped";
         /**
          * Plan
          * @enum {string}
@@ -682,6 +767,111 @@ export interface operations {
             };
             /** @description Service Unavailable */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    list_integrations_api_v1_diagnostics_integrations_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IntegrationsReport"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    run_check_api_v1_diagnostics_integrations__key__check_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: components["schemas"]["IntegrationKey"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IntegrationCheck"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };

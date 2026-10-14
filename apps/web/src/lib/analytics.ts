@@ -11,6 +11,7 @@ export const ANALYTICS_EVENTS = {
   upgrade_clicked: ["plan"],
   paywall_viewed: ["feature"],
   billing_portal_clicked: [],
+  integration_test_sent: ["source"],
 } as const satisfies Record<string, readonly string[]>;
 
 export type AnalyticsEvent = keyof typeof ANALYTICS_EVENTS;
@@ -85,5 +86,18 @@ export function track<E extends AnalyticsEvent>(event: E, props: Props<E> = {}):
     posthog.capture(event, filterProperties(event, props));
   } catch {
     /* ignored */
+  }
+}
+
+/** Sends one allowlisted test event immediately (integrations page). */
+export function sendTestEvent(): "sent" | "disabled" {
+  if (!started) return "disabled";
+  try {
+    posthog.capture("integration_test_sent", filterProperties("integration_test_sent", { source: "web" }), {
+      send_instantly: true,
+    });
+    return "sent";
+  } catch {
+    return "disabled";
   }
 }

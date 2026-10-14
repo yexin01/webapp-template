@@ -12,8 +12,9 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from app.domain.entitlements import SubscriptionSnapshot
-from app.domain.errors import AuthenticationError, DependencyUnavailableError
+from app.domain.errors import AuthenticationError, DependencyUnavailableError, InvalidRequestError
 from app.domain.tenancy import ExternalMembership, VerifiedIdentity
+from app.ports import PriceDescription
 
 
 class SystemClock:
@@ -27,6 +28,7 @@ class InMemoryBillingProvider:
         self._lock = threading.Lock()
         self._customers: dict[str, UUID] = {}
         self._subscriptions: dict[str, list[SubscriptionSnapshot]] = {}
+        self._prices: dict[str, PriceDescription] = {}
         self.calls: list[str] = []
         self.fail_with: Callable[[], Exception] | None = None
 
@@ -70,7 +72,19 @@ class InMemoryBillingProvider:
         with self._lock:
             return self._customers.get(customer_id)
 
+    def describe_price(self, price_id: str) -> PriceDescription:
+        self._maybe_fail("describe_price")
+        with self._lock:
+            price = self._prices.get(price_id)
+        if price is None:
+            raise InvalidRequestError("The billing request was rejected.")
+        return price
+
     # Test helpers -----------------------------------------------------------
+
+    def set_price(self, price: PriceDescription) -> None:
+        with self._lock:
+            self._prices[price.price_id] = price
 
     def register_customer(self, customer_id: str, user_id: UUID) -> None:
         with self._lock:

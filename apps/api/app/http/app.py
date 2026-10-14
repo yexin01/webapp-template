@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.composition import Container
 from app.http.middleware import BodySizeLimitMiddleware, RequestContextMiddleware
 from app.http.problem import install_error_handlers
-from app.http.routes import account, billing, health, llm, projects, webhooks
+from app.http.routes import account, billing, diagnostics, health, llm, projects, webhooks
 
 API_PREFIX = "/api/v1"
 
@@ -36,7 +36,7 @@ def create_app(container: Container) -> FastAPI:
     app.state.container = container
 
     install_error_handlers(app)
-    for module in (health, account, projects, billing, llm, webhooks):
+    for module in (health, account, projects, billing, llm, diagnostics, webhooks):
         app.include_router(module.router, prefix=API_PREFIX)
 
     # Browsers reach the API same-origin through the web app's rewrites; CORS

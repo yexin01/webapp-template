@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import sys
+import threading
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
@@ -148,6 +149,32 @@ def init_error_reporting(settings: Settings) -> bool:
     return True
 
 
+class IntegrationTestError(Exception):
+    """Synthetic error sent by the integrations diagnostics page."""
+
+
+class SentryErrorReporter:
+    """Sends a synthetic error through the configured Sentry client and scrubbers."""
+
+    def __init__(self, flush_timeout_seconds: float = 5.0) -> None:
+        self._flush_timeout = flush_timeout_seconds
+
+    def send_test_event(self) -> str | None:
+        if not sentry_sdk.is_initialized():
+            return None
+        try:
+            raise IntegrationTestError("Synthetic error from the integrations diagnostics page")
+        except IntegrationTestError as exc:
+            event_id = sentry_sdk.capture_exception(exc, tags={"integration_test": "true"})
+        sentry_sdk.flush(timeout=self._flush_timeout)
+        return event_id
+
+
+class NoopErrorReporter:
+    def send_test_event(self) -> str | None:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Product analytics
 # ---------------------------------------------------------------------------
@@ -158,6 +185,7 @@ ANALYTICS_ALLOWLIST: Mapping[str, frozenset[str]] = {
     "checkout_started": frozenset({"plan"}),
     "billing_portal_opened": frozenset(),
     "llm_check_run": frozenset({"ok", "provider"}),
+    "integration_test_sent": frozenset({"source"}),
 }
 
 logger = logging.getLogger(__name__)
@@ -175,6 +203,9 @@ class NoopAnalytics:
     def capture(self, user_id: UUID, event: str, properties: Mapping[str, str | int | bool]) -> None:
         _filter(event, properties)
 
+    def flush(self) -> bool:
+        return True
+
     def shutdown(self) -> None:
         return None
 
@@ -182,7 +213,10 @@ class NoopAnalytics:
 class PostHogAnalytics:
     """Batched, non-blocking PostHog client identified by internal user ID only."""
 
-    def __init__(self, *, api_key: str, host: str) -> None:
+    def __init__(self, *, api_key: str, host: str, flush_timeout_seconds: float = 5.0) -> None:
+        self._flush_timeout = flush_timeout_seconds
+        self._failures = 0
+        self._lock = threading.Lock()
         self._client = Posthog(
             api_key,
             host=host,
@@ -190,10 +224,13 @@ class PostHogAnalytics:
             max_retries=1,
             timeout=3,
             max_queue_size=1_000,
-            on_error=lambda error, _items: logger.warning(
-                "analytics_export_failed", extra={"error_type": type(error).__name__}
-            ),
+            on_error=self._on_error,
         )
+
+    def _on_error(self, error: Exception, _items: object) -> None:
+        with self._lock:
+            self._failures += 1
+        logger.warning("analytics_export_failed", extra={"error_type": type(error).__name__})
 
     def capture(self, user_id: UUID, event: str, properties: Mapping[str, str | int | bool]) -> None:
         filtered = _filter(event, properties)
@@ -203,6 +240,17 @@ class PostHogAnalytics:
             self._client.capture(event, distinct_id=str(user_id), properties=filtered)
         except Exception:  # noqa: BLE001 - telemetry must never break requests
             logger.warning("analytics_capture_failed")
+
+    def flush(self) -> bool:
+        with self._lock:
+            before = self._failures
+        try:
+            self._client.flush(timeout_seconds=self._flush_timeout)
+        except Exception:  # noqa: BLE001
+            logger.warning("analytics_flush_failed")
+            return False
+        with self._lock:
+            return self._failures == before
 
     def shutdown(self) -> None:
         try:

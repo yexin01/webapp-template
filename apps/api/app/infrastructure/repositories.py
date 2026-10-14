@@ -20,6 +20,7 @@ from app.domain.tenancy import ContextKind, ExternalMembership, Role, TenantCont
 from app.ports import (
     AuditEntry,
     BillingWebhookEvent,
+    ConnectionDescription,
     EventStatus,
     IdentityWebhookEvent,
     MembershipRecord,
@@ -86,6 +87,21 @@ class PgRepository:
 
     def ping(self) -> None:
         self._one("SELECT 1 AS ok")
+
+    def describe_connection(self) -> ConnectionDescription:
+        row = self._one(
+            "SELECT current_user AS role, current_setting('server_version') AS server_version, "
+            "current_setting('row_security') = 'on' AS row_security, "
+            "coalesce(current_setting('app.user_id', true), '') <> '' AS tenant_context_set"
+        )
+        if row is None:  # pragma: no cover - a scalar SELECT always returns a row
+            raise RuntimeError("connection description unavailable")
+        return ConnectionDescription(
+            role=row["role"],
+            server_version=row["server_version"].split(" ")[0],
+            row_security=row["row_security"],
+            tenant_context_set=row["tenant_context_set"],
+        )
 
     # -- Users and memberships ----------------------------------------------
 

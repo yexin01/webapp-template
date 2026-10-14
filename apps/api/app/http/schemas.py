@@ -11,6 +11,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.application.diagnostics import CheckResult, IntegrationInfo, IntegrationKey, IntegrationMode, Outcome
 from app.domain.entitlements import BillingState, Plan, PlanKey
 from app.domain.errors import InvalidRequestError
 from app.ports import PageCursor, ProjectRecord
@@ -100,6 +101,44 @@ class LLMCheck(BaseModel):
     model: str
     latency_ms: int
     error_code: str | None
+
+
+class IntegrationStatus(BaseModel):
+    key: IntegrationKey
+    name: str
+    mode: IntegrationMode
+    details: list[str]
+
+    @classmethod
+    def from_info(cls, info: IntegrationInfo) -> IntegrationStatus:
+        return cls(key=info.key, name=info.name, mode=info.mode, details=list(info.details))
+
+
+class IntegrationsReport(BaseModel):
+    environment: Literal["local", "test", "preview", "production"]
+    integrations: list[IntegrationStatus]
+
+
+class IntegrationCheck(BaseModel):
+    key: IntegrationKey
+    mode: IntegrationMode
+    outcome: Outcome
+    summary: str
+    latency_ms: int
+    error_code: str | None
+    reference: str | None = Field(description="Provider reference for this run, such as a Sentry event ID")
+
+    @classmethod
+    def from_result(cls, result: CheckResult) -> IntegrationCheck:
+        return cls(
+            key=result.key,
+            mode=result.mode,
+            outcome=result.outcome,
+            summary=result.summary,
+            latency_ms=result.latency_ms,
+            error_code=result.error_code,
+            reference=result.reference,
+        )
 
 
 class WebhookAck(BaseModel):

@@ -19,6 +19,9 @@ export function SiteHeader() {
             <li>
               <Link href="/billing">Billing</Link>
             </li>
+            <li>
+              <Link href="/integrations">Integrations</Link>
+            </li>
           </ul>
         </Show>
         <div className="nav-actions">

@@ -1,3 +1,4 @@
+import AxeBuilder from "@axe-core/playwright";
 import { clerk, clerkSetup, setupClerkTestingToken } from "@clerk/testing/playwright";
 import { expect, test } from "@playwright/test";
 
@@ -66,5 +67,26 @@ test.describe("signed-in flows (sandbox)", () => {
     await expect(page.getByRole("heading", { name: "Confirming your subscription" })).toBeVisible();
     await page.goto("/pro");
     await expect(page.getByRole("heading", { name: "Upgrade to Pro" })).toBeVisible();
+  });
+
+  test("integrations page runs the database check and is accessible", async ({ page }) => {
+    await page.goto("/integrations");
+    await expect(page.getByRole("heading", { name: "Integrations", level: 1 })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Clerk", level: 3 })).toBeVisible();
+    await page.getByRole("button", { name: "Run check for PostgreSQL" }).click();
+    const card = page
+      .getByRole("listitem")
+      .filter({ has: page.getByRole("heading", { name: "PostgreSQL" }) });
+    await expect(card.getByText("Passed")).toBeVisible();
+    await expect(card).toContainText("as app_api");
+    await page.getByRole("button", { name: "Run check for Clerk" }).click();
+    const clerkCard = page
+      .getByRole("listitem")
+      .filter({ has: page.getByRole("heading", { name: "Clerk", exact: true }) });
+    await expect(clerkCard.getByText("Passed")).toBeVisible();
+    const results = await new AxeBuilder({ page })
+      .withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"])
+      .analyze();
+    expect(results.violations.map((v) => `${v.id}: ${v.help}`)).toEqual([]);
   });
 });

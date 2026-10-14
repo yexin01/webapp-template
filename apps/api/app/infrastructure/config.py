@@ -107,6 +107,11 @@ class Settings(BaseSettings):
     sentry_dsn: SecretStr | None = None
     sentry_traces_sample_rate: float = Field(default=0.0, ge=0.0, le=1.0)
 
+    # Integration diagnostics page. Unset means enabled everywhere except production.
+    diagnostics_enabled: bool | None = None
+    diagnostics_runs_per_user_per_minute: int = Field(default=20, ge=1, le=600)
+    diagnostics_runs_global_per_day: int = Field(default=1_000, ge=1, le=100_000)
+
     @model_validator(mode="before")
     @classmethod
     def _normalize(cls, data: object) -> object:
@@ -224,6 +229,12 @@ class Settings(BaseSettings):
         if self.error_reporting_mode in (Mode.SANDBOX, Mode.LIVE) and self.sentry_dsn is None:
             problems.append("SENTRY_DSN is required when ERROR_REPORTING_MODE is enabled")
         return problems
+
+    @property
+    def diagnostics_active(self) -> bool:
+        if self.diagnostics_enabled is None:
+            return self.app_env is not AppEnv.PRODUCTION
+        return self.diagnostics_enabled
 
     @property
     def clerk_issuer(self) -> str | None:

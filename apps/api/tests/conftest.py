@@ -53,6 +53,7 @@ _ENV_PREFIXES = (
     "CHECKOUTS_",
     "MAX_REQUEST_",
     "LOG_LEVEL",
+    "DIAGNOSTICS_",
 )
 
 
@@ -105,6 +106,7 @@ class TokenTableVerifier:
 class RecordingAnalytics:
     def __init__(self) -> None:
         self.events: list[tuple[str, str, dict[str, Any]]] = []
+        self.export_ok = True
 
     def capture(self, user_id: uuid.UUID, event: str, properties: Any) -> None:
         from app.infrastructure.observability import _filter
@@ -112,6 +114,9 @@ class RecordingAnalytics:
         filtered = _filter(event, properties)
         if filtered is not None:
             self.events.append((str(user_id), event, filtered))
+
+    def flush(self) -> bool:
+        return self.export_ok
 
     def shutdown(self) -> None:
         return None

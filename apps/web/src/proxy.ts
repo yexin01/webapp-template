@@ -4,7 +4,12 @@ import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
  * Route protection for page presentation only (FE-05). Every API operation is
  * authorized independently by the Python backend; this never replaces it.
  */
-const isProtectedPage = createRouteMatcher(["/dashboard(.*)", "/billing(.*)", "/pro(.*)"]);
+const isProtectedPage = createRouteMatcher([
+  "/dashboard(.*)",
+  "/billing(.*)",
+  "/pro(.*)",
+  "/integrations(.*)",
+]);
 
 export default clerkMiddleware(
   async (auth, request) => {

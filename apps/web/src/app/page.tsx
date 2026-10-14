@@ -14,6 +14,9 @@ export default function HomePage() {
           <Link className="button button-primary" href="/dashboard">
             Open dashboard
           </Link>
+          <Link className="button" href="/integrations">
+            Check integrations
+          </Link>
         </Show>
         <Show when="signed-out">
           <SignUpButton>

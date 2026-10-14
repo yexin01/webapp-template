@@ -12,7 +12,7 @@ import stripe
 from app.domain.catalog import PriceCatalog
 from app.domain.entitlements import SubscriptionSnapshot, SubscriptionStatus
 from app.domain.errors import DependencyUnavailableError, InvalidRequestError, WebhookSignatureError
-from app.ports import BillingWebhookEvent
+from app.ports import BillingWebhookEvent, PriceDescription
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +70,14 @@ def to_snapshot(sub: Any, catalog: PriceCatalog) -> SubscriptionSnapshot:
 
 
 class StripeBillingProvider:
-    def __init__(self, *, secret_key: str, catalog: PriceCatalog, timeout_seconds: float = 10.0) -> None:
+    def __init__(
+        self,
+        *,
+        secret_key: str,
+        catalog: PriceCatalog,
+        timeout_seconds: float = 10.0,
+        api_base: str | None = None,
+    ) -> None:
         self._catalog = catalog
         self._client = stripe.StripeClient(
             secret_key,
@@ -78,6 +85,8 @@ class StripeBillingProvider:
             # retries never duplicate side effects.
             max_network_retries=2,
             http_client=stripe.HTTPXClient(timeout=timeout_seconds, allow_sync_methods=True),
+            # Only set for local stubs such as stripe-mock; defaults to Stripe's API.
+            base_addresses={"api": api_base} if api_base else None,
         )
 
     def _call(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
@@ -138,6 +147,29 @@ class StripeBillingProvider:
             params={"customer": customer_id, "status": "all", "limit": _MAX_SUBSCRIPTIONS_PER_CUSTOMER},
         )
         return [to_snapshot(sub, self._catalog) for sub in result.data]
+
+    def describe_price(self, price_id: str) -> PriceDescription:
+        # Diagnostics only: unlike customer-facing calls, failures are specific
+        # so that an operator can tell a bad key from a missing price.
+        try:
+            price = self._client.v1.prices.retrieve(price_id)
+        except stripe.AuthenticationError as exc:
+            raise DependencyUnavailableError("Stripe rejected the API key.") from exc
+        except stripe.PermissionError as exc:
+            raise DependencyUnavailableError("The Stripe API key cannot read prices.") from exc
+        except stripe.InvalidRequestError as exc:
+            raise InvalidRequestError(f"Stripe has no price {price_id} in this account and mode.") from exc
+        except stripe.StripeError as exc:
+            raise DependencyUnavailableError("Stripe is temporarily unavailable.") from exc
+        recurring = _get(price, "recurring")
+        currency = _get(price, "currency")
+        return PriceDescription(
+            price_id=str(_get(price, "id")),
+            active=bool(_get(price, "active")),
+            recurring_interval=str(_get(recurring, "interval")) if recurring else None,
+            currency=str(currency) if currency else None,
+            livemode=bool(_get(price, "livemode")),
+        )
 
     def get_customer_app_user_id(self, customer_id: str) -> UUID | None:
         customer = self._call(self._client.v1.customers.retrieve, customer_id)

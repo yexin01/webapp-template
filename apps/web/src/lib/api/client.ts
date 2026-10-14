@@ -78,6 +78,11 @@ export function createApiClient(getToken: TokenGetter) {
     openPortal: () => request<Schemas["Redirect"]>("/billing/portal", { method: "POST" }),
     proInsight: (orgId: string | null) => request<Schemas["ProInsight"]>(`${scope(orgId)}/pro/insight`),
     llmCheck: () => request<Schemas["LLMCheck"]>("/llm/check", { method: "POST" }),
+    integrations: () => request<Schemas["IntegrationsReport"]>("/diagnostics/integrations"),
+    runIntegrationCheck: (key: Schemas["IntegrationKey"]) =>
+      request<Schemas["IntegrationCheck"]>(`/diagnostics/integrations/${encodeURIComponent(key)}/check`, {
+        method: "POST",
+      }),
   };
 }
 

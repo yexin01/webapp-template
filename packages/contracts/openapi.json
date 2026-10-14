@@ -146,6 +146,140 @@
         "title": "Health",
         "type": "object"
       },
+      "IntegrationCheck": {
+        "properties": {
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "key": {
+            "$ref": "#/components/schemas/IntegrationKey"
+          },
+          "latency_ms": {
+            "title": "Latency Ms",
+            "type": "integer"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/IntegrationMode"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/Outcome"
+          },
+          "reference": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Provider reference for this run, such as a Sentry event ID",
+            "title": "Reference"
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "mode",
+          "outcome",
+          "summary",
+          "latency_ms",
+          "error_code",
+          "reference"
+        ],
+        "title": "IntegrationCheck",
+        "type": "object"
+      },
+      "IntegrationKey": {
+        "enum": [
+          "database",
+          "identity",
+          "billing",
+          "llm",
+          "analytics",
+          "error_reporting"
+        ],
+        "title": "IntegrationKey",
+        "type": "string"
+      },
+      "IntegrationMode": {
+        "enum": [
+          "local",
+          "mock",
+          "sandbox",
+          "live",
+          "disabled"
+        ],
+        "title": "IntegrationMode",
+        "type": "string"
+      },
+      "IntegrationStatus": {
+        "properties": {
+          "details": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Details",
+            "type": "array"
+          },
+          "key": {
+            "$ref": "#/components/schemas/IntegrationKey"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/IntegrationMode"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "name",
+          "mode",
+          "details"
+        ],
+        "title": "IntegrationStatus",
+        "type": "object"
+      },
+      "IntegrationsReport": {
+        "properties": {
+          "environment": {
+            "enum": [
+              "local",
+              "test",
+              "preview",
+              "production"
+            ],
+            "title": "Environment",
+            "type": "string"
+          },
+          "integrations": {
+            "items": {
+              "$ref": "#/components/schemas/IntegrationStatus"
+            },
+            "title": "Integrations",
+            "type": "array"
+          }
+        },
+        "required": [
+          "environment",
+          "integrations"
+        ],
+        "title": "IntegrationsReport",
+        "type": "object"
+      },
       "LLMCheck": {
         "properties": {
           "error_code": {
@@ -199,6 +333,16 @@
         ],
         "title": "Me",
         "type": "object"
+      },
+      "Outcome": {
+        "enum": [
+          "passed",
+          "sent",
+          "failed",
+          "skipped"
+        ],
+        "title": "Outcome",
+        "type": "string"
       },
       "Plan": {
         "enum": [
@@ -707,6 +851,128 @@
         "summary": "Billing Status",
         "tags": [
           "billing"
+        ]
+      }
+    },
+    "/api/v1/diagnostics/integrations": {
+      "get": {
+        "operationId": "list_integrations_api_v1_diagnostics_integrations_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IntegrationsReport"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          }
+        },
+        "summary": "List Integrations",
+        "tags": [
+          "diagnostics"
+        ]
+      }
+    },
+    "/api/v1/diagnostics/integrations/{key}/check": {
+      "post": {
+        "operationId": "run_check_api_v1_diagnostics_integrations__key__check_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/IntegrationKey"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IntegrationCheck"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          }
+        },
+        "summary": "Run Check",
+        "tags": [
+          "diagnostics"
         ]
       }
     },

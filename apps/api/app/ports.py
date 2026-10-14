@@ -81,6 +81,27 @@ class IdentityWebhookEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class PriceDescription:
+    """Non-secret facts about a billing price, used by configuration checks."""
+
+    price_id: str
+    active: bool
+    recurring_interval: str | None
+    currency: str | None
+    livemode: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ConnectionDescription:
+    """What the database reports about the current transaction."""
+
+    role: str
+    server_version: str
+    row_security: bool
+    tenant_context_set: bool
+
+
+@dataclass(frozen=True, slots=True)
 class LLMCheckResult:
     ok: bool
     provider: str
@@ -116,6 +137,7 @@ class Repository(Protocol):
 
     def insert_audit(self, entry: AuditEntry) -> None: ...
     def ping(self) -> None: ...
+    def describe_connection(self) -> ConnectionDescription: ...
 
 
 class SystemRepository(Protocol):
@@ -193,6 +215,7 @@ class BillingProvider(Protocol):
     def create_portal_session(self, *, customer_id: str, return_url: str) -> str: ...
     def list_customer_subscriptions(self, customer_id: str) -> list[SubscriptionSnapshot]: ...
     def get_customer_app_user_id(self, customer_id: str) -> UUID | None: ...
+    def describe_price(self, price_id: str) -> PriceDescription: ...
 
 
 class BillingWebhookVerifier(Protocol):
@@ -201,7 +224,17 @@ class BillingWebhookVerifier(Protocol):
 
 class Analytics(Protocol):
     def capture(self, user_id: UUID, event: str, properties: Mapping[str, str | int | bool]) -> None: ...
+    def flush(self) -> bool:
+        """Export queued events now. Returns False if an export failed meanwhile."""
+        ...
+
     def shutdown(self) -> None: ...
+
+
+class ErrorReporter(Protocol):
+    def send_test_event(self) -> str | None:
+        """Report a synthetic error and flush. Returns the event ID, if one was queued."""
+        ...
 
 
 class LLMProvider(Protocol):

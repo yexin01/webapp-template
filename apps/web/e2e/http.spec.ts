@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 
 /** Request-level checks that need no external accounts (mocked integrations). */
 
-for (const path of ["/dashboard", "/billing", "/pro", "/billing/success"]) {
+for (const path of ["/dashboard", "/billing", "/pro", "/billing/success", "/integrations"]) {
   test(`protected page ${path} redirects signed-out visitors to sign-in`, async ({ request }) => {
     const response = await request.get(path, { maxRedirects: 0, headers: { Accept: "application/json" } });
     expect(response.status()).toBe(307);
@@ -28,6 +28,13 @@ test("API health is reachable same-origin and protected routes require auth", as
   expect(me.status()).toBe(401);
   expect(me.headers()["content-type"]).toContain("application/problem+json");
   expect((await me.json()).code).toBe("UNAUTHENTICATED");
+});
+
+test("integration diagnostics require authentication", async ({ request }) => {
+  const report = await request.get("/api/v1/diagnostics/integrations");
+  expect(report.status()).toBe(401);
+  const check = await request.post("/api/v1/diagnostics/integrations/database/check");
+  expect(check.status()).toBe(401);
 });
 
 test("session cookies are not accepted for API authentication", async ({ request }) => {
