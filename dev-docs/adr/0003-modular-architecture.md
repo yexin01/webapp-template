@@ -79,7 +79,7 @@ TanStack Query was offered and not selected.
 ### 5. Frontend
 
 - **Feature folders.** `src/app` holds routes, `src/features/<feature>` has a public `index.ts`, `src/ui` holds shared presentation, and `src/lib` holds infrastructure.
-- **Boundary rules.** The ESLint `import/no-restricted-paths` configuration and its tests are prepared as a patch. A configuration-protection hook in the owner's environment blocks writing `eslint.config.mjs`, so the rules are **not applied** until the owner applies the patch.
+- **Boundary rules.** ESLint `import/no-restricted-paths` (`apps/web/eslint.boundaries.mjs`) enforces them: `lib` may not import `ui`, `features`, or `app`; `ui` may not import `features` or `app`; a feature reaches another only through its `index.ts`. `src/boundaries.test.ts` (23 tests) lints real snippets through the real configuration. Applied on 2026-10-14 with the owner's approval; it had first been prepared as a patch because a configuration-protection hook blocks agent edits to `eslint.config.mjs`.
 - **Typed API client.** `openapi-fetch` 0.17.0 (MIT) over the generated `paths` type. Paths, parameters, and bodies are compile-time checked. It adds about 6.7 KiB of uncompressed client JavaScript per route.
 
 ### 6. Developer experience

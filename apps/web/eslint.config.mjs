@@ -1,6 +1,8 @@
 import nextVitals from "eslint-config-next/core-web-vitals";
 import nextTs from "eslint-config-next/typescript";
 
+import { boundaryZones } from "./eslint.boundaries.mjs";
+
 // FE-02: the web app holds no business logic, server secrets, or direct
 // database / payment-provider access. Those imports are banned outright.
 const forbiddenImports = {
@@ -40,6 +42,11 @@ const config = [
             "MemberExpression[object.object.name='process'][object.property.name='env'][property.name=/^(?!NEXT_PUBLIC_|NODE_ENV$).*/]",
           message: "Only NEXT_PUBLIC_* variables may be read in application code (ENV-07).",
         },
+      ],
+      // Layer boundaries for app/, features/, ui/, and lib/ (see eslint.boundaries.mjs).
+      "import/no-restricted-paths": [
+        "error",
+        { basePath: import.meta.dirname, zones: boundaryZones(import.meta.dirname) },
       ],
       "@typescript-eslint/no-explicit-any": "error",
       "react/no-danger": "error",

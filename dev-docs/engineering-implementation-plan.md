@@ -46,7 +46,6 @@ Requirements carry stable identifiers (for example `AUTH-03`). Identifiers are n
 | Architecture Decision Records | `dev-docs/adr/NNNN-short-title.md` | ADR-0001 (approved recommendations for DEC-007 to DEC-012); ADR-0002 (DEC-002 option (b), DEC-009 value, DEC-012 contacts, DEC-003 to DEC-005 adopter-owned); ADR-0003 (modular monolith, request-scoped transactions, outbox, jobs, generator) |
 | Evidence records | `dev-docs/evidence/` | `2026-10-14-local-verification.md`, `2026-10-14-diagnostics-perf-local.md`, `2026-10-14-adr-0002-perf07-local.md`, and `2026-10-14-adr-0003-modular-architecture.md` (mocked integrations, local only) |
 | Adopter-facing documentation | `README.md`, `docs/architecture.md`, `docs/integrations.md`, `docs/operations.md`, `docs/data-inventory.md`, `perf/README.md`, `perf/run-plan-template.md` | Exists |
-| Pending owner actions | `dev-docs/pending/` | Prepared changes the owner must apply (currently: frontend ESLint boundary rules) |
 | Community files | `LICENSE`, `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, `.github/` | Exist. Contacts are adopter placeholders that `init-template` fills in and `check:placeholders` enforces (DEC-012, ADR-0002) |
 
 ---
@@ -1368,7 +1367,7 @@ Status as of 2026-10-14. Evidence: [`dev-docs/evidence/2026-10-14-local-verifica
 | OBS-09 | Telemetry retention | Documentation; adopter checklist | E | — | PASS (documented; adopters set the periods) |
 | FE-02, FE-03, FE-05 to FE-07, FE-10 | Boundaries, states, protected routes, paywall, 404, error mapping | ESLint bans; Vitest; account-free e2e | B | — | PASS |
 | FE-01, FE-04, FE-08, FE-09, FE-11 | Accessibility, session UX, error boundaries, keyboard, browser flows | axe and Playwright page and authenticated suites | B | DEC-006 (Clerk sandbox) | NOT VERIFIED |
-| FE-13 | Feature folders and import boundaries | Layout in place; ESLint boundary rules and 23 tests prepared in `dev-docs/pending/` | B | Owner applies the patch (configuration-protection hook) | BLOCKED |
+| FE-13 | Feature folders and import boundaries | ESLint `import/no-restricted-paths` (`eslint.boundaries.mjs`); 23 tests lint real snippets through the real configuration; mutation-checked | B | — | PASS |
 | FE-14 | Typed API client generated from OpenAPI | `tsc` with `@ts-expect-error` checks on paths and params; client tests | B | — | PASS |
 | FE-12 | Frontend performance budgets | Measurements | D | Preview environment (DEC-001) | NOT VERIFIED (budgets adopter-owned; Core Web Vitals not measured) |
 | SEC-01 to SEC-05, SEC-07 to SEC-10, SEC-13 to SEC-15 | Validation, headers, secrets, audits, lockfiles, errors, limits, licenses, webhooks, redirects | Tests; audits; gitleaks; license check | C | — | PASS (as of 2026-10-14) |
@@ -1439,7 +1438,7 @@ The report clearly distinguishes verified behavior from assumptions, mocks, and 
   | Gate | Status | Reason |
   |---|---|---|
   | A | NOT VERIFIED | Remote CI has never run (needs authorization to push) |
-  | B | NOT VERIFIED | Browser and signed-in e2e need Clerk sandbox keys (DEC-006). The frontend boundary lint rules await the owner (FE-13) |
+  | B | NOT VERIFIED | Browser and signed-in e2e need Clerk sandbox keys (DEC-006) |
   | C | NOT VERIFIED | CodeQL (remote CI) and sandbox verification pending; local security tests PASS |
   | D | NOT VERIFIED | Local PERF-01 to PERF-07 recorded. Preview runs need DEC-001. Targets are adopter-owned (ADR-0002) |
   | E | BLOCKED | DEC-001 (deployment proof, Vercel Cron, after-response dispatch), DEC-006 (integration classification) |

@@ -233,7 +233,7 @@ Each module declares its environment variables and validation in `settings.py`. 
   - `src/features/<feature>` holds feature UI, tests beside it, and a public `index.ts`.
   - `src/ui` holds presentational components with no feature knowledge.
   - `src/lib` holds infrastructure: the API client, analytics, CSP, redaction, error reporting.
-- **Boundary rules.** `lib` may not import `ui`, `features`, or `app`. `ui` may not import `features` or `app`. A feature may reach another feature only through its `index.ts`. The ESLint configuration for these rules is pending owner approval (see `dev-docs/evidence/`); until it is applied, the layout is a convention.
+- **Boundary rules.** `lib` may not import `ui`, `features`, or `app`. `ui` may not import `features` or `app`. A feature may reach another feature only through its `index.ts`. ESLint `import/no-restricted-paths` enforces them (`apps/web/eslint.boundaries.mjs`). Feature folders are discovered when the config loads, so a new feature is covered without editing it.
 - **Typed client.** `src/lib/api/client.ts` wraps `openapi-fetch` over the generated `paths` type. A wrong path, parameter, or body fails `tsc`. Regenerate it with `pnpm contracts` after any API change; CI fails on drift.
 - **The server is the authority.** The UI renders the API's decisions (plan, role, entitlement) and never re-derives them.
 
@@ -281,4 +281,4 @@ Each module declares its environment variables and validation in `settings.py`. 
 | Cron config matches the job registry | `tests/integration/test_outbox_jobs.py` |
 | API contract and TypeScript types are in sync | `pnpm contracts:check` |
 | Generated modules pass every gate | `pnpm test:new-module` |
-| Frontend feature boundaries | ESLint rules: pending owner approval (see `dev-docs/evidence/`) |
+| Frontend feature boundaries | ESLint `import/no-restricted-paths` (`apps/web/eslint.boundaries.mjs`); `src/boundaries.test.ts` lints real snippets through the real configuration |
