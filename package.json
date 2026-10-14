@@ -28,6 +28,7 @@
     "db:migrate": "cd apps/api && uv run python -m app.cli migrate",
     "db:seed": "cd apps/api && uv run python -m app.cli seed",
     "db:reset": "cd apps/api && uv run python -m app.cli reset --yes --seed",
+    "db:restore-drill": "node scripts/restore-drill.mjs",
     "billing:reconcile": "cd apps/api && uv run python -m app.cli reconcile",
     "security:audit": "node scripts/security-audit.mjs",
     "check:bundle-secrets": "node scripts/check-bundle-secrets.mjs",
