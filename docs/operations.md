@@ -15,13 +15,15 @@ Startup validation enforces key/mode consistency: live keys outside production, 
 
 ## Deployment
 
-> **DEC-001 is open.** Running the Python API on Vercel has not been verified. Until the proof in spec §3.3 is completed and recorded, do not rely on these steps for production.
+> **DEC-001 is open.** Running the Python API on Vercel has not been verified on the platform. A local proof ([`proofs/dec-001`](../proofs/dec-001/README.md), [evidence](../dev-docs/evidence/dec-001-vercel-python.md)) packaged the API with the Vercel CLI and ran it through Vercel's runtime shim, but nothing has been deployed. Until a preview deployment is verified, do not rely on these steps for production.
 
 The intended topology (ADR-0001):
 
 - The Next.js app is deployed on Vercel.
 - The Python API is served by Vercel's Python runtime, via `apps/api/index.py`, which exports an ASGI app.
 - The browser reaches the API through the web app's `/api/v1/*` rewrite. `API_ORIGIN` is read at **build time**.
+
+The proof also built and ran a second candidate: one Vercel project with [Services](https://vercel.com/docs/services), where `web` and `api` deploy together and the platform routes `/api/v1/*` to the API (`proofs/dec-001/vercel.json`). Choosing the topology is part of resolving DEC-001.
 
 Before a first deployment:
 
@@ -148,7 +150,7 @@ Jobs are registered in code ([architecture](architecture.md#jobs)). Run them in 
 | `reconcile-billing` | 04:00 daily | Compares billing records with Stripe and reports divergences. It applies Stripe's state only when `BILLING_RECONCILE_APPLY=true` |
 | `reconcile-memberships` | 03:30 daily | Re-verifies the stalest organization-membership mirrors against Clerk (`MEMBERSHIP_RECONCILE_BATCH_SIZE` per run) |
 
-`apps/api/vercel.json` holds the schedules, and a test fails if it drifts from the registry. Schedules are daily so the configuration deploys on any Vercel plan. If your plan allows it, run `drain-outbox` every few minutes.
+`apps/api/vercel.json` holds the schedules, and a test fails if it drifts from the registry. Schedules are daily so the configuration deploys on any Vercel plan. If your plan allows it, run `drain-outbox` every few minutes. With Vercel Services (one project), crons must be in the root `vercel.json`: the DEC-001 proof found that a service's own `vercel.json` crons are not registered.
 
 **Not verified until DEC-001:** Vercel Cron delivery, plan limits, and whether after-response dispatch completes before the function is frozen. If it does not complete, `drain-outbox` delivers the events at its next run.
 
@@ -181,4 +183,15 @@ See [perf/README.md](../perf/README.md). Local runs are for relative comparisons
 
 ## Python runtime limitations
 
-To be filled in from the DEC-001 proof: supported Python versions, maximum duration, payload limits, cold starts, connection behavior, and bundle size.
+From the DEC-001 local proof ([evidence](../dev-docs/evidence/dec-001-vercel-python.md)). "Documented" values come from Vercel's documentation and have not been observed on the platform. "Local" values were measured on one development machine.
+
+| Topic | Finding |
+|---|---|
+| Runtime | `python3.12` on x86_64. Vercel's runtime shim (`vercel_runtime`, with a vendored uvicorn) serves the ASGI app, and one instance serves concurrent requests. Local: verified in an Amazon Linux 2023 container. |
+| Bundle | Local: 74.3 MiB uncompressed, installed from `uv.lock` with Linux wheels. Documented limit: 500 MB. `excludeFiles` keeps `tests/` out. |
+| Function root | Read-only. The API writes nothing there, and in a bundle it reads no `.env` file: configuration comes from environment variables only. |
+| Cold start | Local: about 1.9 s to the first response under x86_64 emulation, and 0.4 s natively. Platform cold starts are not measured: pre-warming and bytecode caching differ. |
+| Duration | Documented: 300 s by default (the maximum on Hobby); up to 800 s on Pro and Enterprise. |
+| Payload | Documented: 4.5 MB request and response bodies. The API rejects bodies over `MAX_REQUEST_BODY_BYTES` (1 MB) first. |
+| Database | Use the transaction pooler. Every setting is transaction-local and prepared statements are off (local: verified with PgBouncer in transaction mode). A database or pooler that stops responding fails each call after the round-trip deadline (15 s by default). |
+| Crons | With Services, only the root `vercel.json` crons are registered. |

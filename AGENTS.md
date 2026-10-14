@@ -19,6 +19,7 @@ Read it before making changes. Do not restate its requirements in other files; l
 - Architecture and boundaries: §4, [`docs/architecture.md`](docs/architecture.md), ADR-0003
 - Adding a feature module: `pnpm new:module <name>` (never hand-wire a module differently)
 - Implementation phases and current status: §18, §23
+- Vercel deployment proof (DEC-001, local only): [`proofs/dec-001/`](proofs/dec-001/README.md)
 - Quality gates and evidence statuses: §19, §20
 - Requirements traceability matrix: §21
 

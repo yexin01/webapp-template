@@ -44,7 +44,7 @@ Requirements carry stable identifiers (for example `AUTH-03`). Identifiers are n
 | Performance test plan | §15.2 of this document | Maintained here |
 | Requirements traceability matrix | §21 of this document | Maintained here |
 | Architecture Decision Records | `dev-docs/adr/NNNN-short-title.md` | ADR-0001 (approved recommendations for DEC-007 to DEC-012); ADR-0002 (DEC-002 option (b), DEC-009 value, DEC-012 contacts, DEC-003 to DEC-005 adopter-owned); ADR-0003 (modular monolith, request-scoped transactions, outbox, jobs, generator) |
-| Evidence records | `dev-docs/evidence/` | `2026-10-14-local-verification.md`, `2026-10-14-diagnostics-perf-local.md`, `2026-10-14-adr-0002-perf07-local.md`, and `2026-10-14-adr-0003-modular-architecture.md` (mocked integrations, local only) |
+| Evidence records | `dev-docs/evidence/` | `2026-10-14-local-verification.md`, `2026-10-14-diagnostics-perf-local.md`, `2026-10-14-adr-0002-perf07-local.md`, `2026-10-14-adr-0003-modular-architecture.md`, and `dec-001-vercel-python.md` (the DEC-001 local proof) (mocked integrations, local only) |
 | Adopter-facing documentation | `README.md`, `docs/architecture.md`, `docs/integrations.md`, `docs/operations.md`, `docs/data-inventory.md`, `perf/README.md`, `perf/run-plan-template.md` | Exists |
 | Community files | `LICENSE`, `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, `.github/` | Exist. Contacts are adopter placeholders that `init-template` fills in and `check:placeholders` enforces (DEC-012, ADR-0002) |
 
@@ -120,7 +120,7 @@ These decisions are confirmed. A confirmed technology choice is not evidence tha
 
 | ID | Decision | Status | Blocks | Next action |
 |---|---|---|---|---|
-| DEC-001 | Python backend on Vercel | OPEN — mandatory technical validation | All backend implementation beyond the proof | Owner authorizes the proof deployment (§18, P1) |
+| DEC-001 | Python backend on Vercel | OPEN — local proof recorded 2026-10-14 ([evidence](evidence/dec-001-vercel-python.md)); platform verification pending | All backend implementation beyond the proof | Owner authorizes the preview deployment and chooses the topology (§18, P1) |
 | DEC-002 | Individual billing vs. organization entitlements | RESOLVED 2026-10-14 — option (b) ([ADR-0002](adr/0002-organization-entitlements-contacts-adopter-decisions.md)) | — | — |
 | DEC-003 | Performance targets | RESOLVED 2026-10-14 — adopter-owned (ADR-0002) | — (the template claims no targets) | Each adopter sets targets from its own preview baseline (`perf/run-plan-template.md`) |
 | DEC-004 | Data retention, export, and deletion | RESOLVED 2026-10-14 — adopter-owned (ADR-0002) | Deletion and export features remain out of the template; no deletion-completeness claim | Each adopter completes the checklist in `docs/data-inventory.md` |
@@ -151,6 +151,7 @@ These decisions are confirmed. A confirmed technology choice is not evidence tha
   - It runs locally first. It is deployed to a Vercel **preview** environment only in an owner-authorized Vercel account, using sandbox or test credentials only.
   - Production deployment is out of scope unless separately authorized.
   - Candidate framework: FastAPI (ASGI) with Pydantic v2. This is a recommendation that the proof must validate.
+- **Local proof (2026-10-14):** [`proofs/dec-001/`](../proofs/dec-001/README.md), with results in [`evidence/dec-001-vercel-python.md`](evidence/dec-001-vercel-python.md). It found three defects, all fixed. Items that only the platform can show remain `NOT VERIFIED`.
 - **Required evidence.** Record each item as `PASS`, `FAIL`, or `NOT VERIFIED`, with method, environment, date, and commit:
   1. **Runtime and framework:** the supported Python version and the candidate framework serve requests locally and in preview.
   2. **Dependency packaging:**
@@ -1244,7 +1245,7 @@ Broad implementation does not begin while a decision that blocks it remains open
 | Phase | Scope | Entry criteria | Exit evidence | Status (2026-10-14) |
 |---|---|---|---|---|
 | P0 | Repository inspection, specification consolidation, decision register, `.gitignore`, `AGENTS.md` | — | This revision committed locally; owner review | Done |
-| P1 | DEC-001 proof (local, then authorized preview deployment) | Owner authorizes the Vercel project and preview deployment; non-production Supabase project; Stripe sandbox | `dev-docs/evidence/dec-001-vercel-python.md`; DEC-001 resolved or escalated | BLOCKED — owner chose local-only for now |
+| P1 | DEC-001 proof (local, then authorized preview deployment) | Owner authorizes the Vercel project and preview deployment; non-production Supabase project; Stripe sandbox | `dev-docs/evidence/dec-001-vercel-python.md`; DEC-001 resolved or escalated | Local part done ([evidence](evidence/dec-001-vercel-python.md)): packaging, Services topology, Vercel's runtime shim, transaction pooling, database faults, and a cold-start baseline. It found and fixed three defects. Preview deployment BLOCKED: needs owner authorization |
 | P2 | Scaffold: layout, toolchain, configuration validation, CI skeleton, README, `.env.example`, community files, template initialization | DEC-001, DEC-007 resolved; DEC-012 for license files | Gate A checks | Implemented locally (deviation D-001); community contacts are adopter placeholders (ADR-0002); remote CI never run |
 | P3 | Identity, tenancy, schema, migrations, RLS, authorization, audit | DEC-008, DEC-009 resolved | AUTH, TEN, ADM, DB, MIG requirements; NT-01 to NT-09, NT-11 | Implemented; tests PASS (mocked) |
 | P4 | Billing: checkout, webhooks, synchronization, entitlements, reconciliation, paywall API | DEC-010 resolved; DEC-002 for organization scope | BILL requirements; §9.10 tests; sandbox evidence (DEC-006) | Implemented, including the DEC-002 (b) organization truth table; tests PASS (mocked Stripe API); sandbox NOT VERIFIED |
@@ -1327,20 +1328,21 @@ Evidence records never contain secrets, tokens, or personal data.
 
 ## 21. Requirements Traceability Matrix
 
-Status as of 2026-10-14. Evidence: [`dev-docs/evidence/2026-10-14-local-verification.md`](evidence/2026-10-14-local-verification.md), [`2026-10-14-diagnostics-perf-local.md`](evidence/2026-10-14-diagnostics-perf-local.md), [`2026-10-14-adr-0002-perf07-local.md`](evidence/2026-10-14-adr-0002-perf07-local.md), and [`2026-10-14-adr-0003-modular-architecture.md`](evidence/2026-10-14-adr-0003-modular-architecture.md).
+Status as of 2026-10-14. Evidence: [`dev-docs/evidence/2026-10-14-local-verification.md`](evidence/2026-10-14-local-verification.md), [`2026-10-14-diagnostics-perf-local.md`](evidence/2026-10-14-diagnostics-perf-local.md), [`2026-10-14-adr-0002-perf07-local.md`](evidence/2026-10-14-adr-0002-perf07-local.md), and [`2026-10-14-adr-0003-modular-architecture.md`](evidence/2026-10-14-adr-0003-modular-architecture.md), and [`dec-001-vercel-python.md`](evidence/dec-001-vercel-python.md).
 
 `PASS` here means the check was **executed locally** with **mocked** external integrations and met its criteria. It is not sandbox or live verification (TEST-04).
 
 | Requirements | Summary | Verification | Gate | Blocked by | Status |
 |---|---|---|---|---|---|
 | ARCH-01, ARCH-02 | Layering, no cycles | `lint-imports` (8 contracts, including `exhaustive` module layers and acyclic modules); mutation-checked | B | — | PASS |
-| ARCH-03 to ARCH-07, ARCH-09 to ARCH-12 | Single rules, adapters, no global state, bounded calls, ADRs | Review; LLM retry tests; timeouts configured | B | — | PASS (review) |
+| ARCH-03 to ARCH-07, ARCH-09 to ARCH-12 | Single rules, adapters, no global state, bounded calls, ADRs | Review; LLM retry tests; timeouts configured; database round-trip deadline (`test_database_faults.py`) | B | — | PASS (review; database deadline tested) |
 | ARCH-08 | No N+1 queries | Query-count tests (project lists, billing status, organization entitlement); single-statement transaction setup; at most 8 statements per request | B | — | PASS |
 | ARCH-13 | Modular monolith boundaries | import-linter contracts; `tests/architecture` (api-only cross-module imports, module shape, unique permissions and event types); mutation-checked | B | — | PASS |
-| ARCH-14 | Transactions: one-statement setup, request scope, release, two pools, admission gate, nesting guard | `test_request_scope.py` (16), `test_query_counts.py`; PERF-07 and PERF-03 local (starvation fix measured) | B, D | — | PASS (local); platform behavior NOT VERIFIED (DEC-001) |
+| ARCH-14 | Transactions: one-statement setup, request scope, release, two pools, admission gate, nesting guard | `test_request_scope.py` (16), `test_query_counts.py`, `test_database_faults.py` (hung database, dead idle connections); PERF-07 and PERF-03 local (starvation fix measured); DEC-001 local proof through PgBouncer | B, D | — | PASS (local); platform behavior NOT VERIFIED (DEC-001) |
 | ARCH-15 | Transactional outbox | `test_outbox_jobs.py` (recording, RLS, dispatch, retries, dead letters, leases, retention, billing event) | B, C | — | PASS (local); after-response dispatch on Vercel NOT VERIFIED (D-002) |
 | ARCH-16 | Scheduled jobs | `test_outbox_jobs.py` (secret auth, 404 when off, each job, registry and `vercel.json` parity, CLI) | B, C, E | — | PASS (local); Vercel Cron NOT VERIFIED (DEC-001) |
 | ARCH-17 | Module generator | `pnpm test:new-module` (CI step); mutation-checked | A, B | — | PASS |
+| DEC-001 (local part) | Packaging, Services routing, runtime shim, transaction pooling, faults, cold-start baseline | `proofs/dec-001/run.sh`; [evidence](evidence/dec-001-vercel-python.md); `test_deployed_layout.py` | E | DEC-001 (preview deployment) | PASS (local); platform NOT VERIFIED |
 | API-01 to API-06 | Versioning, problem details, pagination, bearer-only, idempotency, health | Contract and platform tests; account-free e2e | B | — | PASS |
 | ENV-01 | Separate credentials per environment | Operational | E | DEC-006 | NOT VERIFIED |
 | ENV-02 to ENV-06 | Modes, validation, key/mode consistency, production guards, `.env.example` | Config tests; migration guard tests | A, C | — | PASS |
@@ -1408,19 +1410,20 @@ The report clearly distinguishes verified behavior from assumptions, mocks, and 
 - **Implemented:**
   - **Python API as a modular monolith** (ADR-0003):
     - a shared kernel, and the modules identity, billing, projects, llm, and diagnostics, all with identical layers;
-    - request-scoped transactions with separate request and worker pools;
+    - request-scoped transactions with separate request and worker pools, a client-side deadline on every database round trip, and transparent replacement of connections that died while idle;
     - a transactional outbox with after-response dispatch;
     - scheduled jobs (CLI and secret-protected HTTP for Vercel Cron);
     - composed per-module settings;
     - migrations with forced RLS (0001 core, 0002 outbox).
   - **Next.js web app:**
-    - code organized by feature (`src/features/*`, `src/ui`, `src/lib`);
+    - code organized by feature (`src/features/*`, `src/ui`, `src/lib`), with the boundaries enforced by ESLint (FE-13);
     - a typed client generated from OpenAPI (`openapi-fetch`);
     - a minimal UI for every integration, including the operator-only `/integrations` page.
   - **Developer experience:**
     - `pnpm new:module` generates a tenant-scoped module end to end, and CI verifies the generator;
     - `docs/architecture.md`;
     - init-template with contact placeholders.
+  - **Deployment proof (DEC-001, local part):** `proofs/dec-001` packages the template with the Vercel CLI and runs it through Vercel's runtime shim, Services routing, and a transaction-mode pooler, without deploying. It found three defects, all fixed: the API could not start from a bundle, a hung database was unbounded, and stale pooled connections failed requests after a pooler restart.
   - **Product decisions:** DEC-002 (b) organization entitlements; adopter checklists for DEC-003 to DEC-005.
   - **Verification tooling:**
     - 8 import contracts plus architecture tests;
@@ -1429,11 +1432,12 @@ The report clearly distinguishes verified behavior from assumptions, mocks, and 
     - the local restore drill.
 - **Integrations:** all **mocked**. No sandbox or live service has been contacted.
 - **Local evidence:**
-  - API 274 tests, web 51 unit tests, 20 account-free e2e checks, and the generator check pass.
+  - API 280 tests, web 74 unit tests (including 23 import-boundary tests), 20 account-free e2e checks, and the generator check pass.
+  - The DEC-001 local proof passes ([`dec-001-vercel-python.md`](evidence/dec-001-vercel-python.md)).
   - Lint, strict types, build, contract drift, init-template, placeholder, bundle-secret, audit, and license checks pass.
   - At 20 ms DB RTT (local), request scope cut p50 latency by 25% to 33% beyond the one-statement setup.
 
-  Details: [`2026-10-14-adr-0003-modular-architecture.md`](evidence/2026-10-14-adr-0003-modular-architecture.md) and the earlier records.
+  Details: [`dec-001-vercel-python.md`](evidence/dec-001-vercel-python.md), [`2026-10-14-adr-0003-modular-architecture.md`](evidence/2026-10-14-adr-0003-modular-architecture.md), and the earlier records.
 - **Gates:**
 
   | Gate | Status | Reason |
@@ -1442,7 +1446,7 @@ The report clearly distinguishes verified behavior from assumptions, mocks, and 
   | B | NOT VERIFIED | Browser and signed-in e2e need Clerk sandbox keys (DEC-006) |
   | C | NOT VERIFIED | CodeQL (remote CI) and sandbox verification pending; local security tests PASS |
   | D | NOT VERIFIED | Local PERF-01 to PERF-07 recorded. Preview runs need DEC-001. Targets are adopter-owned (ADR-0002) |
-  | E | BLOCKED | DEC-001 (deployment proof, Vercel Cron, after-response dispatch), DEC-006 (integration classification) |
+  | E | BLOCKED | DEC-001 (preview deployment and topology choice; the local proof is done), DEC-006 (integration classification) |
 
 - **Decisions:**
   - DEC-002 to DEC-012: RESOLVED (ADR-0001, ADR-0002). DEC-003 to DEC-005 are adopter-owned.
@@ -1451,9 +1455,15 @@ The report clearly distinguishes verified behavior from assumptions, mocks, and 
 - **Deviations:** D-001 and D-002 (§18).
 - **Remote actions:** none. No push, publication, deployment, or release has occurred.
 - **Next steps (owner action required):**
-  1. Apply `dev-docs/pending/web-import-boundaries.patch` (FE-13); see `dev-docs/pending/README.md`.
-  2. Add sandbox keys to `.env`, and your Clerk user ID to `DIAGNOSTICS_OPERATOR_IDS` (or use `APP_ENV=local`). Then run the `/integrations` checks, the sandbox e2e suites (`E2E_SANDBOX=1`), and the procedures in `docs/integrations.md`, and record the evidence (DEC-006).
-  3. Authorize pushing to a remote, so CI, CodeQL, and the generator check run (Gates A and C).
-  4. Authorize the DEC-001 Vercel preview proof. It covers the Python runtime, Vercel Cron, after-response dispatch, and preview performance runs (Gates D and E).
+  1. Add sandbox keys to `.env`, and your Clerk user ID to `DIAGNOSTICS_OPERATOR_IDS` (or use `APP_ENV=local`). Then run the `/integrations` checks, the sandbox e2e suites (`E2E_SANDBOX=1`), and the procedures in `docs/integrations.md`, and record the evidence (DEC-006).
+  2. Authorize pushing to a remote, so CI, CodeQL, and the generator check run (Gates A and C).
+  3. Authorize the DEC-001 Vercel preview deployment, and choose the topology: two projects, or one project with Services (see the [evidence](evidence/dec-001-vercel-python.md#topology-options-input-for-the-owner-not-a-decision)). The preview covers what only the platform can show (Gates D and E):
+     - cold starts and limits;
+     - the production router;
+     - Supabase's pooler;
+     - genuine Stripe deliveries;
+     - Vercel Cron;
+     - after-response dispatch;
+     - preview performance runs.
 
 **Final principle:** build a template that is secure by default, modular by design, reproducible from a clean clone, and honest about its verified limits. Do not trade correctness, security, or maintainability for superficial completion.

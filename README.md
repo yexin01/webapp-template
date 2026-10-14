@@ -13,7 +13,7 @@ A minimal UI exercises every integration:
 - Free/Pro billing and a Pro-only page;
 - an **Integrations** page (`/integrations`) that shows each service's mode and runs a live check against it.
 
-> **Status:** pre-release. Local development and the automated test suites work. Deployment to Vercel has **not** been verified yet (DEC-001), and external integrations have been exercised only with mocks. See [Verification status](#verification-status).
+> **Status:** pre-release. Local development and the automated test suites work. Deployment to Vercel has **not** been verified yet (DEC-001): a local proof packages and runs the API with Vercel's tooling, but nothing has been deployed. External integrations have been exercised only with mocks. See [Verification status](#verification-status).
 
 ## Architecture
 
@@ -117,7 +117,7 @@ Tests never use your `.env`. Database tests create and drop their own database, 
 |---|---|
 | Unit, integration, and security tests | Run locally (see the latest evidence in `dev-docs/evidence/`) |
 | Clerk, Stripe, Supabase, PostHog, Sentry, LLM | **Mocked only.** Sandbox verification is pending (DEC-006); the `/integrations` page is the tool for it |
-| Vercel deployment (Python runtime) | **Not verified** (DEC-001) |
+| Vercel deployment (Python runtime) | **Not verified on Vercel** (DEC-001). Local proof only: packaging, Vercel's runtime shim, Services routing, transaction pooling, and database faults pass ([evidence](dev-docs/evidence/dec-001-vercel-python.md)) |
 | Performance | PERF-01 to PERF-07 recorded locally, for relative comparison only. Targets are **yours to set** ([perf/run-plan-template.md](perf/run-plan-template.md)) |
 | Backup and restore | Local restore drill only. Objectives and the hosted restore test are **yours to set** ([checklist](docs/operations.md#backup-and-restore)) |
 | Data retention, deletion, export | No deletion or export feature. Policy is **yours to set** ([checklist](docs/data-inventory.md#adopter-decision-checklist)) |
