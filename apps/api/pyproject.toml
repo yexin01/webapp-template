@@ -1,7 +1,7 @@
 [project]
 name = "app-api"
 version = "0.1.0"
-description = "Python API for the SaaS template"
+description = "Python API for SaaS Template"
 requires-python = ">=3.12,<3.13"
 license = "Apache-2.0"
 dependencies = [

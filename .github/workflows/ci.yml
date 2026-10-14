@@ -96,6 +96,8 @@ jobs:
       - run: pnpm --filter web test
       - name: API contracts are up to date
         run: pnpm contracts:check
+      - name: Template initialization leaves no original identifiers (REPO-07)
+        run: pnpm test:init-template
       - name: Production build (placeholder public key; no secrets)
         run: |
           export NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY="pk_test_$(printf 'placeholder.clerk.accounts.dev$' | base64)"

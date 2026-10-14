@@ -32,6 +32,7 @@
     "security:audit": "node scripts/security-audit.mjs",
     "check:bundle-secrets": "node scripts/check-bundle-secrets.mjs",
     "init-template": "node scripts/init-template.mjs",
+    "test:init-template": "node scripts/test-init-template.mjs",
     "security:licenses": "node scripts/check-licenses.mjs"
   }
 }
