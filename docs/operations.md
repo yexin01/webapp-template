@@ -190,7 +190,7 @@ From the DEC-001 local proof ([evidence](../dev-docs/evidence/dec-001-vercel-pyt
 | Runtime | `python3.12` on x86_64. Vercel's runtime shim (`vercel_runtime`, with a vendored uvicorn) serves the ASGI app, and one instance serves concurrent requests. Local: verified in an Amazon Linux 2023 container. |
 | Bundle | Local: 74.3 MiB uncompressed, installed from `uv.lock` with Linux wheels. Documented limit: 500 MB. `excludeFiles` keeps `tests/` out. |
 | Function root | Read-only. The API writes nothing there, and in a bundle it reads no `.env` file: configuration comes from environment variables only. |
-| Cold start | Local: 2 to 4 s to the first response under x86_64 emulation (it varies with machine load), and about 0.5 s natively. Platform cold starts are not measured: pre-warming and bytecode caching differ. |
+| Cold start | Local, under x86_64 emulation: 2.2 to 6.6 s to the first response (p50 3.6 s; it varies with machine load). Natively, about 0.6 s. Platform cold starts are not measured: pre-warming and bytecode caching differ. |
 | Duration | Documented: 300 s by default (the maximum on Hobby); up to 800 s on Pro and Enterprise. |
 | Payload | Documented: 4.5 MB request and response bodies. The API rejects bodies over `MAX_REQUEST_BODY_BYTES` (1 MB) first. |
 | Database | Use the transaction pooler. Every setting is transaction-local and prepared statements are off (local: verified with PgBouncer in transaction mode). A database or pooler that stops responding fails each call after the round-trip deadline (15 s by default). |

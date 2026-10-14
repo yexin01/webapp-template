@@ -1432,7 +1432,7 @@ The report clearly distinguishes verified behavior from assumptions, mocks, and 
     - the local restore drill.
 - **Integrations:** all **mocked**. No sandbox or live service has been contacted.
 - **Local evidence:**
-  - API 280 tests, web 74 unit tests (including 23 import-boundary tests), 20 account-free e2e checks, and the generator check pass.
+  - API 286 tests, web 74 unit tests (including 23 import-boundary tests), 20 account-free e2e checks, and the generator check pass.
   - The DEC-001 local proof passes ([`dec-001-vercel-python.md`](evidence/dec-001-vercel-python.md)).
   - Lint, strict types, build, contract drift, init-template, placeholder, bundle-secret, audit, and license checks pass.
   - At 20 ms DB RTT (local), request scope cut p50 latency by 25% to 33% beyond the one-statement setup.
