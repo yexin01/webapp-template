@@ -1122,6 +1122,7 @@ These are initial engineering defaults, held in configuration. They are **not** 
 | Page size | Default 20, maximum 100 |
 | Outbound HTTP timeout (Clerk, Stripe) | 10 s |
 | Database connect / statement timeout | 5 s / 10 s |
+| Database round trip (client-side deadline) | Statement timeout + connect timeout (15 s) |
 | LLM call timeout | 30 s |
 | Retries for idempotent outbound calls | At most 2, exponential backoff with jitter |
 | Per-instance LLM concurrency | Small fixed bound (set at P5) |

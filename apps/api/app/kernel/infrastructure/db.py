@@ -23,12 +23,22 @@ query into a single transaction. Semantics:
 - the transaction commits when the request ends, before the response is sent;
 - ``release()`` commits early, before slow external calls;
 - ``app_worker`` blocks never join; they always commit on their own.
+
+**Faults** (ARCH-07, §16.4; found by the DEC-001 proof):
+
+- Every round trip has a client-side deadline (``BoundedConnection``), because
+  ``statement_timeout`` is enforced by the server and cannot end a call when
+  the server, or a pooler in front of it, stops responding.
+- A pooled connection that died while idle (after a pooler restart or a
+  failover) fails on its first round trip, before any work has run. The
+  transaction is then started again on another connection.
 """
 
 from __future__ import annotations
 
 import contextvars
 import threading
+import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import ExitStack, contextmanager
@@ -37,6 +47,8 @@ from uuid import UUID
 
 import psycopg
 from psycopg import sql
+from psycopg.abc import PQGen
+from psycopg.rows import TupleRow
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool, PoolTimeout
 
@@ -52,8 +64,33 @@ CONTEXT_KEYS = ("app.clerk_user_id", "app.user_id", "app.org_id")
 _SET_CONFIG = sql.SQL("set_config(%s, %s, true)")
 
 R = TypeVar("R")
+RV = TypeVar("RV")
 
 _UNAVAILABLE = "The database is temporarily unavailable."
+_PSYCOPG_WAIT_INTERVAL = 0.1  # psycopg's default; how often a wait wakes to notice interrupts
+
+
+class BoundedConnection(psycopg.Connection[TupleRow]):
+    """A connection whose every round trip has a client-side deadline (ARCH-07).
+
+    psycopg sends every round trip (execute, fetch, commit, rollback) through
+    ``wait``. Past the deadline the request is still in flight, so the
+    connection is closed: the caller gets ``OperationalError`` (a 503), the
+    server aborts the transaction, and the pool replaces the connection.
+    """
+
+    round_trip_timeout: float = 15.0  # set per pool by ``Database``
+
+    def wait(self, gen: PQGen[RV], interval: float = _PSYCOPG_WAIT_INTERVAL, timeout: float | None = None) -> RV:
+        deadline = self.round_trip_timeout if timeout is None else timeout
+        started = time.monotonic()
+        try:
+            return super().wait(gen, interval, deadline)
+        except psycopg.OperationalError as exc:
+            if time.monotonic() - started < deadline:
+                raise
+            self.close()
+            raise psycopg.OperationalError(f"No response from the database within {deadline:g} s.") from exc
 
 
 class Database:
@@ -72,13 +109,15 @@ class Database:
         self._sizes = {API_ROLE: api_pool_size, WORKER_ROLE: worker_pool_size}
         self._connect_timeout = connect_timeout
         self._statement_timeout_ms = statement_timeout_ms
-        self._pools: dict[str, ConnectionPool] = {}
+        # Longer than any statement the server allows, plus a connect timeout of slack.
+        self.round_trip_timeout = statement_timeout_ms / 1000 + connect_timeout
+        self._pools: dict[str, ConnectionPool[BoundedConnection]] = {}
         self._lock = threading.Lock()
         self._scope: contextvars.ContextVar[RequestScope | None] = contextvars.ContextVar(
             f"request_scope_{id(self)}", default=None
         )
 
-    def _pool(self, role: str) -> ConnectionPool:
+    def _pool(self, role: str) -> ConnectionPool[BoundedConnection]:
         pool = self._pools.get(role)
         if pool is None:
             with self._lock:
@@ -86,6 +125,8 @@ class Database:
                 if pool is None:
                     pool = ConnectionPool(
                         self._conninfo,
+                        connection_class=BoundedConnection,
+                        configure=self._configure,
                         min_size=0,
                         max_size=self._sizes[role],
                         timeout=self._connect_timeout,
@@ -97,6 +138,35 @@ class Database:
                     )
                     self._pools[role] = pool
         return pool
+
+    def _configure(self, conn: BoundedConnection) -> None:
+        conn.round_trip_timeout = self.round_trip_timeout
+
+    def begin(self, stack: ExitStack, role: str, query: sql.Composed, params: list[str]) -> psycopg.Connection:
+        """Check out a connection into ``stack``, open a transaction, and apply the setup statement.
+
+        A connection that died while idle fails on its first round trip, before
+        any work has run, so the next pooled connection is tried. Each dead one
+        is discarded, so this ends after at most one attempt per pooled
+        connection plus one on a new connection. A connection that timed out is
+        closed, not broken, and is never retried.
+        """
+        pool = self._pool(role)
+        for _ in range(pool.max_size + 1):
+            attempt = ExitStack()
+            conn: BoundedConnection | None = None
+            try:
+                conn = attempt.enter_context(pool.connection())
+                attempt.enter_context(conn.transaction())
+                conn.execute(query, params)
+            except BaseException as exc:
+                attempt.__exit__(type(exc), exc, exc.__traceback__)
+                if isinstance(exc, psycopg.OperationalError) and conn is not None and conn.broken:
+                    continue
+                raise
+            stack.enter_context(attempt)
+            return conn
+        raise psycopg.OperationalError("Every pooled database connection was lost.")
 
     def setup_statement(self, role: str, context: Mapping[str, str]) -> tuple[sql.Composed, list[str]]:
         """The single statement that applies role, timeout, and full tenant context.
@@ -123,9 +193,8 @@ class Database:
                 yield conn
             return
         try:
-            with self._pool(role).connection() as conn, conn.transaction():
-                conn.execute(query, params)
-                yield conn
+            with ExitStack() as stack:
+                yield self.begin(stack, role, query, params)
         except (PoolTimeout, psycopg.OperationalError) as exc:
             raise DependencyUnavailableError(_UNAVAILABLE) from exc
 
@@ -194,10 +263,13 @@ class RequestScope:
 
     def _block(self, query: sql.Composed, params: list[str]) -> Iterator[psycopg.Connection]:
         try:
-            conn = self._open()
-            if params != self._applied:
-                conn.execute(query, params)
-                self._applied = params
+            if self._conn is None:
+                conn = self._open(query, params)
+            else:
+                conn = self._conn
+                if params != self._applied:
+                    conn.execute(query, params)
+                    self._applied = params
         except (PoolTimeout, psycopg.OperationalError) as exc:
             self._rollback(exc)
             raise DependencyUnavailableError(_UNAVAILABLE) from exc
@@ -209,17 +281,15 @@ class RequestScope:
                 raise DependencyUnavailableError(_UNAVAILABLE) from exc
             raise
 
-    def _open(self) -> psycopg.Connection:
-        if self._conn is None:
-            stack = ExitStack()
-            try:
-                conn = stack.enter_context(self._db._pool(API_ROLE).connection())
-                stack.enter_context(conn.transaction())
-            except BaseException:
-                stack.close()
-                raise
-            self._stack, self._conn, self._applied = stack, conn, None
-        return self._conn
+    def _open(self, query: sql.Composed, params: list[str]) -> psycopg.Connection:
+        stack = ExitStack()
+        try:
+            conn = self._db.begin(stack, API_ROLE, query, params)
+        except BaseException:
+            stack.close()
+            raise
+        self._stack, self._conn, self._applied = stack, conn, params
+        return conn
 
     def commit(self) -> None:
         stack, self._stack, self._conn, self._applied = self._stack, None, None, None

@@ -160,6 +160,8 @@ Errors anywhere map to RFC 9457 problem details with a stable `code` and the req
 
 **Roles.** Requests run as `app_api` and system work runs as `app_worker`. Neither role owns tables or has `BYPASSRLS`. Each transaction sets the role, the statement timeout, and the full tenant context (`app.clerk_user_id`, `app.user_id`, `app.org_id`) in **one statement**, which is one round trip.
 
+**Faults.** The server enforces the statement timeout, so it cannot end a call when the server, or a pooler in front of it, stops responding. Every round trip therefore also has a client-side deadline (statement timeout plus connect timeout); past it, the connection is closed and the call fails with `503`. A pooled connection that died while idle (after a pooler restart or failover) fails on its first round trip, before any work has run, so the transaction starts again on another connection. Transaction-mode pooling works because every setting is transaction-local and prepared statements are off. The DEC-001 proof checked this through PgBouncer in transaction mode.
+
 **`Transactions[R]`.** Each module gets transactions that build its own repository: `kernel.transactions(PgProjectRepository)`. A block yields a `Tx` with:
 
 - `tx.repo`: the module's repository;

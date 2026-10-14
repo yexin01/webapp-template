@@ -51,7 +51,7 @@ Deploying, promoting, or changing hosting and Git settings are remote actions. T
 ## Health and readiness
 
 - `GET /api/v1/health`: liveness only, with no dependency calls.
-- `GET /api/v1/ready`: checks the database within the statement timeout and returns `503` with `{"status":"not_ready"}` when it is unavailable. It does not reveal configuration.
+- `GET /api/v1/ready`: checks the database and returns `503` with `{"status":"not_ready"}` when it is unavailable, at most one round-trip deadline later (below). It does not reveal configuration.
 
 ## Provider outages
 
@@ -59,7 +59,7 @@ Deploying, promoting, or changing hosting and Git settings are remote actions. T
 |---|---|
 | Clerk | New sign-ins fail. Requests with valid tokens continue while cached keys are valid, then fail closed (`503`). Stale organization memberships cannot be re-verified, so organization requests fail closed (`503`). |
 | Stripe | Checkout and portal return `503`. Existing entitlements (from synchronized records) are unaffected. Stripe retries webhooks; run reconciliation afterwards. |
-| Database | Readiness fails. Data requests return `503`. No partial writes. |
+| Database | Readiness fails. Data requests return `503`. No partial writes. A database or pooler that stops responding fails each call after the round-trip deadline: `DATABASE_STATEMENT_TIMEOUT_MS` plus `DATABASE_CONNECT_TIMEOUT_SECONDS` (15 s by default). After a pooler restart or failover, connections that died while idle are replaced on first use, without failing the request. |
 | PostHog / Sentry | No user-visible impact. Exports fail silently and are logged. |
 | LLM provider | Only the connectivity check reports failure. |
 
