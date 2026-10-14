@@ -34,6 +34,7 @@
     "check:bundle-secrets": "node scripts/check-bundle-secrets.mjs",
     "init-template": "node scripts/init-template.mjs",
     "test:init-template": "node scripts/test-init-template.mjs",
+    "check:placeholders": "node scripts/check-placeholders.mjs",
     "security:licenses": "node scripts/check-licenses.mjs",
     "perf:server": "cd apps/api && uv run python ../../perf/server.py",
     "perf:run": "node scripts/perf.mjs"

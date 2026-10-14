@@ -1,11 +1,16 @@
 #!/usr/bin/env node
 /**
  * Template initialization (REPO-07). Renames the project's identifiers,
- * optionally moves the local PostgreSQL port (so several projects created
- * from this template can run side by side), and creates a local .env from
- * .env.example. Never copies or prints credentials. Safe to re-run.
+ * fills in the community contacts (DEC-012, ADR-0002), optionally moves the
+ * local PostgreSQL port (so several projects created from this template can
+ * run side by side), and creates a local .env from .env.example. Never copies
+ * or prints credentials. Safe to re-run.
  *
- *   pnpm init-template --name "Acme Cloud" --slug acme-cloud [--db-port 54330] [--dry-run]
+ *   pnpm init-template --name "Acme Cloud" --slug acme-cloud \
+ *     --security-contact security@acme.example --conduct-contact conduct@acme.example \
+ *     [--db-port 54330] [--dry-run]
+ *
+ * The contact options are required while the placeholders are still present.
  *
  * The specification and evidence under dev-docs/ describe the template itself
  * and are intentionally left unchanged.
@@ -14,11 +19,9 @@ import { copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
 
-const root = process.env.TEMPLATE_ROOT ?? path.resolve(import.meta.dirname, "..");
+import { ORIGINAL_DB_PORT, ORIGINAL_NAME, ORIGINAL_SLUG, PLACEHOLDERS, isValidContact } from "./lib/template.mjs";
 
-const ORIGINAL_NAME = "SaaS Template";
-const ORIGINAL_SLUG = "saas-template";
-const ORIGINAL_DB_PORT = "54329";
+const root = process.env.TEMPLATE_ROOT ?? path.resolve(import.meta.dirname, "..");
 
 /** Files that contain the display name or slug. */
 const IDENTIFIER_FILES = [
@@ -47,7 +50,7 @@ const PORT_FILES = [
 function usage(message) {
   console.error(message);
   console.error(
-    'Usage: pnpm init-template --name "Product Name" --slug product-slug [--db-port 54330] [--dry-run]',
+    'Usage: pnpm init-template --name "Product Name" --slug product-slug --security-contact <email|https-url> --conduct-contact <email|https-url> [--db-port 54330] [--dry-run]',
   );
   process.exit(2);
 }
@@ -57,6 +60,8 @@ const { values } = parseArgs({
     name: { type: "string" },
     slug: { type: "string" },
     "db-port": { type: "string" },
+    "security-contact": { type: "string" },
+    "conduct-contact": { type: "string" },
     "dry-run": { type: "boolean", default: false },
   },
 });
@@ -75,6 +80,16 @@ if (!slug || !/^[a-z][a-z0-9-]{1,40}$/.test(slug)) {
 if (dbPort !== undefined && (!/^\d{4,5}$/.test(dbPort) || Number(dbPort) < 1024 || Number(dbPort) > 65535)) {
   usage("--db-port must be a number between 1024 and 65535.");
 }
+for (const { file, token, option } of PLACEHOLDERS) {
+  const value = values[option]?.trim();
+  if (value !== undefined && !isValidContact(value)) {
+    usage(`--${option} must be an email address or an https URL.`);
+  }
+  const target = path.join(root, file);
+  if (value === undefined && existsSync(target) && readFileSync(target, "utf8").includes(token)) {
+    usage(`--${option} is required: ${file} still contains ${token}.`);
+  }
+}
 
 const changes = new Set();
 function rewrite(rel, transform) {
@@ -90,6 +105,10 @@ function rewrite(rel, transform) {
 
 for (const rel of IDENTIFIER_FILES) {
   rewrite(rel, (text) => text.replaceAll(ORIGINAL_NAME, name).replaceAll(ORIGINAL_SLUG, slug));
+}
+for (const { file, token, option } of PLACEHOLDERS) {
+  const value = values[option]?.trim();
+  if (value !== undefined) rewrite(file, (text) => text.replaceAll(token, () => value));
 }
 if (dbPort && dbPort !== ORIGINAL_DB_PORT) {
   // Only the exact port token next to a host or a port mapping is replaced.

@@ -10,6 +10,12 @@ This project adopts the [Contributor Covenant, version 2.1](https://www.contribu
 
 ## Enforcement
 
-Report concerns to the project maintainers at: **[enforcement contact pending — DEC-012]**.
+Report concerns to the project maintainers at: **{{CONDUCT_CONTACT}}**
 
-> Maintainers: choose an enforcement contact before publishing this repository. Reports will be reviewed promptly and handled confidentially. Consequences follow the Contributor Covenant enforcement guidelines: correction, warning, temporary ban, or permanent ban.
+Reports are reviewed promptly and handled confidentially. Consequences follow the Contributor Covenant enforcement guidelines: correction, warning, temporary ban, or permanent ban.
+
+<!--
+Template adopters: `pnpm init-template --conduct-contact ...` replaces the
+placeholder above; `pnpm check:placeholders` fails if it remains after renaming.
+-->
+

@@ -98,6 +98,8 @@ jobs:
         run: pnpm contracts:check
       - name: Template initialization leaves no original identifiers (REPO-07)
         run: pnpm test:init-template
+      - name: Community contacts are filled in once the project is renamed (DEC-012)
+        run: pnpm check:placeholders
       - name: Production build (placeholder public key; no secrets)
         run: |
           export NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY="pk_test_$(printf 'placeholder.clerk.accounts.dev$' | base64)"

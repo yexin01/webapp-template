@@ -4,9 +4,15 @@
 
 **Do not open public issues for security problems.**
 
-Report vulnerabilities privately through this repository's **Security → Report a vulnerability** form (GitHub private vulnerability reporting).
+Report vulnerabilities privately to: **{{SECURITY_CONTACT}}**
 
-> Maintainers: private vulnerability reporting must be enabled in the repository settings, and a fallback contact still needs to be chosen (DEC-012 in the engineering specification). Until both are done, this channel may be unavailable.
+<!--
+Template adopters: `pnpm init-template --security-contact ...` replaces the
+placeholder above, and `pnpm check:placeholders` (run in CI) fails once the
+project is renamed while a placeholder remains. GitHub private vulnerability
+reporting is a good channel; enable it in the repository settings first.
+-->
+
 
 Please include:
 
@@ -18,7 +24,7 @@ Use synthetic data only. Never include real credentials or personal data.
 
 ## What to expect
 
-- Acknowledgement as soon as maintainers are able. Response-time targets are pending the owner's decision (DEC-012).
+- Acknowledgement as soon as maintainers are able.<!-- Adopters: state a response-time target here only if you commit to one. -->
 - An assessment and remediation plan once the issue is reproduced.
 - Coordinated disclosure after a fix is available. We will credit you unless you prefer otherwise.
 
