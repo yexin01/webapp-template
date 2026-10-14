@@ -2,8 +2,10 @@
 not grow with the amount of data returned (no N+1 queries).
 
 Every statement sent through psycopg is counted, including the per-transaction
-role and context setup, so the absolute bounds below are deliberately loose;
-the important assertion is that counts do not change with data volume.
+role and context setup. Each statement is a network round trip, which matters
+once the database is remote (PERF-07 measured about 20 ms per round trip
+turning a 10 ms list into 700 ms). Setup is therefore a single statement per
+transaction, and the per-request bound is tight.
 """
 
 from __future__ import annotations
@@ -18,12 +20,14 @@ import pytest
 
 from app.domain.entitlements import SubscriptionStatus
 from app.domain.tenancy import ExternalMembership, Role
+from app.infrastructure.db import API_ROLE, WORKER_ROLE, Database
 from tests.conftest import Harness
 from tests.integration.test_billing import event_payload, make_pro, send_webhook, snapshot
 
 pytestmark = pytest.mark.db
 
-MAX_STATEMENTS_PER_REQUEST = 25
+# Context resolution plus the data query: two or three transactions of setup + query.
+MAX_STATEMENTS_PER_REQUEST = 8
 
 
 @contextmanager
@@ -96,3 +100,27 @@ def test_organization_entitlement_query_count_is_independent_of_membership_count
     large = statements_for(harness, lambda: harness.client.get(url, headers=headers))
     assert large == small
     assert 0 < small <= MAX_STATEMENTS_PER_REQUEST
+
+
+def test_transaction_setup_is_one_statement_and_takes_effect(db: str) -> None:
+    database = Database(db, max_size=1, connect_timeout=3, statement_timeout_ms=7000)
+    user = "00000000-0000-4000-8000-00000000a11c"
+    try:
+        with counting_statements() as counter, database.transaction(API_ROLE, {"app.user_id": user}) as conn:
+            setup = counter["n"]
+            row = conn.execute(
+                "SELECT current_user, current_setting('statement_timeout'), current_setting('app.user_id')"
+            ).fetchone()
+        assert setup == 1
+        assert row == ("app_api", "7s", user)
+        # Role and context are transaction-local: the next transaction on the same
+        # pooled connection starts clean.
+        with database.transaction(WORKER_ROLE, {}) as conn:
+            row = conn.execute("SELECT current_user, current_setting('app.user_id', true)").fetchone()
+        assert row is not None
+        assert row[0] == "app_worker"
+        assert row[1] in (None, "")
+        with pytest.raises(ValueError, match="unknown database role"), database.transaction("postgres", {}):
+            pass
+    finally:
+        database.close()

@@ -3,7 +3,7 @@
 The only way to obtain a database handle is through ``PgUnitOfWork``, and
 every transaction it opens first switches to a non-privileged role
 (``app_api`` or ``app_worker``) and sets the transaction-local tenant context
-read by row-level security policies.
+read by row-level security policies, in a single statement.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 
 import psycopg
+from psycopg import sql
 from psycopg_pool import ConnectionPool, PoolTimeout
 
 from app.domain.errors import DependencyUnavailableError
@@ -22,6 +23,7 @@ from app.ports import Repository, SystemRepository
 
 API_ROLE = "app_api"
 WORKER_ROLE = "app_worker"
+_SET_CONFIG = sql.SQL("set_config(%s, %s, true)")
 
 
 class Database:
@@ -63,15 +65,17 @@ class Database:
     def transaction(self, role: str, settings: dict[str, str]) -> Iterator[psycopg.Connection]:
         if role not in (API_ROLE, WORKER_ROLE):
             raise ValueError("unknown database role")
+        if any(not key.startswith("app.") for key in settings):
+            raise ValueError("context settings must use the app. prefix")
+        # Role, timeout, and tenant context in ONE round trip (each statement is
+        # a network round trip to a remote database). set_config('role', ...)
+        # changes the same setting as SET LOCAL ROLE, with the same membership
+        # check; every value is a bound parameter.
+        pairs = [("role", role), ("statement_timeout", str(self._statement_timeout_ms)), *settings.items()]
+        setup = sql.SQL("SELECT ") + sql.SQL(", ").join([_SET_CONFIG] * len(pairs))
         try:
             with self._get_pool().connection() as conn, conn.transaction():
-                conn.execute(f"SET LOCAL ROLE {role}")
-                conn.execute(
-                    "SELECT set_config('statement_timeout', %s, true)",
-                    (str(self._statement_timeout_ms),),
-                )
-                for key, value in settings.items():
-                    conn.execute("SELECT set_config(%s, %s, true)", (key, value))
+                conn.execute(setup, [item for pair in pairs for item in pair])
                 yield conn
         except (PoolTimeout, psycopg.OperationalError) as exc:
             raise DependencyUnavailableError("The database is temporarily unavailable.") from exc

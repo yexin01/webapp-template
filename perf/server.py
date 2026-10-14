@@ -11,19 +11,31 @@ test-only authentication path.
 
     cd apps/api && uv run python ../../perf/server.py [--users 200] [--orgs 20] [--projects 50]
 
+Degradation knobs for PERF-07 (all default off, so other scenarios are unchanged):
+
+- ``--db-latency-ms N``: every API-to-PostgreSQL round trip goes through a
+  loopback proxy that adds N ms (N/2 each way), like a remote database.
+- ``--provider-latency-ms N``: the mocked identity directory, Stripe API, and
+  LLM provider wait N ms before every call.
+- ``--telemetry``: the real PostHog and Sentry SDKs run, pointed at a
+  loopback sink on this machine. Nothing leaves the machine.
+
 On exit (Ctrl+C) it prints database statistics as JSON: webhook ledger
-counts and the peak number of connections observed.
+counts, the peak number of connections observed, and telemetry sink counts.
 """
 
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import sys
 import threading
 import time
+from collections import Counter
 from datetime import UTC, datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse, urlunparse
@@ -43,7 +55,7 @@ from app.infrastructure import migrations  # noqa: E402
 from app.infrastructure.config import load_settings  # noqa: E402
 from app.infrastructure.fakes import InMemoryBillingProvider, StaticMembershipDirectory  # noqa: E402
 from app.infrastructure.llm_providers import MockLLMProvider  # noqa: E402
-from app.infrastructure.observability import NoopAnalytics, configure_logging  # noqa: E402
+from app.infrastructure.observability import NoopAnalytics, configure_logging, init_error_reporting  # noqa: E402
 
 ADMIN_URL = os.environ.get("PERF_ADMIN_DATABASE_URL", "postgresql://postgres:postgres@127.0.0.1:54329/app")
 PERF_DB = "app_perf"
@@ -141,7 +153,111 @@ def seed(url: str, users: int, orgs: int, projects: int) -> dict[str, int]:
         }
 
 
-def build_app(url: str, users: int, orgs: int, pool_size: int) -> tuple[Any, InMemoryBillingProvider]:
+class DelayProxy(threading.Thread):
+    """Loopback TCP proxy to PostgreSQL that adds a fixed round-trip delay (PERF-07)."""
+
+    def __init__(self, target_host: str, target_port: int, round_trip_ms: float) -> None:
+        super().__init__(daemon=True)
+        self._target = (target_host, target_port)
+        self._one_way = round_trip_ms / 2000
+        self.port = 0
+        self.ready = threading.Event()
+
+    def run(self) -> None:
+        asyncio.run(self._serve())
+
+    async def _serve(self) -> None:
+        server = await asyncio.start_server(self._handle, "127.0.0.1", 0)
+        self.port = server.sockets[0].getsockname()[1]
+        self.ready.set()
+        async with server:
+            await server.serve_forever()
+
+    async def _handle(self, client_r: asyncio.StreamReader, client_w: asyncio.StreamWriter) -> None:
+        upstream_r, upstream_w = await asyncio.open_connection(*self._target)
+        await asyncio.gather(self._pipe(client_r, upstream_w), self._pipe(upstream_r, client_w))
+
+    async def _pipe(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            while data := await reader.read(65536):
+                await asyncio.sleep(self._one_way)
+                writer.write(data)
+                await writer.drain()
+        except ConnectionError:
+            pass
+        finally:
+            writer.close()
+
+
+class Delayed:
+    """Adds a fixed delay before every method call on a mocked provider (PERF-07)."""
+
+    def __init__(self, inner: Any, delay_ms: float) -> None:
+        self._inner = inner
+        self._delay = delay_ms / 1000
+
+    def __getattr__(self, name: str) -> Any:
+        attr = getattr(self._inner, name)
+        if not callable(attr):
+            return attr
+
+        def call(*args: Any, **kwargs: Any) -> Any:
+            time.sleep(self._delay)
+            return attr(*args, **kwargs)
+
+        return call
+
+
+class TelemetrySink(threading.Thread):
+    """Loopback HTTP endpoint that accepts PostHog and Sentry uploads and counts them."""
+
+    def __init__(self) -> None:
+        super().__init__(daemon=True)
+        self.requests: Counter[str] = Counter()
+        sink = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                sink.requests[self.path.split("?")[0]] += 1
+                body = b'{"status": 1}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format: str, *args: Any) -> None:
+                pass
+
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.port = self._server.server_address[1]
+
+    def run(self) -> None:
+        self._server.serve_forever()
+
+
+def build_app(
+    url: str,
+    users: int,
+    orgs: int,
+    pool_size: int,
+    *,
+    provider_latency_ms: float = 0,
+    telemetry_port: int | None = None,
+    traces_sample_rate: float = 0.0,
+) -> tuple[Any, InMemoryBillingProvider]:
+    telemetry: dict[str, Any] = {"analytics_mode": "disabled", "error_reporting_mode": "disabled"}
+    if telemetry_port is not None:
+        # Real SDKs, loopback sink. The key and DSN are local placeholders, not credentials.
+        telemetry = {
+            "analytics_mode": "sandbox",
+            "posthog_project_api_key": "perf-local-sink",
+            "posthog_host": f"http://127.0.0.1:{telemetry_port}",
+            "error_reporting_mode": "sandbox",
+            "sentry_dsn": f"http://perflocal@127.0.0.1:{telemetry_port}/1",
+            "sentry_traces_sample_rate": traces_sample_rate,
+        }
     settings = load_settings(
         _env_file=None,
         app_env="test",
@@ -153,10 +269,14 @@ def build_app(url: str, users: int, orgs: int, pool_size: int) -> tuple[Any, InM
         stripe_price_pro_yearly=PRICE_YEARLY,
         stripe_webhook_secret=WEBHOOK_SECRET,
         llm_mode="mock",
-        analytics_mode="disabled",
-        error_reporting_mode="disabled",
+        # Generous limits so the LLM class measures latency, not the rate limiter.
+        llm_checks_per_user_per_minute=600,
+        llm_checks_global_per_day=100_000,
         log_level="WARNING",
+        **telemetry,
     )
+    if telemetry_port is not None:
+        init_error_reporting(settings)
     directory = StaticMembershipDirectory()
     billing = InMemoryBillingProvider()
     for i in range(users):
@@ -175,14 +295,18 @@ def build_app(url: str, users: int, orgs: int, pool_size: int) -> tuple[Any, InM
             ended_at=None,
         )
         billing.set_subscriptions(customer_id(i), [snapshot])
-    container = build_container(
-        settings,
-        verifier=TokenTable(users),
-        directory=directory,
-        billing_provider=billing,
-        analytics=NoopAnalytics(),
-        llm_provider=MockLLMProvider(),
-    )
+    overrides: dict[str, Any] = {
+        "verifier": TokenTable(users),
+        "directory": directory,
+        "billing_provider": billing,
+        "llm_provider": MockLLMProvider(),
+    }
+    if provider_latency_ms > 0:
+        for name in ("directory", "billing_provider", "llm_provider"):
+            overrides[name] = Delayed(overrides[name], provider_latency_ms)
+    if telemetry_port is None:
+        overrides["analytics"] = NoopAnalytics()
+    container = build_container(settings, **overrides)
     return create_app(container), billing
 
 
@@ -219,6 +343,10 @@ def main() -> None:
     parser.add_argument("--projects", type=int, default=50, help="projects per tenant")
     parser.add_argument("--pool-size", type=int, default=10)
     parser.add_argument("--port", type=int, default=8001)
+    parser.add_argument("--db-latency-ms", type=float, default=0, help="added API-to-database round-trip time")
+    parser.add_argument("--provider-latency-ms", type=float, default=0, help="added latency per mocked provider call")
+    parser.add_argument("--telemetry", action="store_true", help="real PostHog and Sentry SDKs to a loopback sink")
+    parser.add_argument("--traces-sample-rate", type=float, default=0.0, help="Sentry tracing rate with --telemetry")
     args = parser.parse_args()
     if args.users < args.orgs or args.orgs < 1:
         parser.error("--users must be at least --orgs, and --orgs at least 1")
@@ -227,9 +355,43 @@ def main() -> None:
     started = time.monotonic()
     url = recreate_database()
     counts = seed(url, args.users, args.orgs, args.projects)
-    app, _ = build_app(url, args.users, args.orgs, args.pool_size)
+
+    app_url = url
+    if args.db_latency_ms > 0:
+        parsed = urlparse(url)
+        proxy = DelayProxy(parsed.hostname or "127.0.0.1", parsed.port or 5432, args.db_latency_ms)
+        proxy.start()
+        proxy.ready.wait(5)
+        app_url = urlunparse(parsed._replace(netloc=parsed.netloc.replace(f":{parsed.port}", f":{proxy.port}")))
+    sink: TelemetrySink | None = None
+    if args.telemetry:
+        sink = TelemetrySink()
+        sink.start()
+
+    app, _ = build_app(
+        app_url,
+        args.users,
+        args.orgs,
+        args.pool_size,
+        provider_latency_ms=args.provider_latency_ms,
+        telemetry_port=sink.port if sink else None,
+        traces_sample_rate=args.traces_sample_rate,
+    )
+    degradation = {
+        "db_latency_ms": args.db_latency_ms,
+        "provider_latency_ms": args.provider_latency_ms,
+        "telemetry": args.telemetry,
+        "traces_sample_rate": args.traces_sample_rate if args.telemetry else None,
+    }
     print(
-        json.dumps({"dataset": counts, "seed_seconds": round(time.monotonic() - started, 2), "port": args.port}),
+        json.dumps(
+            {
+                "dataset": counts,
+                "seed_seconds": round(time.monotonic() - started, 2),
+                "port": args.port,
+                "degradation": degradation,
+            }
+        ),
         flush=True,
     )
 
@@ -246,6 +408,7 @@ def main() -> None:
                     "peak_database_connections": sampler.peak,
                     "pool_max_size": args.pool_size,
                     "billing_events": ledger_stats(url),
+                    "telemetry_sink_requests": dict(sink.requests) if sink else None,
                 }
             ),
             flush=True,

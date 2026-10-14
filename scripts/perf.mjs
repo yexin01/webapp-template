@@ -28,6 +28,8 @@ const PASSTHROUGH = [
   "WEBHOOK_EVENTS",
   "WEBHOOK_VUS",
   "DUPLICATES",
+  "INCLUDE_LLM",
+  "LABEL",
 ];
 
 const baseUrl = process.env.BASE_URL ?? "http://host.docker.internal:8001";

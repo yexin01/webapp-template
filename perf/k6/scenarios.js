@@ -1,8 +1,10 @@
-// Performance scenarios PERF-01 to PERF-06 (spec §15.2). Run against the LOCAL
+// Performance scenarios PERF-01 to PERF-07 (spec §15.2). Run against the LOCAL
 // perf server only (perf/server.py) unless an owner-approved run plan says
 // otherwise. See perf/README.md for commands.
 //
 //   SCENARIO=baseline|load|stress|spike|soak|webhooks
+//   INCLUDE_LLM=1   adds the mocked LLM check to each iteration (PERF-07)
+//   LABEL=name      tags the results file, e.g. a PERF-07 server configuration
 //
 // Thresholds below are ABORT CRITERIA and summary selectors, not performance
 // targets. No targets exist until DEC-003 is resolved.
@@ -19,7 +21,19 @@ const ORGS = Number(__ENV.ORGS || 20);
 // Must match perf/server.py. Test-only; not a credential.
 const WEBHOOK_SECRET = "whsec_perf_test_only_not_a_real_secret"; // gitleaks:allow
 
-const CLASSES = ["health", "auth_read", "tenant_list", "org_list", "billing_status", "entitlement_gated", "auth_write"];
+const INCLUDE_LLM = __ENV.INCLUDE_LLM === "1";
+const LABEL = (__ENV.LABEL || "").replace(/[^A-Za-z0-9_-]/g, "");
+
+const CLASSES = [
+  "health",
+  "auth_read",
+  "tenant_list",
+  "org_list",
+  "billing_status",
+  "entitlement_gated",
+  "auth_write",
+  ...(INCLUDE_LLM ? ["llm_check"] : []),
+];
 
 const rate = (name, fallback) => Number(__ENV[name] || fallback);
 
@@ -147,6 +161,10 @@ export default function () {
     const id = created.json("id");
     expect(http.del(`${BASE_URL}/api/v1/projects/${id}`, null, tag("auth_write")), 204, "auth_write");
   }
+
+  if (INCLUDE_LLM) {
+    expect(http.post(`${BASE_URL}/api/v1/llm/check`, null, tag("llm_check")), 200, "llm_check");
+  }
 }
 
 function sign(payload) {
@@ -185,12 +203,14 @@ export function handleSummary(data) {
   }
   const summary = {
     scenario: SCENARIO,
+    label: LABEL || null,
+    include_llm: INCLUDE_LLM,
     base_url: BASE_URL,
     started: new Date(Date.now() - data.state.testRunDurationMs).toISOString(),
     duration_ms: Math.round(data.state.testRunDurationMs),
     metrics,
   };
-  out[`/results/${SCENARIO}-${Date.now()}.json`] = JSON.stringify(summary, null, 2);
+  out[`/results/${SCENARIO}${LABEL ? `-${LABEL}` : ""}-${Date.now()}.json`] = JSON.stringify(summary, null, 2);
   out.stdout = `${JSON.stringify(summary, null, 2)}\n`;
   return out;
 }
