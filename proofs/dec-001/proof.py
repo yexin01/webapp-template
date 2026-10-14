@@ -11,6 +11,7 @@ billing and LLM are mocked.
     runtime     start the packaged function in a linux/amd64 container (emulator.py)
     probe       HTTP checks against a running API
     outage      database pooler hung, then down, then recovered
+    ipc         pair the runtime's handler-started and end messages
     session     transaction-local settings across clients of one pooled server connection
     coldstart   cold starts of the packaged function (container) and of the source tree (host)
     report      results/*.json -> results/summary.md
@@ -28,6 +29,7 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import itertools
 import json
 import os
 import secrets
@@ -170,12 +172,16 @@ def cmd_db(args: argparse.Namespace) -> None:
     sys.path.insert(0, str(API_DIR))
     from app.kernel.infrastructure import migrations
 
+    migrations.require_local_database(args.admin_url, "create or drop the proof database")
     with psycopg.connect(args.admin_url, autocommit=True) as conn:
         conn.execute(
             "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = %s AND pid <> pg_backend_pid()",
             (args.name,),
         )
         conn.execute(f'DROP DATABASE IF EXISTS "{args.name}"')
+        if args.drop:
+            print(f"dropped {args.name}")
+            return
         conn.execute(f'CREATE DATABASE "{args.name}"')
     url = args.admin_url.rsplit("/", 1)[0] + f"/{args.name}"
     migrations.migrate(url)
@@ -334,6 +340,34 @@ def stripe_signature(payload: bytes, secret: str, timestamp: int) -> str:
     return f"t={timestamp},v1={hmac.new(secret.encode(), signed, hashlib.sha256).hexdigest()}"
 
 
+class InvocationIds:
+    """The per-request IDs Vercel's proxy adds, so the runtime's IPC messages can be paired.
+
+    The runtime shim reads and strips ``x-vercel-internal-*`` headers before
+    the app sees the request. IDs are unique per process run.
+    """
+
+    def __init__(self, enabled: bool) -> None:
+        self.enabled = enabled
+        self._counter = itertools.count(os.getpid() * 1_000_000 + 1)
+        self._lock = threading.Lock()
+
+    def _label(self, request: httpx.Request) -> None:
+        with self._lock:
+            n = next(self._counter)
+        request.headers["x-vercel-internal-invocation-id"] = f"proof-{n}"
+        request.headers["x-vercel-internal-request-id"] = str(n)
+
+    def hooks(self) -> dict[str, list[Any]]:
+        return {"request": [self._label]} if self.enabled else {}
+
+    def async_hooks(self) -> dict[str, list[Any]]:
+        async def label(request: httpx.Request) -> None:
+            self._label(request)
+
+        return {"request": [label]} if self.enabled else {}
+
+
 @contextmanager
 def connection_sampler(admin_url: str | None, pooler_admin_url: str | None, database: str) -> Iterator[dict[str, int]]:
     """Sample PostgreSQL backends (and PgBouncer pools) for one database every 20 ms."""
@@ -382,18 +416,29 @@ def connection_sampler(admin_url: str | None, pooler_admin_url: str | None, data
         thread.join(timeout=5)
 
 
-async def isolation(base: str, tokens: Tokens, users: int, run_id: str) -> dict[str, Any]:
-    """Each user creates two projects and lists them, all users concurrently, on one instance."""
+async def isolation(base: str, tokens: Tokens, users: int, run_id: str, ids: InvocationIds) -> dict[str, Any]:
+    """Every user runs at once: two creates in parallel, then three rounds of list and /me in parallel.
+
+    So up to two requests per user are in flight at a time. Each user must see
+    exactly their own projects, and distinct users must get distinct user IDs.
+    """
     latencies: list[float] = []
     statuses: Counter[int] = Counter()
     violations: list[str] = []
     bodies: list[str] = []
+    user_ids: dict[str, str] = {}
+    flight = {"now": 0, "peak": 0}
     limits = httpx.Limits(max_connections=users * 3, max_keepalive_connections=users * 3)
-    async with httpx.AsyncClient(base_url=base, timeout=60, limits=limits) as client:
+    async with httpx.AsyncClient(base_url=base, timeout=60, limits=limits, event_hooks=ids.async_hooks()) as client:
 
         async def call(method: str, path: str, token: str, **kwargs: Any) -> httpx.Response:
             started = time.perf_counter()
-            response = await client.request(method, path, headers={"Authorization": f"Bearer {token}"}, **kwargs)
+            flight["now"] += 1
+            flight["peak"] = max(flight["peak"], flight["now"])
+            try:
+                response = await client.request(method, path, headers={"Authorization": f"Bearer {token}"}, **kwargs)
+            finally:
+                flight["now"] -= 1
             latencies.append((time.perf_counter() - started) * 1000)
             statuses[response.status_code] += 1
             bodies.append(response.text)
@@ -423,14 +468,19 @@ async def isolation(base: str, tokens: Tokens, users: int, run_id: str) -> dict[
                     violations.append(f"{sub}: expected {sorted(names)}, saw {sorted(seen)[:5]}")
             if len(me_ids) != 1:
                 violations.append(f"{sub}: /me returned {len(me_ids)} distinct user ids")
+            else:
+                user_ids[sub] = next(iter(me_ids))
 
         started = time.perf_counter()
         await asyncio.gather(*(flow(i) for i in range(users)))
         elapsed = time.perf_counter() - started
+    if len(set(user_ids.values())) != len(user_ids):
+        violations.append("distinct users were given the same user id")
     leaks = [m for m in LEAK_MARKERS if any(m in b for b in bodies)]
     return {
         "users": users,
         "requests": sum(statuses.values()),
+        "peak_in_flight": flight["peak"],
         "statuses": dict(statuses),
         "violations": violations[:20],
         "violation_count": len(violations),
@@ -443,10 +493,11 @@ async def isolation(base: str, tokens: Tokens, users: int, run_id: str) -> dict[
 def cmd_probe(args: argparse.Namespace) -> None:
     proof = json.loads(Path(args.proof_json).read_text())
     tokens = Tokens(proof)
+    ids = InvocationIds(args.vercel_ids)
     base = args.base_url.rstrip("/")
     checks = Checks()
     bodies: list[str] = []
-    client = httpx.Client(base_url=base, timeout=60)
+    client = httpx.Client(base_url=base, timeout=60, event_hooks=ids.hooks())
 
     def request(method: str, path: str, **kwargs: Any) -> httpx.Response:
         response = client.request(method, path, **kwargs)
@@ -586,17 +637,20 @@ def cmd_probe(args: argparse.Namespace) -> None:
     # Concurrency on one instance: isolation, pool bounds, and latency.
     run_id = secrets.token_hex(3)
     with connection_sampler(args.admin_url, args.pooler_admin_url, args.database) as peaks:
-        iso = asyncio.run(isolation(base, tokens, args.users, run_id))
+        iso = asyncio.run(isolation(base, tokens, args.users, run_id, ids))
     iso["peaks"] = dict(peaks)
     checks.add(
         "concurrent_isolation",
         iso["violation_count"] == 0 and set(iso["statuses"]) <= {200, 201} and not iso["leak_markers"],
         users=iso["users"],
         requests=iso["requests"],
+        peak_in_flight=iso["peak_in_flight"],
         statuses=iso["statuses"],
         violations=iso["violation_count"],
-        peaks=iso["peaks"],
     )
+    # One instance must stay within its pools (DATABASE_POOL_MAX_SIZE + DATABASE_WORKER_POOL_MAX_SIZE).
+    observed = peaks["pooler_clients"] if args.pooler_admin_url else peaks["postgres_backends"]
+    checks.add("connection_bound", 0 < observed <= args.max_db_clients, observed=observed, bound=args.max_db_clients)
     leaks = [m for m in LEAK_MARKERS if any(m in b for b in bodies)]
     checks.add("no_internal_details_in_responses", not leaks, markers=leaks)
     client.close()
@@ -615,9 +669,13 @@ def timed(fn: Callable[[], httpx.Response]) -> dict[str, Any]:
     started = time.perf_counter()
     try:
         response = fn()
-        result: dict[str, Any] = {"status": response.status_code, "code": _problem_code(response)}
+        result: dict[str, Any] = {
+            "status": response.status_code,
+            "code": _problem_code(response),
+            "leaks": [m for m in LEAK_MARKERS if m in response.text],
+        }
     except httpx.TimeoutException:
-        result = {"status": None, "code": "client_timeout"}
+        result = {"status": None, "code": "client_timeout", "leaks": []}
     result["seconds"] = round(time.perf_counter() - started, 2)
     return result
 
@@ -649,8 +707,14 @@ def wait_ready(base: str, limit: float) -> dict[str, Any]:
 def cmd_outage(args: argparse.Namespace) -> None:
     proof = json.loads(Path(args.proof_json).read_text())
     token = Tokens(proof).mint(f"user_proof_outage_{secrets.token_hex(4)}")
+    env = read_env(Path(args.env_file))
+    connect_timeout = float(env.get("DATABASE_CONNECT_TIMEOUT_SECONDS", "5"))
+    round_trip = int(env.get("DATABASE_STATEMENT_TIMEOUT_MS", "10000")) / 1000 + connect_timeout
+    slack = 3.0
     base = args.base_url.rstrip("/")
-    client = httpx.Client(base_url=base, timeout=args.client_timeout)
+    client = httpx.Client(
+        base_url=base, timeout=args.client_timeout, event_hooks=InvocationIds(args.vercel_ids).hooks()
+    )
     auth = {"Authorization": f"Bearer {token}"}
 
     def ready() -> httpx.Response:
@@ -670,15 +734,76 @@ def cmd_outage(args: argparse.Namespace) -> None:
     docker("unpause")
     result["hung"]["recovery"] = wait_ready(base, 60)
     result["hung"]["next_requests"] = dict(Counter(str(timed(projects)["status"]) for _ in range(10)))
-    print("pooler stopped (connections closed, then refused)")
+    # A stopped container's name no longer resolves, so no new connection can open: the request
+    # fails when the pool's checkout timeout (DATABASE_CONNECT_TIMEOUT_SECONDS) expires.
+    print("pooler stopped (its connections close and its name stops resolving)")
     docker("stop")
     result["down"] = {"ready": timed(ready), "projects": timed(projects)}
     docker("start")
     result["down"]["recovery"] = wait_ready(base, 60)
     result["down"]["next_requests"] = dict(Counter(str(timed(projects)["status"]) for _ in range(10)))
     client.close()
+
+    def unavailable_within(case: str, bound: float) -> bool:
+        return all(
+            result[case][k]["status"] == 503 and result[case][k]["seconds"] <= bound and not result[case][k]["leaks"]
+            for k in ("ready", "projects")
+        )
+
+    def recovered(case: str) -> bool:
+        return result[case]["recovery"]["seconds"] is not None and result[case]["next_requests"] == {"200": 10}
+
+    checks = Checks()
+    checks.add("baseline", all(result["baseline"][k]["status"] == 200 for k in ("ready", "projects")))
+    checks.add("hung_pooler_fails_within_round_trip_deadline", unavailable_within("hung", round_trip + slack),
+               bound_seconds=round_trip + slack)  # fmt: skip
+    checks.add("hung_pooler_recovers_without_failed_requests", recovered("hung"))
+    checks.add("stopped_pooler_fails_within_checkout_timeout", unavailable_within("down", connect_timeout + slack),
+               bound_seconds=connect_timeout + slack)  # fmt: skip
+    checks.add("restarted_pooler_recovers_without_failed_requests", recovered("down"))
+    result["checks"], result["passed"] = checks.items, checks.passed
     write_json(Path(args.results) / "outage.json", result)
     print(json.dumps(result, indent=2))
+    if not checks.passed:
+        sys.exit("outage: some checks failed")
+
+
+# -- ipc ----------------------------------------------------------------------
+
+
+def cmd_ipc(args: argparse.Namespace) -> None:
+    """Every labeled request the runtime started must have ended exactly once."""
+    started: Counter[tuple[str, int]] = Counter()
+    ended: Counter[tuple[str, int]] = Counter()
+    for line in (Path(args.results) / "ipc.jsonl").read_text(encoding="utf-8").splitlines():
+        message = json.loads(line)
+        if message.get("type") not in ("handler-started", "end"):
+            continue
+        context = message["payload"]["context"]
+        key = (str(context["invocationId"]), int(context["requestId"]))
+        (started if message["type"] == "handler-started" else ended)[key] += 1
+    unlabeled = ("0", 0)  # requests without platform IDs, such as readiness polls
+    labeled = {k: v for k, v in started.items() if k != unlabeled}
+    labeled_ended = {k: v for k, v in ended.items() if k != unlabeled}
+    checks = Checks()
+    checks.add(
+        "every_labeled_request_ended_once",
+        len(labeled) >= args.min_requests
+        and labeled.keys() == labeled_ended.keys()
+        and all(v == 1 for v in (*labeled.values(), *labeled_ended.values())),
+        labeled_requests=len(labeled),
+        missing_end=len(labeled.keys() - labeled_ended.keys()),
+        end_without_start=len(labeled_ended.keys() - labeled.keys()),
+    )
+    checks.add(
+        "unlabeled_requests_ended",
+        started[unlabeled] == ended[unlabeled],
+        started=started[unlabeled],
+        ended=ended[unlabeled],
+    )
+    write_json(Path(args.results) / "ipc.json", {"passed": checks.passed, "checks": checks.items})
+    if not checks.passed:
+        sys.exit("ipc: some checks failed")
 
 
 # -- session ------------------------------------------------------------------
@@ -800,7 +925,7 @@ def cmd_coldstart(args: argparse.Namespace) -> None:
     def series(rows: list[dict[str, Any]], key: str, path: str | None = None) -> dict[str, Any]:
         return distribution([float(r[key]) for r in rows if path is None or r.get("path") == path])
 
-    summary = {
+    summary: dict[str, Any] = {
         "container_linux_amd64": {
             "note": "packaged bundle, Vercel runtime shim, x86_64 emulated on this host",
             "runtime_init_duration_ms": series(container, "runtime_init_duration_ms", "/api/v1/health"),
@@ -817,8 +942,23 @@ def cmd_coldstart(args: argparse.Namespace) -> None:
             "statuses": dict(Counter(str(r["ready_status"]) for r in native)),
         },
     }
+    checks = Checks()
+    checks.add(
+        "every_container_cold_start_answered",
+        len(container) == 2 * args.runs and all(r["status"] == 200 for r in container),
+        statuses=summary["container_linux_amd64"]["statuses"],
+    )
+    checks.add(
+        "every_host_cold_start_answered",
+        len(native) == args.runs
+        and all(r["ready_status"] == 200 and r["spawn_to_first_response_ms"] > 0 for r in native),
+        statuses=summary["host_native"]["statuses"],
+    )
+    summary["checks"], summary["passed"] = checks.items, checks.passed
     write_json(results / "coldstart.json", summary)
     print(json.dumps(summary, indent=2))
+    if not checks.passed:
+        sys.exit("coldstart: some checks failed")
 
 
 # -- report -------------------------------------------------------------------
@@ -831,15 +971,15 @@ def cmd_report(args: argparse.Namespace) -> None:
         path = results / name
         return json.loads(path.read_text()) if path.exists() else None
 
-    meta, bundle, session, outage, cold = (
-        load(n) for n in ("meta.json", "bundle.json", "session.json", "outage.json", "coldstart.json")
+    meta, bundle, session, outage, cold, ipc = (
+        load(n) for n in ("meta.json", "bundle.json", "session.json", "outage.json", "coldstart.json", "ipc.json")
     )
     lines = ["# DEC-001 local proof — results", ""]
     if meta:
         lines += [f"- {k}: `{v}`" for k, v in meta.items()] + [""]
     if bundle:
         lines += [
-            "## Packaging (`vercel build`, offline)",
+            "## Packaging (`vercel build`, without Vercel credentials)",
             "",
             f"- Runtime `{bundle['runtime']}`, architecture `{bundle['architecture']}`, handler `{bundle['handler']}`.",
             f"- API function: {bundle['files']} files, **{bundle['uncompressed_mib']} MiB** uncompressed "
@@ -862,7 +1002,8 @@ def cmd_report(args: argparse.Namespace) -> None:
         iso = data["isolation"]
         lines += [
             "",
-            f"Concurrency: {iso['users']} users, {iso['requests']} requests in {iso['wall_seconds']} s; "
+            f"Concurrency: {iso['users']} users, {iso['requests']} requests in {iso['wall_seconds']} s, "
+            f"at most {iso['peak_in_flight']} in flight; "
             f"latency {iso['latency_ms']}; peaks {iso['peaks']}.",
             "",
         ]
@@ -870,14 +1011,22 @@ def cmd_report(args: argparse.Namespace) -> None:
         lines += ["## Transaction pooling (PgBouncer, transaction mode)", "", f"`{json.dumps(session)}`", ""]
     if outage:
         lines += [
-            "## Database outage (packaged runtime through the pooler)",
+            f"## Database outage (packaged runtime through the pooler; {'PASS' if outage['passed'] else 'FAIL'})",
             "",
             "```json",
             json.dumps(outage, indent=2),
         ]
         lines += ["```", ""]
+    if ipc:
+        lines += [
+            f"## Runtime IPC pairing ({'PASS' if ipc['passed'] else 'FAIL'})",
+            "",
+            f"`{json.dumps(ipc['checks'])}`",
+            "",
+        ]
     if cold:
-        lines += ["## Cold starts", "", "```json", json.dumps(cold, indent=2), "```", ""]
+        lines += [f"## Cold starts ({'PASS' if cold['passed'] else 'FAIL'})", "", "```json", json.dumps(cold, indent=2)]
+        lines += ["```", ""]
     (results / "summary.md").write_text("\n".join(lines), encoding="utf-8")
     print(f"wrote {results / 'summary.md'}")
 
@@ -899,6 +1048,7 @@ def main() -> None:
     p = sub.add_parser("db")
     p.add_argument("--admin-url", required=True)
     p.add_argument("--name", required=True)
+    p.add_argument("--drop", action="store_true", help="drop the database and stop")
     p.set_defaults(fn=cmd_db)
 
     p = sub.add_parser("bundle")
@@ -935,6 +1085,8 @@ def main() -> None:
     p.add_argument("--pooler-admin-url")
     p.add_argument("--users", type=int, default=40)
     p.add_argument("--web", action="store_true")
+    p.add_argument("--vercel-ids", action="store_true", help="label requests as Vercel's proxy does")
+    p.add_argument("--max-db-clients", type=int, required=True, help="both pool sizes of one instance")
     p.set_defaults(fn=cmd_probe)
 
     p = sub.add_parser("outage")
@@ -943,7 +1095,14 @@ def main() -> None:
     p.add_argument("--pooler", required=True)
     p.add_argument("--results", required=True)
     p.add_argument("--client-timeout", type=float, default=45)
+    p.add_argument("--env-file", required=True)
+    p.add_argument("--vercel-ids", action="store_true")
     p.set_defaults(fn=cmd_outage)
+
+    p = sub.add_parser("ipc")
+    p.add_argument("--results", required=True)
+    p.add_argument("--min-requests", type=int, default=300)
+    p.set_defaults(fn=cmd_ipc)
 
     p = sub.add_parser("session")
     p.add_argument("--pooler-url", required=True)
