@@ -1,24 +1,37 @@
 // @vitest-environment node
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { ESLint } from "eslint";
+import { ESLint, type Linter } from "eslint";
+
+import { guardConfigs } from "../eslint.guards.mjs";
 
 /**
- * Proves the import-boundary rules in eslint.config.mjs fire. It uses the
- * project's real configuration and real file paths, so imports resolve exactly
- * as they do under `pnpm lint`.
+ * Proves the import-boundary rules in eslint.config.mjs and the FE-02, ENV-03,
+ * and ENV-07 guards in eslint.guards.mjs fire. It uses the project's real
+ * configuration and real file paths, so imports resolve exactly as they do
+ * under `pnpm lint`. The guard cases also apply eslint.guards.mjs explicitly;
+ * a separate test proves eslint.config.mjs wires the guards in.
  */
 const webRoot = path.resolve(import.meta.dirname, "..");
 const BOUNDARY_RULE = "import/no-restricted-paths";
+const guards = guardConfigs(webRoot) as Linter.Config[];
 
 let eslint: ESLint;
+let guarded: ESLint;
 beforeAll(() => {
   eslint = new ESLint({ cwd: webRoot });
+  guarded = new ESLint({ cwd: webRoot, overrideConfig: guards });
 });
 
-async function errors(file: string, code: string) {
-  const [result] = await eslint.lintText(code, { filePath: path.join(webRoot, file) });
+async function errors(file: string, code: string, linter = eslint) {
+  const [result] = await linter.lintText(code, { filePath: path.join(webRoot, file) });
   return (result?.messages ?? []).filter((message) => message.severity === 2);
+}
+
+async function guardErrors(file: string, code: string) {
+  return (await errors(file, code, guarded)).map((message) => message.ruleId);
 }
 
 async function boundaryErrors(file: string, importPath: string) {
@@ -87,5 +100,102 @@ describe("import boundaries", { timeout: 30_000 }, () => {
     expect(fe02.map((message) => message.ruleId)).toContain("no-restricted-imports");
     const env07 = await errors(file, "export const key = process.env.STRIPE_SECRET_KEY;\n");
     expect(env07.map((message) => message.ruleId)).toContain("no-restricted-syntax");
+  });
+
+  it("resolves @/ imports when ESLint runs from another directory", () => {
+    // The resolver once read tsconfig.json from the working directory, so the
+    // boundary rules silently passed when linting from the repository root.
+    const script = `
+      const { ESLint } = await import(${JSON.stringify(import.meta.resolve("eslint"))});
+      const { guardConfigs } = await import(${JSON.stringify(import.meta.resolve("../eslint.guards.mjs"))});
+      const eslint = new ESLint({ cwd: ${JSON.stringify(webRoot)}, overrideConfig: guardConfigs(${JSON.stringify(webRoot)}) });
+      const [result] = await eslint.lintText('import * as probe from "@/features/billing/plan-badge";\\nexport default probe;\\n', {
+        filePath: ${JSON.stringify(path.join(webRoot, "src/features/workspace/probe.ts"))},
+      });
+      console.log(JSON.stringify(result.messages.map((message) => message.ruleId)));
+    `;
+    const child = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+      cwd: tmpdir(),
+      encoding: "utf8",
+    });
+    expect(child.stderr.replace(/^Warning: React version.*$/gm, "").trim()).toBe("");
+    expect(JSON.parse(child.stdout)).toContain(BOUNDARY_RULE);
+  });
+});
+
+describe("FE-02, ENV-03, and ENV-07 guards", { timeout: 30_000 }, () => {
+  const app = "src/features/billing/probe.ts";
+
+  // Pending: eslint.config.mjs must spread `guardConfigs(import.meta.dirname)` from
+  // eslint.guards.mjs (and drop its inline env and import rules). Agents may not edit
+  // lint configuration in this repository, so the owner applies that change; then
+  // remove `.skip`. Until then the older inline rules in eslint.config.mjs apply.
+  it.skip("are applied by eslint.config.mjs", async () => {
+    const config = (await eslint.calculateConfigForFile(path.join(webRoot, app))) as Linter.Config;
+    const expected = guards[0] as Linter.Config;
+    // Rule options only: the calculated config reports severities as numbers.
+    const options = (rules: Linter.Config["rules"], rule: string) => [rules?.[rule]].flat().slice(1);
+    for (const rule of ["no-restricted-syntax", "no-restricted-imports"]) {
+      expect(options(config.rules, rule)).toEqual(options(expected.rules, rule));
+    }
+    expect(config.settings?.["import/resolver"]).toMatchObject(expected.settings?.["import/resolver"] ?? {});
+  });
+
+  it.each([
+    [
+      "destructuring process.env",
+      "const { STRIPE_SECRET_KEY } = process.env;\nexport default STRIPE_SECRET_KEY;\n",
+    ],
+    ["aliasing process.env", "const e = process.env;\nexport const key = e.STRIPE_SECRET_KEY;\n"],
+    ["spreading process.env", "export const all = { ...process.env };\n"],
+    ["passing process.env", "export const names = Object.keys(process.env);\n"],
+    ["computed access", 'export const key = process.env["STRIPE_SECRET_KEY"];\n'],
+    ["computed access to a public name", 'export const key = process.env["NEXT_PUBLIC_POSTHOG_KEY"];\n'],
+    ["process['env']", 'export const key = process["env"].STRIPE_SECRET_KEY;\n'],
+    ["globalThis.process", "export const key = globalThis.process.env.STRIPE_SECRET_KEY;\n"],
+    ["dynamic import of stripe", 'export const stripe = import("stripe");\n'],
+    ["dynamic import of a scoped package", 'export const stripe = import("@stripe/stripe-js");\n'],
+    ["dynamic import of a subpath", 'export const pg = import("pg/lib/client");\n'],
+    ["require of an LLM SDK", 'export const sdk = require("openai");\n'],
+  ])("rejects %s with no-restricted-syntax", async (_case, code) => {
+    expect(await guardErrors(app, code)).toContain("no-restricted-syntax");
+  });
+
+  it.each([
+    [
+      "env from node:process",
+      'import { env } from "node:process";\nexport const key = env.STRIPE_SECRET_KEY;\n',
+    ],
+    ["the process module", 'import proc from "process";\nexport const key = proc.env.STRIPE_SECRET_KEY;\n'],
+    [
+      "the server configuration",
+      'import { loadServerEnv } from "@/lib/env.server";\nexport default loadServerEnv;\n',
+    ],
+    [
+      "the env-file loader",
+      'import { loadEnvFiles } from "@/lib/env-files";\nexport default loadEnvFiles;\n',
+    ],
+    ["a re-export of stripe", 'export { default } from "stripe";\n'],
+  ])("rejects importing %s", async (_case, code) => {
+    expect(await guardErrors(app, code)).toContain("no-restricted-imports");
+  });
+
+  it.each([
+    ["a public variable", "export const key = process.env.NEXT_PUBLIC_POSTHOG_KEY;\n"],
+    ["NODE_ENV", "export const dev = process.env.NODE_ENV !== 'production';\n"],
+    ["the public configuration", 'import { publicEnv } from "@/lib/env";\nexport default publicEnv;\n'],
+    ["a lazily loaded local module", 'export const view = import("./paywall");\n'],
+    ["a package whose name only starts like a banned one", 'export const lib = import("aim");\n'],
+  ])("allows %s", async (_case, code) => {
+    expect(await guardErrors(app, code)).toEqual([]);
+  });
+
+  it("lets server entry points read server-only variables and the server configuration", async () => {
+    const code =
+      'import { loadServerEnv } from "./lib/env.server";\nexport const env = loadServerEnv(process.env);\n';
+    expect(await guardErrors("src/sentry.server.config.ts", code)).toEqual([]);
+    expect(
+      await guardErrors("src/sentry.server.config.ts", 'export const s = import("stripe");\n'),
+    ).toContain("no-restricted-syntax");
   });
 });

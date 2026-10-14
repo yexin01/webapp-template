@@ -5,6 +5,7 @@ import { useState } from "react";
 
 import { analyticsEnabled, sendTestEvent } from "@/lib/analytics";
 import type { Schemas } from "@/lib/api/client";
+import { publicEnv } from "@/lib/env";
 import { errorReportingEnabled, sendTestError } from "@/lib/error-reporting";
 
 import { ModeBadge, OutcomeMessage } from "./integration-status";
@@ -13,7 +14,7 @@ type Mode = Schemas["IntegrationMode"];
 type Outcome = { outcome: Schemas["Outcome"]; message: string; reference?: string };
 
 function clerkMode(): Mode {
-  const key = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ?? "";
+  const key = publicEnv.clerkPublishableKey;
   if (key.startsWith("pk_live_")) return "live";
   return key.startsWith("pk_test_") ? "sandbox" : "disabled";
 }

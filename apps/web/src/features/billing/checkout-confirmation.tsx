@@ -19,7 +19,10 @@ export function CheckoutConfirmation() {
   const [state, setState] = useState<"waiting" | "confirmed" | "delayed">("waiting");
 
   useEffect(() => {
+    // One polling chain per effect run. Cleanup (navigation, or StrictMode's
+    // remount) stops it on every path: no state update and no further request.
     let cancelled = false;
+    let timer: number | undefined;
     let attempt = 0;
     async function poll() {
       attempt += 1;
@@ -33,12 +36,14 @@ export function CheckoutConfirmation() {
       } catch {
         /* keep polling; transient failures are expected here */
       }
+      if (cancelled) return;
       if (attempt >= ATTEMPTS) setState("delayed");
-      else window.setTimeout(() => void poll(), INTERVAL_MS);
+      else timer = window.setTimeout(() => void poll(), INTERVAL_MS);
     }
     void poll();
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
     };
   }, [api]);
 

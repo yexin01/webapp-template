@@ -2,6 +2,8 @@
 
 import posthog from "posthog-js";
 
+import { publicEnv } from "./env";
+
 /**
  * Product analytics with an explicit allowlist (OBS-03). Events and
  * properties outside this map are dropped. Users are identified by the
@@ -20,18 +22,39 @@ type Props<E extends AnalyticsEvent> = Partial<Record<(typeof ANALYTICS_EVENTS)[
 let started = false;
 
 export function analyticsEnabled(): boolean {
-  return process.env.NEXT_PUBLIC_ANALYTICS_ENABLED === "true" && Boolean(process.env.NEXT_PUBLIC_POSTHOG_KEY);
+  return publicEnv.analytics.enabled;
 }
+
+/**
+ * Every capture feature outside the allowlist is pinned off here, because the
+ * PostHog project's remote settings would otherwise switch it on for this
+ * site without a code change: exception, heatmap, dead-click, performance,
+ * web-vitals, and console-log capture, session recording, surveys, and tours.
+ */
+const PINNED_OFF = {
+  autocapture: false,
+  rageclick: false,
+  capture_exceptions: false,
+  capture_heatmaps: false,
+  capture_dead_clicks: false,
+  capture_performance: false,
+  capture_webmcp: false,
+  logs: { captureConsoleLogs: false },
+  disable_session_recording: true,
+  disable_surveys: true,
+  disable_product_tours: true,
+  disable_conversations: true,
+  disable_web_experiments: true,
+} as const;
 
 export function startAnalytics(): void {
   if (started || !analyticsEnabled() || typeof window === "undefined") return;
   try {
-    posthog.init(process.env.NEXT_PUBLIC_POSTHOG_KEY ?? "", {
-      api_host: process.env.NEXT_PUBLIC_POSTHOG_HOST ?? "https://us.i.posthog.com",
-      autocapture: false,
+    posthog.init(publicEnv.analytics.key, {
+      api_host: publicEnv.analytics.host,
+      ...PINNED_OFF,
       capture_pageview: "history_change",
       capture_pageleave: false,
-      disable_session_recording: true,
       person_profiles: "identified_only",
       mask_all_text: true,
       mask_all_element_attributes: true,

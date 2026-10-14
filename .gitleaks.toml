@@ -1,18 +1,24 @@
-# Secret scanning configuration (SEC-05). Extends the default rules.
-# The allowlist is deliberately narrow: test fixtures whose values are
-# synthetic canaries or placeholders that never grant access.
+# Secret scanning configuration (SEC-05), used in CI and by the pre-commit
+# hook (scripts/git-hooks/pre-commit). Extends the default rules.
+# The allowlist is deliberately narrow: values that are synthetic canaries or
+# placeholders, which never grant access, wherever they appear.
 [extend]
 useDefault = true
 
 [allowlist]
 description = "Synthetic test fixtures and documented placeholders"
 paths = [
-  '''apps/api/tests/.*''',
-  '''apps/web/src/.*\.test\.tsx?''',
-  '''apps/web/e2e/.*''',
   # Lists fingerprints of reviewed findings; contains no secrets.
   '''(^|/)\.gitleaksignore$''',
+  # Still needed: these API tests (and their history) hold synthetic values
+  # without a placeholder marker, such as a sequential sk_test_ key in
+  # tests/unit/test_config.py, a canary JWT in tests/unit/test_adapters.py,
+  # and keyword-assigned secrets like `cron-test-secret-...`. Rename them to
+  # include one of the markers below, then remove this path.
+  '''apps/api/tests/.*''',
 ]
 regexes = [
   '''(?i)(placeholder|replace_me|canary|not_a_real_secret|test_only)''',
+  # A reference to an environment variable is a name, never its value.
+  '''^(?:globalThis\.)?process\.env\.[A-Z][A-Z0-9_]*$''',
 ]

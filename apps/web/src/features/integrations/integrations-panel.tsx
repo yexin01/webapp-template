@@ -48,14 +48,13 @@ export function IntegrationsPanel() {
     setRunning(null);
   }
 
+  // The API answers 404 to anyone who may not use diagnostics. The message
+  // stays generic: internal configuration names are for operators' docs only.
   if (error instanceof ApiError && error.code === "NOT_FOUND") {
     return (
       <div className="stack">
         <h1>Integrations</h1>
-        <p className="notice">
-          Diagnostics are not available: they are disabled in this environment, or your account is not listed
-          in <code>DIAGNOSTICS_OPERATOR_IDS</code>.
-        </p>
+        <p className="notice">Diagnostics are not available for your account in this environment.</p>
       </div>
     );
   }

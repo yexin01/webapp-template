@@ -77,6 +77,8 @@ jobs:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: app
         ports: ["54329:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 2s --health-timeout 3s --health-retries 30
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
@@ -91,6 +93,8 @@ jobs:
           version: "0.11.1"
       - run: pnpm install --frozen-lockfile
       - run: pnpm api:sync
+      - name: Format check
+        run: pnpm --filter web format:check
       - run: pnpm --filter web lint
       - run: pnpm --filter web typecheck
       - run: pnpm --filter web test
@@ -107,11 +111,15 @@ jobs:
           export NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY="pk_test_$(printf 'placeholder.clerk.accounts.dev$' | base64)"
           pnpm build
       - name: No server-only values in the browser bundle
-        run: pnpm check:bundle-secrets
+        run: |
+          node scripts/check-bundle-secrets.mjs --self-test
+          pnpm check:bundle-secrets
       - name: Dependency audit (production)
         run: pnpm audit --prod --audit-level high
-      - name: License compliance
-        run: pnpm security:licenses
+      - name: License compliance (allowlist)
+        run: |
+          node scripts/check-licenses.mjs --self-test
+          pnpm security:licenses
       - name: End-to-end (account-free checks)
         run: |
           pnpm --filter web exec playwright install --with-deps chromium

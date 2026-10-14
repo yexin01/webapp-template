@@ -58,7 +58,10 @@ pnpm init-template --name "Your Product" --slug your-product \
 cp -n .env.example .env    # if you are only trying the template out
 pnpm db:up                 # start local PostgreSQL (127.0.0.1:54329)
 pnpm db:migrate            # apply migrations
+pnpm hooks:install         # optional: scan staged changes for secrets before each commit
 ```
+
+`pnpm hooks:install` points git at `scripts/git-hooks`, whose pre-commit hook runs [gitleaks](https://github.com/gitleaks/gitleaks) (install it first, for example `brew install gitleaks`) on the staged changes with the same rules as CI (`.gitleaks.toml`). It refuses the commit when it finds a possible secret. Undo with `git config --unset core.hooksPath`.
 
 Edit `.env`. At minimum, set your Clerk **development** instance keys (`NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`); everything else can stay in `mock` or `disabled` mode. [docs/integrations.md](docs/integrations.md) explains each service, its callback URLs, and how to switch it to `sandbox`.
 
@@ -92,7 +95,7 @@ Diagnostics are open to any signed-in user only when `APP_ENV=local` and `DIAGNO
 | `pnpm security:audit` | Dependency vulnerability audit (pnpm + pip-audit) |
 | `pnpm db:migrate` | Apply pending migrations (local databases only unless `--allow-remote`) |
 | `pnpm db:seed` | Load deterministic synthetic data (local only) |
-| `pnpm db:reset` | Drop, migrate, and seed the **local** database |
+| `pnpm db:reset --yes` | Drop, migrate, and seed the **local** database. Refuses to run without `--yes` (pass it after the script name, not after `--`) |
 | `pnpm db:restore-drill` | Dump the local database, restore it into a scratch database, and verify it |
 | `pnpm test:init-template` | Check that `init-template` leaves no original identifiers (runs on temporary copies) |
 | `pnpm new:module <name>` | Scaffold a tenant-scoped feature module end to end ([docs/architecture.md](docs/architecture.md#adding-a-feature)) |

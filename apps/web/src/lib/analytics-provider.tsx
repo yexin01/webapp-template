@@ -6,30 +6,34 @@ import { useEffect, useRef } from "react";
 import { identify, resetAnalytics, startAnalytics } from "@/lib/analytics";
 import { useApi } from "@/lib/api/use-api";
 
-/** Starts analytics (if enabled) and identifies users by internal ID only. */
+/**
+ * Starts analytics (if enabled) and identifies users by internal ID only.
+ * Identity follows the Clerk user: switching accounts in a multi-session
+ * browser or signing out resets it before the next user is identified.
+ */
 export function AnalyticsProvider() {
-  const { isSignedIn } = useAuth();
+  const { userId } = useAuth();
   const api = useApi();
-  const identified = useRef<string | null>(null);
+  // The Clerk user whose internal ID analytics is currently identified with.
+  const identifiedFor = useRef<string | null>(null);
 
   useEffect(() => {
     startAnalytics();
   }, []);
 
   useEffect(() => {
-    if (!isSignedIn) {
-      if (identified.current) resetAnalytics();
-      identified.current = null;
-      return;
+    if (identifiedFor.current && identifiedFor.current !== userId) {
+      resetAnalytics();
+      identifiedFor.current = null;
     }
+    if (!userId || identifiedFor.current === userId) return;
     let cancelled = false;
     api
       .me()
       .then((me) => {
-        if (!cancelled && identified.current !== me.user_id) {
-          identify(me.user_id);
-          identified.current = me.user_id;
-        }
+        if (cancelled) return;
+        identify(me.user_id);
+        identifiedFor.current = userId;
       })
       .catch(() => {
         /* analytics identification is optional */
@@ -37,7 +41,7 @@ export function AnalyticsProvider() {
     return () => {
       cancelled = true;
     };
-  }, [api, isSignedIn]);
+  }, [api, userId]);
 
   return null;
 }

@@ -1,13 +1,16 @@
 import * as Sentry from "@sentry/nextjs";
 
+import { loadServerEnv } from "./lib/env.server";
 import { redactText, stripQuery } from "./lib/redact";
 
-const enabled = process.env.ERROR_REPORTING_MODE === "sandbox" || process.env.ERROR_REPORTING_MODE === "live";
+// Validated configuration (ENV-03). Error reporting needs no Clerk secret, so
+// this check does not repeat the serving requirements next.config.ts enforces.
+const { appEnv, errorReporting } = loadServerEnv(process.env, { serving: false });
 
-if (enabled && process.env.NEXT_PUBLIC_SENTRY_DSN) {
+if (errorReporting.enabled) {
   Sentry.init({
-    dsn: process.env.NEXT_PUBLIC_SENTRY_DSN,
-    environment: process.env.APP_ENV ?? "local",
+    dsn: errorReporting.dsn,
+    environment: appEnv,
     // Collect nothing personal or request-derived; beforeSend is a second line of defense.
     dataCollection: {
       userInfo: false,
@@ -21,7 +24,7 @@ if (enabled && process.env.NEXT_PUBLIC_SENTRY_DSN) {
       queues: false,
       stackFrameVariables: false,
     },
-    tracesSampleRate: Number(process.env.SENTRY_TRACES_SAMPLE_RATE ?? 0),
+    tracesSampleRate: errorReporting.tracesSampleRate,
     beforeSend(event) {
       if (event.request) {
         delete event.request.cookies;

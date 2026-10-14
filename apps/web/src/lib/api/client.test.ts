@@ -3,6 +3,7 @@ import { expectTypeOf } from "vitest";
 import {
   createApiClient,
   isAllowedRedirect,
+  withDeadline,
   type ApiClient,
   type ApiFetchClient,
   type Schemas,
@@ -163,6 +164,87 @@ describe("api client", () => {
     const abort = new DOMException("The operation was aborted.", "AbortError");
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(abort));
     await expect(createApiClient(async () => "t").me()).rejects.toBe(abort);
+  });
+
+  it.each([
+    ["an HTML page", "<!doctype html><title>Proxy</title>", "text/html"],
+    ["an empty body", "", "application/json"],
+    ["malformed JSON", '{"plan": "pro"', "application/json"],
+  ])("rejects a success response with %s instead of resolving it as data", async (_label, body, type) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(body, { status: 200, headers: { "content-type": type } })),
+    );
+    const error = await createApiClient(async () => "t")
+      .billingStatus()
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).status).toBe(200);
+    expect((error as ApiError).code).toBe("HTTP_ERROR");
+    expect(presentError(error).action).toBe("retry");
+  });
+
+  /** A fetch that honours its signal as browsers do: it fails with the abort reason. */
+  function fetchAnswering(stage: "never" | "headers-only" | number) {
+    return vi.fn((_request: Request, init?: RequestInit) => {
+      const signal = init?.signal;
+      if (!signal) return Promise.reject(new Error("the client sent no signal"));
+      const json = { "content-type": "application/json" };
+      return new Promise<Response>((resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason));
+        if (stage === "headers-only") {
+          // Headers arrive, then the body stalls.
+          const body = new ReadableStream({
+            start(controller) {
+              signal.addEventListener("abort", () => controller.error(signal.reason));
+            },
+          });
+          resolve(new Response(body, { status: 200, headers: json }));
+        } else if (typeof stage === "number") {
+          const body = JSON.stringify({ url: "https://checkout.stripe.com/c/pay/cs_test_1" });
+          setTimeout(() => resolve(new Response(body, { status: 200, headers: json })), stage);
+        }
+      });
+    });
+  }
+
+  it.each([
+    ["the response never arrives", "never"],
+    ["the body stalls after the headers", "headers-only"],
+  ] as const)("times out when %s", async (_label, stage) => {
+    vi.stubGlobal("fetch", fetchAnswering(stage));
+    const error = await createApiClient(async () => "t", { timeoutMs: 20 })
+      .billingStatus()
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).code).toBe("TIMEOUT");
+    expect(presentError(error)).toMatchObject({ title: "Temporarily unavailable", action: "retry" });
+  });
+
+  it("gives calls that wait on an external provider the longer deadline", async () => {
+    // Answers after 80 ms: past the default deadline, within the provider deadline.
+    vi.stubGlobal("fetch", fetchAnswering(80));
+    const api = createApiClient(async () => "t", { timeoutMs: 20, providerTimeoutMs: 2_000 });
+    await expect(api.startCheckout("pro_monthly", "key-12345678")).resolves.toEqual({
+      url: "https://checkout.stripe.com/c/pay/cs_test_1",
+    });
+    await expect(api.billingStatus()).rejects.toMatchObject({ code: "TIMEOUT" });
+  });
+
+  it("combines the caller's signal with the deadline", async () => {
+    const caller = new AbortController();
+    const cancelled = withDeadline(caller.signal, 1_000);
+    caller.abort(new DOMException("Navigated away.", "AbortError"));
+    expect(cancelled.signal.aborted).toBe(true);
+    expect((cancelled.signal.reason as DOMException).name).toBe("AbortError");
+    cancelled.clear();
+
+    const expired = withDeadline(new AbortController().signal, 10);
+    const cleared = withDeadline(new AbortController().signal, 10);
+    cleared.clear();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect((expired.signal.reason as DOMException).name).toBe("TimeoutError");
+    expect(cleared.signal.aborted).toBe(false);
   });
 });
 

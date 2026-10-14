@@ -2,9 +2,12 @@
 /**
  * REPO-07 check: runs init-template in temporary copies of the tracked files and
  * asserts that no original identifiers or contact placeholders remain, that
- * .env is created from .env.example only, that re-runs change nothing, that
- * bad input is rejected, and that check-placeholders (DEC-012) passes in
- * template mode and after init but fails for a renamed, unfilled copy.
+ * .env is created from .env.example only, that re-runs change nothing, that a
+ * re-run with a different identity is refused, that bad input (including
+ * names that would break generated files) is rejected, that a name with the
+ * allowed punctuation yields valid files, and that check-placeholders
+ * (DEC-012) passes in template mode and after init but fails for a renamed,
+ * unfilled copy.
  * Never touches the working tree.
  */
 import { execFileSync, spawnSync } from "node:child_process";
@@ -109,6 +112,18 @@ try {
   }
   check(JSON.stringify(snapshot(dir)) === JSON.stringify(before), "re-run changed files");
 
+  // 2b. A re-run with a different identity is refused, not silently ignored.
+  for (const args of [
+    ["--name", "Other Cloud", "--slug", SLUG],
+    ["--name", NAME, "--slug", "other-cloud"],
+    ["--name", NAME, "--slug", SLUG, "--db-port", "55433"],
+    ["--name", NAME, "--slug", SLUG, "--security-contact", "security@other.example"],
+  ]) {
+    const result = init(dir, args);
+    check(result.status === 2, `a re-run with a different identity was not refused: ${args.join(" ")}`);
+  }
+  check(JSON.stringify(snapshot(dir)) === JSON.stringify(before), "a refused re-run changed files");
+
   // 3. A dry run changes nothing.
   const dry = copyTrackedFiles();
   dirs.push(dry);
@@ -124,6 +139,16 @@ try {
   for (const args of [
     ["--name", NAME, "--slug", "Bad Slug", ...CONTACTS],
     ["--name", 'Bad"Name', "--slug", SLUG, ...CONTACTS],
+    // Would break openapi.json and bootstrap.py, or differ from the generated contract.
+    ["--name", "Bad\nName", "--slug", SLUG, ...CONTACTS],
+    ["--name", "Café Cloud", "--slug", SLUG, ...CONTACTS],
+    ["--name", "Acme {Cloud}", "--slug", SLUG, ...CONTACTS],
+    ["--name", "Acme's Cloud", "--slug", SLUG, ...CONTACTS],
+    ["--name", "Acme <Cloud>", "--slug", SLUG, ...CONTACTS],
+    ["--name", "Acme %s", "--slug", SLUG, ...CONTACTS],
+    // Would be renamed again on every re-run.
+    ["--name", "SaaS Template Pro", "--slug", SLUG, ...CONTACTS],
+    ["--name", NAME, "--slug", "saas-template-pro", ...CONTACTS],
     ["--name", NAME, "--slug", SLUG, "--db-port", "80", ...CONTACTS],
     ["--slug", SLUG, ...CONTACTS],
     ["--name", NAME, "--slug", SLUG],
@@ -138,7 +163,23 @@ try {
   }
   check(JSON.stringify(snapshot(dry)) === JSON.stringify(pristine), "invalid input changed files");
 
-  // 5. A renamed copy that still has placeholders fails check-placeholders.
+  // 5. A name with the allowed punctuation yields valid, consistent files.
+  const punctuated = copyTrackedFiles();
+  dirs.push(punctuated);
+  const PUNCTUATED = "Acme-Cloud 2.0 (Beta+)!";
+  const run = init(punctuated, ["--name", PUNCTUATED, "--slug", SLUG, ...CONTACTS]);
+  check(run.status === 0, `init with punctuation failed: ${run.stderr}`);
+  const readIn = (rel) => readFileSync(path.join(punctuated, rel), "utf8");
+  let openapiTitle = null;
+  try {
+    openapiTitle = JSON.parse(readIn("packages/contracts/openapi.json")).info.title;
+  } catch {
+    failures.push("openapi.json is not valid JSON after init");
+  }
+  check(openapiTitle === `${PUNCTUATED} API`, "openapi.json title does not match the name");
+  check(readIn("apps/api/app/bootstrap.py").includes(`API_TITLE = "${PUNCTUATED} API"\n`), "bootstrap.py title is wrong");
+
+  // 6. A renamed copy that still has placeholders fails check-placeholders.
   const unfilled = copyTrackedFiles();
   dirs.push(unfilled);
   const pkgPath = path.join(unfilled, "package.json");
@@ -153,5 +194,5 @@ if (failures.length) {
   process.exit(1);
 }
 console.log(
-  "init-template check passed: renamed, contacts filled, port moved, .env created from the example, idempotent, dry run safe, bad input rejected, placeholder check enforced.",
+  "init-template check passed: renamed, contacts filled, port moved, .env created from the example, idempotent, different re-runs refused, dry run safe, bad input rejected, punctuated names valid, placeholder check enforced.",
 );

@@ -3,13 +3,15 @@
 import { useCallback, useId, useState, type FormEvent } from "react";
 
 import type { Schemas } from "@/lib/api/client";
-import { ApiError } from "@/lib/api/errors";
+import { isInputError, presentError } from "@/lib/api/errors";
 import { useApi } from "@/lib/api/use-api";
 import { useResource } from "@/lib/use-resource";
 import { EmptyState, ErrorState, LoadingState } from "@/ui/state-views";
 
 type Props = { orgId: string | null; canDelete: boolean };
 type Project = Schemas["Project"];
+/** A failed action, shown through the shared error view (FE-10) rather than on the name field. */
+type ActionError = { error: unknown; retry?: () => void };
 
 const MAX_NAME = 120;
 
@@ -25,7 +27,9 @@ export function ProjectsPanel({ orgId, canDelete }: Props) {
   const [removed, setRemoved] = useState<ReadonlySet<string>>(new Set());
   const [loadingMore, setLoadingMore] = useState(false);
   const [name, setName] = useState("");
+  // Only problems with the entered name; they mark the field invalid.
   const [formError, setFormError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<ActionError | null>(null);
   const [busy, setBusy] = useState(false);
 
   const items = [...added, ...(first.data?.items ?? []), ...more].filter((p) => !removed.has(p.id));
@@ -34,12 +38,13 @@ export function ProjectsPanel({ orgId, canDelete }: Props) {
   async function loadMore() {
     if (!cursor) return;
     setLoadingMore(true);
+    setActionError(null);
     try {
       const page = await api.listProjects(orgId, cursor);
       setMore((prev) => [...prev, ...page.items]);
       setMoreCursor(page.next_cursor);
     } catch (error) {
-      setFormError(error instanceof ApiError ? error.message : "Could not load more projects.");
+      setActionError({ error, retry: () => void loadMore() });
     } finally {
       setLoadingMore(false);
     }
@@ -50,6 +55,7 @@ export function ProjectsPanel({ orgId, canDelete }: Props) {
     setMore([]);
     setMoreCursor(undefined);
     setRemoved(new Set());
+    setActionError(null);
     first.reload();
   }
 
@@ -66,12 +72,15 @@ export function ProjectsPanel({ orgId, canDelete }: Props) {
     }
     setBusy(true);
     setFormError(null);
+    setActionError(null);
     try {
       const created = await api.createProject(orgId, trimmed);
       setAdded((prev) => [created, ...prev]);
       setName("");
     } catch (error) {
-      setFormError(error instanceof ApiError ? error.message : "Could not create the project.");
+      // The name stays in the field, so nothing is lost if the session expired (FE-04).
+      if (isInputError(error)) setFormError(presentError(error).message);
+      else setActionError({ error });
     } finally {
       setBusy(false);
     }
@@ -79,11 +88,12 @@ export function ProjectsPanel({ orgId, canDelete }: Props) {
 
   async function onDelete(project: Project) {
     if (!window.confirm(`Delete “${project.name}”? This cannot be undone.`)) return;
+    setActionError(null);
     try {
       await api.deleteProject(orgId, project.id);
       setRemoved((prev) => new Set(prev).add(project.id));
     } catch (error) {
-      setFormError(error instanceof ApiError ? error.message : "Could not delete the project.");
+      setActionError({ error });
     }
   }
 
@@ -112,6 +122,7 @@ export function ProjectsPanel({ orgId, canDelete }: Props) {
           </p>
         )}
       </form>
+      {actionError && <ErrorState error={actionError.error} onRetry={actionError.retry} />}
 
       {first.loading && <LoadingState label="Loading projects…" />}
       {first.error !== undefined && <ErrorState error={first.error} onRetry={retry} />}

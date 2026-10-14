@@ -8,6 +8,7 @@
   },
   "scripts": {
     "bootstrap": "pnpm install --frozen-lockfile && pnpm api:sync",
+    "hooks:install": "git config core.hooksPath scripts/git-hooks",
     "dev": "node scripts/dev.mjs",
     "dev:web": "pnpm --filter web dev",
     "dev:api": "cd apps/api && uv run uvicorn index:app --reload --host 127.0.0.1 --port 8000",
@@ -27,7 +28,7 @@
     "db:down": "docker compose down",
     "db:migrate": "cd apps/api && uv run python -m app.cli migrate",
     "db:seed": "cd apps/api && uv run python -m app.cli seed",
-    "db:reset": "cd apps/api && uv run python -m app.cli reset --yes --seed",
+    "db:reset": "cd apps/api && uv run python -m app.cli reset --seed",
     "db:restore-drill": "node scripts/restore-drill.mjs",
     "billing:reconcile": "cd apps/api && uv run python -m app.cli reconcile",
     "security:audit": "node scripts/security-audit.mjs",

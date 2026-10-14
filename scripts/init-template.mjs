@@ -11,6 +11,8 @@
  *     [--db-port 54330] [--dry-run]
  *
  * The contact options are required while the placeholders are still present.
+ * A copy is renamed once: a re-run with the same values changes nothing, and
+ * a re-run with a different name, slug, port, or contact is refused.
  *
  * The specification and evidence under dev-docs/ describe the template itself
  * and are intentionally left unchanged.
@@ -71,23 +73,53 @@ const slug = values.slug?.trim();
 const dbPort = values["db-port"]?.trim();
 const dryRun = values["dry-run"];
 
-if (!name || name.length > 60 || /["'<>`$\\{}]/.test(name)) {
-  usage("--name is required: up to 60 characters, without quotes, braces, or backslashes.");
+// The name lands verbatim in JSON, Python, TOML, TSX, and Markdown, and the
+// API's OpenAPI generator escapes non-ASCII characters, so only printable
+// ASCII that is inert in all of them is accepted.
+const SAFE_NAME = /^[A-Za-z0-9](?:[A-Za-z0-9.,()+!-]| (?! ))*$/;
+// A name or slug that contains the original would be renamed again on every re-run.
+const ORIGINAL = /saas[ _-]?template/i;
+
+if (!name || name.length > 60 || !SAFE_NAME.test(name) || ORIGINAL.test(name)) {
+  usage(
+    "--name is required: up to 60 characters of ASCII letters, digits, single spaces, and . , ( ) + ! -, starting with a letter or digit, and not containing the template's name.",
+  );
 }
-if (!slug || !/^[a-z][a-z0-9-]{1,40}$/.test(slug)) {
-  usage("--slug is required: lowercase letters, digits, and hyphens, starting with a letter.");
+if (!slug || !/^[a-z][a-z0-9-]{1,40}$/.test(slug) || ORIGINAL.test(slug)) {
+  usage("--slug is required: lowercase letters, digits, and hyphens, starting with a letter, and not the template's slug.");
 }
 if (dbPort !== undefined && (!/^\d{4,5}$/.test(dbPort) || Number(dbPort) < 1024 || Number(dbPort) > 65535)) {
   usage("--db-port must be a number between 1024 and 65535.");
 }
+const read = (rel) => (existsSync(path.join(root, rel)) ? readFileSync(path.join(root, rel), "utf8") : "");
 for (const { file, token, option } of PLACEHOLDERS) {
   const value = values[option]?.trim();
   if (value !== undefined && !isValidContact(value)) {
     usage(`--${option} must be an email address or an https URL.`);
   }
-  const target = path.join(root, file);
-  if (value === undefined && existsSync(target) && readFileSync(target, "utf8").includes(token)) {
+  const text = read(file);
+  if (value === undefined && text.includes(token)) {
     usage(`--${option} is required: ${file} still contains ${token}.`);
+  }
+  if (value !== undefined && text && !text.includes(token) && !text.includes(value)) {
+    usage(`--${option}: ${file} already has a different contact. Edit it by hand to change it.`);
+  }
+}
+
+// A copy is renamed once. Once package.json no longer carries the template's
+// slug, a re-run must repeat the same identity; anything else would silently
+// do nothing, because the original identifiers are gone.
+const currentSlug = JSON.parse(read("package.json") || "{}").name;
+if (currentSlug && currentSlug !== ORIGINAL_SLUG) {
+  const currentName = /^API_TITLE = "(.*) API"$/m.exec(read("apps/api/app/bootstrap.py"))?.[1];
+  if (slug !== currentSlug || (currentName !== undefined && name !== currentName)) {
+    usage(
+      `This copy is already initialized as "${currentName ?? currentSlug}" (${currentSlug}). init-template renames a copy only once: re-run it with the same --name and --slug, or rename by hand.`,
+    );
+  }
+  const currentPort = /127\.0\.0\.1:(\d+):5432/.exec(read("docker-compose.yml"))?.[1];
+  if (dbPort && currentPort && currentPort !== ORIGINAL_DB_PORT && currentPort !== dbPort) {
+    usage(`The local PostgreSQL port was already moved to ${currentPort}. Change it by hand to move it again.`);
   }
 }
 

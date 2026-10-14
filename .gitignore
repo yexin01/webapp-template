@@ -2,10 +2,10 @@
 # Secrets and environment files — never commit real values.
 # Only the placeholder template is tracked.
 # ---------------------------------------------------------------------------
-.env
-.env.*
+# `.env*` also catches sync-conflict and editor copies such as `.env 2` or
+# `.env~`, and `.envrc`.
+.env*
 !.env.example
-.envrc
 *.pem
 *.key
 *.p12

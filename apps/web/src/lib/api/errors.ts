@@ -24,6 +24,22 @@ export class ApiError extends Error {
       null,
     );
   }
+
+  static timeout(): ApiError {
+    return new ApiError(0, "TIMEOUT", "The server took too long to respond. Try again.", null);
+  }
+
+  /** A response outside the contract: a success without a JSON body, or an error that is not a problem. */
+  static unexpectedResponse(status: number): ApiError {
+    return new ApiError(status, "HTTP_ERROR", "The server returned an unexpected response.", null);
+  }
+}
+
+const INPUT_ERRORS = new Set(["VALIDATION_FAILED", "INVALID_REQUEST", "CONFLICT"]);
+
+/** True when the server rejected what the user entered, so the message belongs next to the field. */
+export function isInputError(error: unknown): boolean {
+  return error instanceof ApiError && INPUT_ERRORS.has(error.code);
 }
 
 export type ErrorPresentation = {
@@ -37,6 +53,7 @@ export function presentError(error: unknown): ErrorPresentation {
   if (!(error instanceof ApiError)) {
     return { title: "Something went wrong", message: "An unexpected error occurred.", action: "retry" };
   }
+  if (isInputError(error)) return { title: "Check your input", message: error.message, action: "none" };
   switch (error.code) {
     case "UNAUTHENTICATED":
       return { title: "Your session has ended", message: "Sign in again to continue.", action: "sign-in" };
@@ -56,13 +73,10 @@ export function presentError(error: unknown): ErrorPresentation {
         message: "Too many requests. Wait a moment and try again.",
         action: "retry",
       };
-    case "VALIDATION_FAILED":
-    case "INVALID_REQUEST":
-    case "CONFLICT":
-      return { title: "Check your input", message: error.message, action: "none" };
     case "DEPENDENCY_UNAVAILABLE":
     case "NOT_CONFIGURED":
     case "NETWORK_ERROR":
+    case "TIMEOUT":
       return { title: "Temporarily unavailable", message: error.message, action: "retry" };
     default:
       return { title: "Something went wrong", message: "An unexpected error occurred.", action: "retry" };

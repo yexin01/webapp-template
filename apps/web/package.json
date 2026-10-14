@@ -10,6 +10,7 @@
     "start": "next start --port 3000",
     "lint": "eslint . --max-warnings=0",
     "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:e2e": "playwright test",

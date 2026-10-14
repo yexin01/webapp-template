@@ -1,11 +1,12 @@
 import * as Sentry from "@sentry/nextjs";
 
+import { publicEnv } from "./lib/env";
 import { redactText, stripQuery } from "./lib/redact";
 
-if (process.env.NEXT_PUBLIC_ERROR_REPORTING_ENABLED === "true" && process.env.NEXT_PUBLIC_SENTRY_DSN) {
+if (publicEnv.errorReporting.enabled) {
   Sentry.init({
-    dsn: process.env.NEXT_PUBLIC_SENTRY_DSN,
-    environment: process.env.NEXT_PUBLIC_APP_ENV,
+    dsn: publicEnv.errorReporting.dsn,
+    environment: publicEnv.appEnv,
     // Collect nothing personal or request-derived; beforeSend is a second line of defense.
     dataCollection: {
       userInfo: false,

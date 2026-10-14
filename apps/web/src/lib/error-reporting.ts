@@ -2,12 +2,12 @@
 
 import * as Sentry from "@sentry/nextjs";
 
+import { publicEnv } from "./env";
+
 export type TestErrorResult = { status: "disabled" } | { status: "sent"; eventId: string; flushed: boolean };
 
 export function errorReportingEnabled(): boolean {
-  return (
-    process.env.NEXT_PUBLIC_ERROR_REPORTING_ENABLED === "true" && Boolean(process.env.NEXT_PUBLIC_SENTRY_DSN)
-  );
+  return publicEnv.errorReporting.enabled;
 }
 
 /**
