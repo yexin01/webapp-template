@@ -26,9 +26,12 @@ Browser ──► Next.js (apps/web) ──/api/v1/* rewrite──► FastAPI (a
                                                           └─► PostHog / Sentry (server)
 ```
 
-- The web app contains presentation only. It never talks to the database or to Stripe with secret keys.
-- The API is layered: `domain` (pure rules) → `application` (use cases) → `ports` (interfaces) ← `infrastructure` (adapters) and `http` (FastAPI). Import boundaries are enforced in CI.
-- Every database transaction runs as a non-privileged role (`app_api` or `app_worker`), with forced row-level security.
+- **Web app:** presentation only, organized by feature (`src/features/*`). It never talks to the database or to Stripe with secret keys, and it calls the API through a client generated from the OpenAPI contract.
+- **API:** a modular monolith. A shared kernel (`app/kernel`) provides tenancy, permissions, transactions, the outbox, jobs, and the HTTP platform. Feature modules (`app/modules/{identity,billing,projects,llm,diagnostics}`) all share the same layers: domain, ports, service, adapters, routes, and wiring. Boundaries are enforced in CI by import contracts and architecture tests.
+- **Data:** every transaction runs as a non-privileged role (`app_api` or `app_worker`) with forced row-level security. Database-only requests run in one request-scoped transaction. Side effects go through a transactional outbox, and maintenance runs as scheduled jobs.
+- **Details:** [docs/architecture.md](docs/architecture.md), with C4 diagrams, module anatomy, request lifecycle, data access, events, jobs, scaling, and fitness functions.
+
+**Add a feature:** `pnpm new:module invoices` generates a tenant-scoped module end to end: API layers, a migration with RLS, tests, a web feature, typed client methods, and wiring.
 
 The authoritative engineering specification is [`dev-docs/engineering-implementation-plan.md`](dev-docs/engineering-implementation-plan.md). Decisions are recorded in [`dev-docs/adr/`](dev-docs/adr/).
 
@@ -92,9 +95,12 @@ Diagnostics are open to any signed-in user only when `APP_ENV=local` and `DIAGNO
 | `pnpm db:reset` | Drop, migrate, and seed the **local** database |
 | `pnpm db:restore-drill` | Dump the local database, restore it into a scratch database, and verify it |
 | `pnpm test:init-template` | Check that `init-template` leaves no original identifiers (runs on temporary copies) |
+| `pnpm new:module <name>` | Scaffold a tenant-scoped feature module end to end ([docs/architecture.md](docs/architecture.md#adding-a-feature)) |
+| `pnpm test:new-module` | Check that a freshly generated module passes every gate (runs on a temporary copy) |
 | `pnpm check:placeholders` | Fail if `SECURITY.md` or `CODE_OF_CONDUCT.md` still has a contact placeholder after the project was renamed |
 | `pnpm perf:server` / `pnpm perf:run` | Local performance server and k6 scenarios ([perf/README.md](perf/README.md)) |
 | `pnpm billing:reconcile` | Compare billing records with Stripe (dry run; add `--apply`) |
+| `cd apps/api && uv run python -m app.cli job [name]` | List or run scheduled jobs (`drain-outbox`, `prune-expired`, `reconcile-billing`, `reconcile-memberships`) |
 
 ## Testing
 

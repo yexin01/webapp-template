@@ -80,6 +80,7 @@ Rotate immediately after any suspected exposure, and periodically otherwise.
 2. **Stripe**: roll the API key, preferably a restricted key with the minimum permissions. Roll each webhook endpoint's signing secret separately, per environment.
 3. **Database**: rotate the database password in Supabase, update `DATABASE_URL` everywhere, then restart.
 4. **LLM / Sentry auth token / PostHog**: rotate the key at the provider and update the environment.
+5. **CRON_SECRET**: generate a new value (`openssl rand -hex 32`) and set it in the API environment. Vercel Cron sends the current value automatically.
 
 After rotating, confirm the old secret no longer works and record the rotation, without values, in your incident log.
 
@@ -127,6 +128,44 @@ Current behavior:
 - `user.deleted` from Clerk revokes all of the user's organization memberships. Application data and billing records are retained.
 - Webhook ledgers store event IDs and types only, not payloads.
 - Telemetry retention follows each provider's project settings.
+
+## Scheduled jobs
+
+Jobs are registered in code ([architecture](architecture.md#jobs)). Run them in either of two ways:
+
+- **CLI:**
+  - `cd apps/api && uv run python -m app.cli job` lists jobs;
+  - `uv run python -m app.cli job <name>` runs one.
+- **HTTP, which Vercel Cron uses:** `GET /api/v1/jobs/<name>` with `Authorization: Bearer <CRON_SECRET>`.
+  - Without `CRON_SECRET`, the endpoint returns 404.
+  - A wrong or missing secret returns 401.
+  - Rotate the secret like any other (see [Secret rotation](#secret-rotation)).
+
+| Job | Default schedule (UTC) | What it does |
+|---|---|---|
+| `drain-outbox` | 02:15 daily | Dispatches outbox events left after requests (failed or not yet dispatched) |
+| `prune-expired` | 05:00 daily | Deletes expired rate-limit windows, and processed outbox events older than `OUTBOX_RETENTION_DAYS` |
+| `reconcile-billing` | 04:00 daily | Compares billing records with Stripe and reports divergences. It applies Stripe's state only when `BILLING_RECONCILE_APPLY=true` |
+| `reconcile-memberships` | 03:30 daily | Re-verifies the stalest organization-membership mirrors against Clerk (`MEMBERSHIP_RECONCILE_BATCH_SIZE` per run) |
+
+`apps/api/vercel.json` holds the schedules, and a test fails if it drifts from the registry. Schedules are daily so the configuration deploys on any Vercel plan. If your plan allows it, run `drain-outbox` every few minutes.
+
+**Not verified until DEC-001:** Vercel Cron delivery, plan limits, and whether after-response dispatch completes before the function is frozen. If it does not complete, `drain-outbox` delivers the events at its next run.
+
+## Outbox
+
+- **Inspect.** Run this as an operator (read-only):
+
+  ```sql
+  SELECT status, count(*) FROM app.outbox GROUP BY status;
+  SELECT id, event_type, attempts, last_error FROM app.outbox WHERE status = 'dead';
+  ```
+- **Replay a dead event** after fixing its handler: `UPDATE app.outbox SET status = 'pending', attempts = 0, available_at = now() WHERE id = '<id>';` Handlers are idempotent, so a replay is safe.
+- **Retention:** processed events are deleted after `OUTBOX_RETENTION_DAYS`. Dead events are kept until you replay or delete them.
+
+## Connection pools
+
+Each API process opens up to `DATABASE_POOL_MAX_SIZE` request connections (`app_api`) and `DATABASE_WORKER_POOL_MAX_SIZE` system connections (`app_worker`). Size them so that the maximum number of concurrent instances × (both pool sizes) fits your database pooler's client limit. With Supabase, use the transaction pooler connection string.
 
 ## Integration diagnostics
 

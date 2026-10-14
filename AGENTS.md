@@ -16,7 +16,8 @@ Read it before making changes. Do not restate its requirements in other files; l
 ## Where things are
 
 - Open decisions register: §3
-- Architecture and boundaries: §4
+- Architecture and boundaries: §4, [`docs/architecture.md`](docs/architecture.md), ADR-0003
+- Adding a feature module: `pnpm new:module <name>` (never hand-wire a module differently)
 - Implementation phases and current status: §18, §23
 - Quality gates and evidence statuses: §19, §20
 - Requirements traceability matrix: §21
@@ -27,7 +28,7 @@ Read it before making changes. Do not restate its requirements in other files; l
 pnpm db:up                       # local PostgreSQL for API tests
 pnpm lint && pnpm typecheck
 pnpm test && pnpm test:e2e       # API + web; e2e browser/sandbox suites need E2E_SANDBOX=1
-pnpm contracts:check && pnpm test:init-template && pnpm check:placeholders
+pnpm contracts:check && pnpm test:init-template && pnpm check:placeholders && pnpm test:new-module
 pnpm build && pnpm check:bundle-secrets
 pnpm security:audit && pnpm security:licenses
 ```

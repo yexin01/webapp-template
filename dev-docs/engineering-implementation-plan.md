@@ -43,9 +43,10 @@ Requirements carry stable identifiers (for example `AUTH-03`). Identifiers are n
 | Threat model | §13.2 of this document | Initial version. If it outgrows this document it moves to `dev-docs/threat-model.md`, and §13.2 becomes a link. |
 | Performance test plan | §15.2 of this document | Maintained here |
 | Requirements traceability matrix | §21 of this document | Maintained here |
-| Architecture Decision Records | `dev-docs/adr/NNNN-short-title.md` | ADR-0001 (approved recommendations for DEC-007 to DEC-012); ADR-0002 (DEC-002 option (b), DEC-009 value, DEC-012 contacts, DEC-003 to DEC-005 adopter-owned) |
-| Evidence records | `dev-docs/evidence/` | `2026-10-14-local-verification.md`, `2026-10-14-diagnostics-perf-local.md`, and `2026-10-14-adr-0002-perf07-local.md` (mocked integrations, local only) |
-| Adopter-facing documentation | `README.md`, `docs/integrations.md`, `docs/operations.md`, `docs/data-inventory.md`, `perf/README.md`, `perf/run-plan-template.md` | Exists |
+| Architecture Decision Records | `dev-docs/adr/NNNN-short-title.md` | ADR-0001 (approved recommendations for DEC-007 to DEC-012); ADR-0002 (DEC-002 option (b), DEC-009 value, DEC-012 contacts, DEC-003 to DEC-005 adopter-owned); ADR-0003 (modular monolith, request-scoped transactions, outbox, jobs, generator) |
+| Evidence records | `dev-docs/evidence/` | `2026-10-14-local-verification.md`, `2026-10-14-diagnostics-perf-local.md`, `2026-10-14-adr-0002-perf07-local.md`, and `2026-10-14-adr-0003-modular-architecture.md` (mocked integrations, local only) |
+| Adopter-facing documentation | `README.md`, `docs/architecture.md`, `docs/integrations.md`, `docs/operations.md`, `docs/data-inventory.md`, `perf/README.md`, `perf/run-plan-template.md` | Exists |
+| Pending owner actions | `dev-docs/pending/` | Prepared changes the owner must apply (currently: frontend ESLint boundary rules) |
 | Community files | `LICENSE`, `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, `.github/` | Exist. Contacts are adopter placeholders that `init-template` fills in and `check:placeholders` enforces (DEC-012, ADR-0002) |
 
 ---
@@ -87,6 +88,7 @@ These decisions are confirmed. A confirmed technology choice is not evidence tha
 | Performance | Reproducible baseline, then controlled stress testing; quantitative targets approved after measurement | NOT VERIFIED — DEC-003 |
 | Git policy | Local commits allowed; no push, publication, release, or remote modification without explicit authorization | In force |
 | Data protection | Never expose, commit, log, or transmit secrets, credentials, or personal data unnecessarily | In force |
+| Architecture style | Modular monolith: shared kernel plus feature modules with identical layers; request-scoped transactions; transactional outbox; scheduled jobs; module generator (ADR-0003) | Implemented and tested locally. Vercel Cron and after-response dispatch NOT VERIFIED (DEC-001) |
 
 ---
 
@@ -463,6 +465,19 @@ These decisions are confirmed. A confirmed technology choice is not evidence tha
 
 ### 4.1 Layers and responsibilities
 
+Since ADR-0003, the API layers below apply **inside every feature module** (`app/modules/<name>`), and the shared kernel (`app/kernel`) provides the cross-cutting parts. The mapping:
+
+| Layer below | Module file | Kernel part |
+|---|---|---|
+| API transport | `routes.py` | `kernel/http` (app factory, error contract, middleware, `AuthDeps`) |
+| Application services | `service.py`, `probe.py` | `kernel/application` (rate limits, outbox dispatch, kernel probes) |
+| Domain | `domain.py` | kernel core (tenancy, permissions, errors, pagination, events) |
+| Ports | `ports.py` | `kernel/ports.py` |
+| Infrastructure adapters | `adapters` | `kernel/infrastructure` (database, outbox store, observability, config) |
+| Composition root | `module.py` | `app/bootstrap.py` and `app/settings.py` |
+
+`docs/architecture.md` describes the structure in detail.
+
 | Layer | Responsibility | May depend on | MUST NOT |
 |---|---|---|---|
 | Web presentation | Routes, layouts, components, client-side validation (UX only), session-aware presentation, typed API client | Generated contracts, UI libraries, Clerk frontend SDK, telemetry wrappers | Access the database, hold server secrets, decide entitlements or authorization, call Stripe with secret keys |
@@ -491,6 +506,27 @@ These decisions are confirmed. A confirmed technology choice is not evidence tha
 - **ARCH-10** Asynchronous processing is introduced only when it is required and DEC-001 shows the platform supports it. Its delivery guarantees, idempotency, and failure recovery are documented.
 - **ARCH-11** An abstraction must have a concrete reason, such as a vendor boundary or multiple real implementations (including a test fake). No speculative layers.
 - **ARCH-12** Each resolved decision and each significant architectural choice gets a concise ADR covering context, decision, alternatives, and consequences.
+- **ARCH-13** Modular monolith (ADR-0003):
+  - Every feature module has the same layers.
+  - The kernel never imports a module.
+  - A module uses another module only through its `api.py` or through kernel contracts (`AuthDeps`, events, probes).
+  - Modules are acyclic.
+  - Import-linter contracts and architecture tests enforce these rules in CI.
+- **ARCH-14** Transactions:
+  - Each transaction sets role, timeout, and the full tenant context in one statement.
+  - Database-only routes use a request-scoped transaction that commits before the response is sent and rolls back when a block raises.
+  - No request transaction is held across an external call (`release()`).
+  - Request and system work use separate connection pools.
+- **ARCH-15** Domain events use a transactional outbox:
+  - an event is recorded in the transaction that makes the change;
+  - delivery is at least once, so handlers are idempotent;
+  - failures retry with backoff and are dead-lettered after a bounded number of attempts;
+  - processed events are pruned after a retention period.
+- **ARCH-16** Scheduled jobs:
+  - they are registered in code, idempotent, and bounded per run;
+  - they run through the CLI or a secret-protected HTTP endpoint;
+  - the platform schedule is kept identical to the registry.
+- **ARCH-17** New feature modules are generated with `pnpm new:module`. CI proves that a generated module passes every gate.
 
 ### 4.3 Protected request lifecycle
 
@@ -898,6 +934,10 @@ Clerk provides authentication. It does not replace application authorization.
   - automated accessibility scans of key pages;
   - a manual accessibility pass.
 - **FE-12** Bundle size and Core Web Vitals are measured. Budgets are adopter-owned (DEC-003, ADR-0002; `perf/run-plan-template.md`).
+- **FE-13** Frontend code is organized by feature:
+  - `src/app` holds routes, `src/features/<feature>` exposes a public `index.ts`, `src/ui` holds shared presentation, and `src/lib` holds infrastructure.
+  - Lint rules forbid deep cross-feature imports and imports from upper layers.
+- **FE-14** The API client is generated from the OpenAPI contract, so paths, parameters, and bodies are checked at compile time.
 
 ---
 
@@ -1146,6 +1186,7 @@ None in the template. Targets are adopter-owned (DEC-003, [ADR-0002](adr/0002-or
 - Backup and restore: the local restore drill (`pnpm db:restore-drill`) and the adopter checklist with a hosted restore-test procedure (DEC-005, adopter-owned).
 - Data inventory and the adopter retention, deletion, and export checklist (`docs/data-inventory.md`, DEC-004, adopter-owned).
 - Python runtime limitations established by DEC-001.
+- Architecture, module anatomy, and extension guide (`docs/architecture.md`); scheduled jobs, outbox operations, and connection-pool sizing (`docs/operations.md`).
 
 ---
 
@@ -1188,6 +1229,17 @@ Broad implementation does not begin while a decision that blocks it remains open
     - raw-body webhook handlers.
 
   DEC-001 remains OPEN and Gate E remains BLOCKED.
+
+- **D-002 (2026-10-14).** On the owner's explicit selection (ADR-0003), asynchronous processing was introduced before DEC-001 verified platform support (ARCH-10): the transactional outbox, after-response dispatch, and Vercel Cron jobs.
+  - **Risk:** the platform may freeze the function before after-response dispatch completes, and Vercel Cron limits depend on the plan.
+  - **Mitigations:**
+    - no new infrastructure (PostgreSQL only);
+    - at-least-once delivery with idempotent handlers;
+    - the `drain-outbox` job as the fallback for anything not dispatched;
+    - daily default schedules that deploy on any plan;
+    - delivery guarantees and recovery are documented in `docs/architecture.md` and `docs/operations.md`.
+
+  Verification belongs to the DEC-001 proof.
 
 | Phase | Scope | Entry criteria | Exit evidence | Status (2026-10-14) |
 |---|---|---|---|---|
@@ -1275,15 +1327,20 @@ Evidence records never contain secrets, tokens, or personal data.
 
 ## 21. Requirements Traceability Matrix
 
-Status as of 2026-10-14. Evidence: [`dev-docs/evidence/2026-10-14-local-verification.md`](evidence/2026-10-14-local-verification.md), [`2026-10-14-diagnostics-perf-local.md`](evidence/2026-10-14-diagnostics-perf-local.md), and [`2026-10-14-adr-0002-perf07-local.md`](evidence/2026-10-14-adr-0002-perf07-local.md).
+Status as of 2026-10-14. Evidence: [`dev-docs/evidence/2026-10-14-local-verification.md`](evidence/2026-10-14-local-verification.md), [`2026-10-14-diagnostics-perf-local.md`](evidence/2026-10-14-diagnostics-perf-local.md), [`2026-10-14-adr-0002-perf07-local.md`](evidence/2026-10-14-adr-0002-perf07-local.md), and [`2026-10-14-adr-0003-modular-architecture.md`](evidence/2026-10-14-adr-0003-modular-architecture.md).
 
 `PASS` here means the check was **executed locally** with **mocked** external integrations and met its criteria. It is not sandbox or live verification (TEST-04).
 
 | Requirements | Summary | Verification | Gate | Blocked by | Status |
 |---|---|---|---|---|---|
-| ARCH-01, ARCH-02 | Layering, no cycles | `lint-imports` (4 contracts), ESLint import bans | B | — | PASS |
+| ARCH-01, ARCH-02 | Layering, no cycles | `lint-imports` (8 contracts, including `exhaustive` module layers and acyclic modules); mutation-checked | B | — | PASS |
 | ARCH-03 to ARCH-07, ARCH-09 to ARCH-12 | Single rules, adapters, no global state, bounded calls, ADRs | Review; LLM retry tests; timeouts configured | B | — | PASS (review) |
 | ARCH-08 | No N+1 queries | Query-count tests (project lists, billing status, organization entitlement); single-statement transaction setup; at most 8 statements per request | B | — | PASS |
+| ARCH-13 | Modular monolith boundaries | import-linter contracts; `tests/architecture` (api-only cross-module imports, module shape, unique permissions and event types); mutation-checked | B | — | PASS |
+| ARCH-14 | Transactions: one-statement setup, request scope, release, two pools | `test_request_scope.py` (13), `test_query_counts.py`; PERF-07 local | B, D | — | PASS (local); platform behavior NOT VERIFIED (DEC-001) |
+| ARCH-15 | Transactional outbox | `test_outbox_jobs.py` (recording, RLS, dispatch, retries, dead letters, leases, retention, billing event) | B, C | — | PASS (local); after-response dispatch on Vercel NOT VERIFIED (D-002) |
+| ARCH-16 | Scheduled jobs | `test_outbox_jobs.py` (secret auth, 404 when off, each job, registry and `vercel.json` parity, CLI) | B, C, E | — | PASS (local); Vercel Cron NOT VERIFIED (DEC-001) |
+| ARCH-17 | Module generator | `pnpm test:new-module` (CI step); mutation-checked | A, B | — | PASS |
 | API-01 to API-06 | Versioning, problem details, pagination, bearer-only, idempotency, health | Contract and platform tests; account-free e2e | B | — | PASS |
 | ENV-01 | Separate credentials per environment | Operational | E | DEC-006 | NOT VERIFIED |
 | ENV-02 to ENV-06 | Modes, validation, key/mode consistency, production guards, `.env.example` | Config tests; migration guard tests | A, C | — | PASS |
@@ -1311,6 +1368,8 @@ Status as of 2026-10-14. Evidence: [`dev-docs/evidence/2026-10-14-local-verifica
 | OBS-09 | Telemetry retention | Documentation; adopter checklist | E | — | PASS (documented; adopters set the periods) |
 | FE-02, FE-03, FE-05 to FE-07, FE-10 | Boundaries, states, protected routes, paywall, 404, error mapping | ESLint bans; Vitest; account-free e2e | B | — | PASS |
 | FE-01, FE-04, FE-08, FE-09, FE-11 | Accessibility, session UX, error boundaries, keyboard, browser flows | axe and Playwright page and authenticated suites | B | DEC-006 (Clerk sandbox) | NOT VERIFIED |
+| FE-13 | Feature folders and import boundaries | Layout in place; ESLint boundary rules and 23 tests prepared in `dev-docs/pending/` | B | Owner applies the patch (configuration-protection hook) | BLOCKED |
+| FE-14 | Typed API client generated from OpenAPI | `tsc` with `@ts-expect-error` checks on paths and params; client tests | B | — | PASS |
 | FE-12 | Frontend performance budgets | Measurements | D | Preview environment (DEC-001) | NOT VERIFIED (budgets adopter-owned; Core Web Vitals not measured) |
 | SEC-01 to SEC-05, SEC-07 to SEC-10, SEC-13 to SEC-15 | Validation, headers, secrets, audits, lockfiles, errors, limits, licenses, webhooks, redirects | Tests; audits; gitleaks; license check | C | — | PASS (as of 2026-10-14) |
 | SEC-06 | Static analysis (CodeQL) | Workflow defined | C | Remote CI not authorized | NOT VERIFIED |
@@ -1347,39 +1406,54 @@ The report clearly distinguishes verified behavior from assumptions, mocks, and 
 ## 23. Current Status (2026-10-14)
 
 - **Implemented:**
-  - Python API: domain, application, infrastructure, HTTP; migrations with forced RLS.
-  - Next.js web app with a minimal UI for every integration, including the operator-only `/integrations` diagnostics page.
-  - Repository tooling, CI definitions, and community files with adopter contact placeholders. `init-template` and `check:placeholders` have CI checks.
-  - DEC-002 option (b) organization entitlements, with the §9.9 truth table under test.
-  - Query-count tests (ARCH-08). Transaction setup takes one statement.
-  - Local performance harness (`perf/`) for PERF-01 to PERF-07, with a run-plan and targets worksheet.
-  - Data inventory, local restore drill, and adopter checklists for DEC-003 to DEC-005.
+  - **Python API as a modular monolith** (ADR-0003):
+    - a shared kernel, and the modules identity, billing, projects, llm, and diagnostics, all with identical layers;
+    - request-scoped transactions with separate request and worker pools;
+    - a transactional outbox with after-response dispatch;
+    - scheduled jobs (CLI and secret-protected HTTP for Vercel Cron);
+    - composed per-module settings;
+    - migrations with forced RLS (0001 core, 0002 outbox).
+  - **Next.js web app:**
+    - code organized by feature (`src/features/*`, `src/ui`, `src/lib`);
+    - a typed client generated from OpenAPI (`openapi-fetch`);
+    - a minimal UI for every integration, including the operator-only `/integrations` page.
+  - **Developer experience:**
+    - `pnpm new:module` generates a tenant-scoped module end to end, and CI verifies the generator;
+    - `docs/architecture.md`;
+    - init-template with contact placeholders.
+  - **Product decisions:** DEC-002 (b) organization entitlements; adopter checklists for DEC-003 to DEC-005.
+  - **Verification tooling:**
+    - 8 import contracts plus architecture tests;
+    - query-count tests;
+    - the local performance harness, PERF-01 to PERF-07;
+    - the local restore drill.
 - **Integrations:** all **mocked**. No sandbox or live service has been contacted.
 - **Local evidence:**
-  - API 226 tests, web 43 unit tests, and 20 account-free e2e checks pass.
-  - Lint, strict type checks, build, contract drift, init-template, placeholder, bundle-secret, audit, license, and secret scans pass.
-  - All seven performance scenarios were run locally, for relative comparison only. PERF-07 found that database round trips were the first bottleneck. Single-statement setup cut p50 by 64% to 74% at 20 ms RTT.
+  - API 270 tests, web 51 unit tests, 20 account-free e2e checks, and the generator check pass.
+  - Lint, strict types, build, contract drift, init-template, placeholder, bundle-secret, audit, and license checks pass.
+  - At 20 ms DB RTT (local), request scope cut p50 latency by 25% to 33% beyond the one-statement setup.
 
-  Details: [`2026-10-14-adr-0002-perf07-local.md`](evidence/2026-10-14-adr-0002-perf07-local.md) and the earlier records in `dev-docs/evidence/`.
+  Details: [`2026-10-14-adr-0003-modular-architecture.md`](evidence/2026-10-14-adr-0003-modular-architecture.md) and the earlier records.
 - **Gates:**
 
   | Gate | Status | Reason |
   |---|---|---|
   | A | NOT VERIFIED | Remote CI has never run (needs authorization to push) |
-  | B | NOT VERIFIED | Browser and signed-in e2e need Clerk sandbox keys (DEC-006) |
+  | B | NOT VERIFIED | Browser and signed-in e2e need Clerk sandbox keys (DEC-006). The frontend boundary lint rules await the owner (FE-13) |
   | C | NOT VERIFIED | CodeQL (remote CI) and sandbox verification pending; local security tests PASS |
-  | D | NOT VERIFIED | Dependency-failure, concurrency, and PERF-01 to PERF-07 results are recorded locally. Preview runs need DEC-001. Targets are adopter-owned (ADR-0002) |
-  | E | BLOCKED | DEC-001 (deployment proof), DEC-006 (integration classification) |
+  | D | NOT VERIFIED | Local PERF-01 to PERF-07 recorded. Preview runs need DEC-001. Targets are adopter-owned (ADR-0002) |
+  | E | BLOCKED | DEC-001 (deployment proof, Vercel Cron, after-response dispatch), DEC-006 (integration classification) |
 
 - **Decisions:**
-  - DEC-002 to DEC-005, DEC-009 value, DEC-012 contacts: RESOLVED (ADR-0002). DEC-003 to DEC-005 are adopter-owned.
-  - DEC-007 to DEC-011: RESOLVED (ADR-0001).
-  - **Open:** DEC-001 and DEC-006 only. Both need owner action, not decisions.
-- **Deviation:** D-001 (§18).
+  - DEC-002 to DEC-012: RESOLVED (ADR-0001, ADR-0002). DEC-003 to DEC-005 are adopter-owned.
+  - Architecture: ADR-0003.
+  - **Open:** DEC-001 and DEC-006, which need owner action.
+- **Deviations:** D-001 and D-002 (§18).
 - **Remote actions:** none. No push, publication, deployment, or release has occurred.
 - **Next steps (owner action required):**
-  1. Add sandbox keys to `.env`, and your Clerk user ID to `DIAGNOSTICS_OPERATOR_IDS` (or use `APP_ENV=local`). Then run **Run all server checks** and the browser checks on `/integrations`, the sandbox e2e suites (`E2E_SANDBOX=1`), and the procedures in `docs/integrations.md`, and record the evidence (DEC-006, Gates B and C).
-  2. Authorize pushing to a remote, so CI and CodeQL run (Gates A and C).
-  3. Authorize the DEC-001 Vercel preview proof, and with it the preview performance runs (Gates D and E).
+  1. Apply `dev-docs/pending/web-import-boundaries.patch` (FE-13); see `dev-docs/pending/README.md`.
+  2. Add sandbox keys to `.env`, and your Clerk user ID to `DIAGNOSTICS_OPERATOR_IDS` (or use `APP_ENV=local`). Then run the `/integrations` checks, the sandbox e2e suites (`E2E_SANDBOX=1`), and the procedures in `docs/integrations.md`, and record the evidence (DEC-006).
+  3. Authorize pushing to a remote, so CI, CodeQL, and the generator check run (Gates A and C).
+  4. Authorize the DEC-001 Vercel preview proof. It covers the Python runtime, Vercel Cron, after-response dispatch, and preview performance runs (Gates D and E).
 
 **Final principle:** build a template that is secure by default, modular by design, reproducible from a clean clone, and honest about its verified limits. Do not trade correctness, security, or maintainability for superficial completion.
