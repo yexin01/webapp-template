@@ -16,9 +16,14 @@ from pathlib import Path
 from pydantic import AliasChoices, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-REPO_ROOT = Path(__file__).resolve().parents[5]  # apps/api/app/kernel/infrastructure/config.py
-if not (REPO_ROOT / "supabase" / "migrations").is_dir():  # pragma: no cover - layout guard
+_HERE = Path(__file__).resolve()
+# In a repository checkout this file is apps/api/app/kernel/infrastructure/config.py.
+# A deployed bundle holds only the API package (index.py and app/ at the function
+# root), so it has no repository root and no .env file (DEC-001).
+REPO_ROOT: Path | None = _HERE.parents[5] if _HERE.parents[3].parts[-2:] == ("apps", "api") else None
+if REPO_ROOT is not None and not (REPO_ROOT / "supabase" / "migrations").is_dir():  # pragma: no cover - layout guard
     raise RuntimeError(f"repository root not found from {__file__}")
+ENV_FILE: Path | None = REPO_ROOT / ".env" if REPO_ROOT is not None else None
 
 
 class AppEnv(StrEnum):
@@ -57,7 +62,7 @@ def mode_problems(name: str, mode: Mode, app_env: AppEnv) -> list[str]:
 
 class CoreSettings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=REPO_ROOT / ".env",
+        env_file=ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
@@ -135,7 +140,7 @@ class DatabaseSettings(BaseSettings):
     """Only what database maintenance commands need."""
 
     model_config = SettingsConfigDict(
-        env_file=REPO_ROOT / ".env", env_file_encoding="utf-8", extra="ignore", hide_input_in_errors=True
+        env_file=ENV_FILE, env_file_encoding="utf-8", extra="ignore", hide_input_in_errors=True
     )
 
     database_url: SecretStr | None = None

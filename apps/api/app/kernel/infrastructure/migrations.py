@@ -15,6 +15,9 @@ import psycopg
 
 from app.kernel.infrastructure.config import REPO_ROOT
 
+if REPO_ROOT is None:
+    # Migrations ship in supabase/, which a deployed bundle does not contain.
+    raise RuntimeError("Migrations run from a repository checkout, not from a deployed bundle.")
 MIGRATIONS_DIR = REPO_ROOT / "supabase" / "migrations"
 SEED_FILE = REPO_ROOT / "supabase" / "seed.sql"
 LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "host.docker.internal"})
