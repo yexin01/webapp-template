@@ -4,8 +4,7 @@ import { useState } from "react";
 
 import type { Schemas } from "@/lib/api/client";
 import { useApi } from "@/lib/api/use-api";
-
-import { ErrorState } from "./state-views";
+import { ErrorState } from "@/ui/state-views";
 
 export function LlmCheck() {
   const api = useApi();

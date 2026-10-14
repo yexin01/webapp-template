@@ -7,9 +7,9 @@ import { track } from "@/lib/analytics";
 import { isAllowedRedirect, type Schemas } from "@/lib/api/client";
 import { useApi } from "@/lib/api/use-api";
 import { useResource } from "@/lib/use-resource";
+import { ErrorState, LoadingState } from "@/ui/state-views";
 
 import { PlanBadge } from "./plan-badge";
-import { ErrorState, LoadingState } from "./state-views";
 
 type Status = Schemas["BillingStatus"];
 type PlanKey = Schemas["CheckoutRequest"]["plan"];

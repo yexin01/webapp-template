@@ -1,4 +1,4 @@
-import { ProFeature } from "@/components/pro-feature";
+import { ProFeature } from "@/features/billing";
 
 export const metadata = { title: "Pro feature" };
 

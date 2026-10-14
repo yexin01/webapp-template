@@ -3,13 +3,12 @@
 import { useOrganization } from "@clerk/nextjs";
 import { useCallback } from "react";
 
+import { PlanBadge } from "@/features/billing";
+import { LlmCheck } from "@/features/llm";
+import { ProjectsPanel } from "@/features/projects";
 import { useApi } from "@/lib/api/use-api";
 import { useResource } from "@/lib/use-resource";
-
-import { LlmCheck } from "./llm-check";
-import { PlanBadge } from "./plan-badge";
-import { ProjectsPanel } from "./projects-panel";
-import { LoadingState } from "./state-views";
+import { LoadingState } from "@/ui/state-views";
 
 /**
  * The active tenant follows Clerk's organization switcher. The role shown

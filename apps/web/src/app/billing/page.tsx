@@ -1,7 +1,7 @@
 import { Suspense } from "react";
 
-import { BillingPanel } from "@/components/billing-panel";
-import { LoadingState } from "@/components/state-views";
+import { BillingPanel } from "@/features/billing";
+import { LoadingState } from "@/ui/state-views";
 
 export const metadata = { title: "Billing" };
 

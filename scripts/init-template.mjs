@@ -31,7 +31,7 @@ const IDENTIFIER_FILES = [
   "apps/api/app/__init__.py",
   "apps/api/app/bootstrap.py",
   "apps/web/src/app/layout.tsx",
-  "apps/web/src/components/site-header.tsx",
+  "apps/web/src/ui/site-header.tsx",
   "packages/contracts/openapi.json",
 ];
 

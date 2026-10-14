@@ -1,4 +1,4 @@
-import { CheckoutConfirmation } from "@/components/checkout-confirmation";
+import { CheckoutConfirmation } from "@/features/billing";
 
 export const metadata = { title: "Confirming subscription" };
 

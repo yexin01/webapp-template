@@ -6,8 +6,7 @@ import type { Schemas } from "@/lib/api/client";
 import { ApiError } from "@/lib/api/errors";
 import { useApi } from "@/lib/api/use-api";
 import { useResource } from "@/lib/use-resource";
-
-import { EmptyState, ErrorState, LoadingState } from "./state-views";
+import { EmptyState, ErrorState, LoadingState } from "@/ui/state-views";
 
 type Props = { orgId: string | null; canDelete: boolean };
 type Project = Schemas["Project"];

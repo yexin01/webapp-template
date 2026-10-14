@@ -6,9 +6,9 @@ import { useCallback } from "react";
 import { ApiError } from "@/lib/api/errors";
 import { useApi } from "@/lib/api/use-api";
 import { useResource } from "@/lib/use-resource";
+import { ErrorState, LoadingState } from "@/ui/state-views";
 
 import { Paywall } from "./paywall";
-import { ErrorState, LoadingState } from "./state-views";
 
 /** Example Pro-gated feature. Access is decided by the server only. */
 export function ProFeature() {

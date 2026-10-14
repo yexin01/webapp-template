@@ -6,10 +6,10 @@ import { ApiError } from "@/lib/api/errors";
 import type { Schemas } from "@/lib/api/client";
 import { useApi } from "@/lib/api/use-api";
 import { useResource } from "@/lib/use-resource";
+import { ErrorState, LoadingState } from "@/ui/state-views";
 
 import { BrowserChecks } from "./browser-checks";
 import { CheckOutcome, ModeBadge } from "./integration-status";
-import { ErrorState, LoadingState } from "./state-views";
 
 type Key = Schemas["IntegrationKey"];
 type Run = { result?: Schemas["IntegrationCheck"]; error?: unknown };

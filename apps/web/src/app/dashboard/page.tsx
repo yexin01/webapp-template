@@ -1,4 +1,4 @@
-import { Workspace } from "@/components/workspace";
+import { Workspace } from "@/features/workspace";
 
 export const metadata = { title: "Dashboard" };
 

@@ -2,8 +2,8 @@ import { ClerkProvider } from "@clerk/nextjs";
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 
-import { AnalyticsProvider } from "@/components/analytics-provider";
-import { SiteHeader } from "@/components/site-header";
+import { AnalyticsProvider } from "@/lib/analytics-provider";
+import { SiteHeader } from "@/ui/site-header";
 
 import "./globals.css";
 

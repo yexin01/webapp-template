@@ -4,8 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import { useApi } from "@/lib/api/use-api";
-
-import { LoadingState } from "./state-views";
+import { LoadingState } from "@/ui/state-views";
 
 const ATTEMPTS = 20;
 const INTERVAL_MS = 1500;

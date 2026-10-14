@@ -1,4 +1,4 @@
-import { IntegrationsPanel } from "@/components/integrations-panel";
+import { IntegrationsPanel } from "@/features/integrations";
 
 export const metadata = { title: "Integrations" };
 
