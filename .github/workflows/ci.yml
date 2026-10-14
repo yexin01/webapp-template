@@ -46,8 +46,8 @@ jobs:
       - run: uv sync --frozen
       - name: Lint and format
         run: |
-          uv run ruff check app tests index.py
-          uv run ruff format --check app tests index.py
+          uv run ruff check app tests index.py ../../perf
+          uv run ruff format --check app tests index.py ../../perf
       - name: Import boundaries
         run: uv run lint-imports
       - name: Type check (strict)

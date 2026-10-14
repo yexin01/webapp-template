@@ -14,7 +14,7 @@
     "api:sync": "cd apps/api && uv sync --frozen",
     "build": "pnpm --filter web build",
     "lint": "pnpm --filter web lint && pnpm api:lint",
-    "api:lint": "cd apps/api && uv run ruff check app tests index.py && uv run ruff format --check app tests index.py && uv run lint-imports",
+    "api:lint": "cd apps/api && uv run ruff check app tests index.py ../../perf && uv run ruff format --check app tests index.py ../../perf && uv run lint-imports",
     "format": "pnpm --filter web format && cd apps/api && uv run ruff format app tests index.py",
     "typecheck": "pnpm --filter web typecheck && cd apps/api && uv run mypy",
     "test": "pnpm test:api && pnpm test:web",
@@ -33,6 +33,8 @@
     "check:bundle-secrets": "node scripts/check-bundle-secrets.mjs",
     "init-template": "node scripts/init-template.mjs",
     "test:init-template": "node scripts/test-init-template.mjs",
-    "security:licenses": "node scripts/check-licenses.mjs"
+    "security:licenses": "node scripts/check-licenses.mjs",
+    "perf:server": "cd apps/api && uv run python ../../perf/server.py",
+    "perf:run": "node scripts/perf.mjs"
   }
 }
