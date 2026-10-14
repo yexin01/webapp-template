@@ -13,9 +13,9 @@ Scripts for the scenarios in spec §15.2 (PERF-01 to PERF-07). Read the safety r
   - cost acknowledgement;
   - the isolated database and its synthetic dataset.
 
-  Only then set `PERF_ALLOW_REMOTE=1`.
+  Only then set `PERF_ALLOW_REMOTE=1`. A deployed target also needs the synthetic users' session tokens (`PERF_USERS_FILE`) and, for PERF-06, its test-only webhook secret (`PERF_WEBHOOK_SECRET`). The run plan explains how to get them. Without them, the run refuses to start: the built-in tokens and secret work only with `perf/server.py`. Neither value is ever printed.
 - **Production load testing is prohibited** without explicit authorization and an approved safety plan.
-- **Every scenario aborts automatically** when more than 5% of requests fail (`http_req_failed`, evaluated after 10 s).
+- **Every scenario aborts automatically** when more than 5% of requests fail (`http_req_failed`, evaluated after 10 s). A `401` or a rejected webhook signature stops the run at once.
 - **Raw output goes to `perf/results/`**, which is git-ignored. Summaries go to `dev-docs/evidence/`.
 
 ## How it works
@@ -33,7 +33,7 @@ Scripts for the scenarios in spec §15.2 (PERF-01 to PERF-07). Read the safety r
 
 **Load generator.** k6 1.3.0 runs in Docker (`grafana/k6:1.3.0`), so nothing needs to be installed.
 
-**Request mix.** Each iteration hits every endpoint class once, as a random synthetic user, with no think time:
+**Request mix.** Each iteration hits every endpoint class once as one synthetic user, with no think time. The user is a hash of `SEED` (default `1`) and the iteration number, so a rerun with the same `SEED` sends the same requests in the same order. Only the timing varies. Each results file records the seed.
 
 | Class | Request |
 |---|---|
@@ -61,7 +61,7 @@ SCENARIO=baseline pnpm perf:run       # terminal 2
 | Stress | PERF-03 | `SCENARIO=stress MAX_RATE=100 STEP=1m pnpm perf:run` | Six steps up to `MAX_RATE`; aborts on errors |
 | Spike | PERF-04 | `SCENARIO=spike SPIKE_RATE=60 pnpm perf:run` | Idle, then a jump to `SPIKE_RATE` for 30 s |
 | Soak | PERF-05 | `SCENARIO=soak RATE=10 DURATION=30m pnpm perf:run` | Constant moderate load |
-| Webhooks | PERF-06 | `SCENARIO=webhooks WEBHOOK_EVENTS=100 DUPLICATES=3 pnpm perf:run` | Each signed event delivered `DUPLICATES` times by concurrent VUs |
+| Webhooks | PERF-06 | `SCENARIO=webhooks WEBHOOK_EVENTS=100 DUPLICATES=3 EVENTS_PER_CUSTOMER=4 pnpm perf:run` | The `DUPLICATES` copies of each signed event arrive at the same time and contend for its ledger row. Each customer gets `EVENTS_PER_CUSTOMER` distinct events at the same time, which contend for the customer lock. 20 VUs (`WEBHOOK_VUS`) |
 | Degradation | PERF-07 | Restart the server with a knob below, then `SCENARIO=baseline INCLUDE_LLM=1 LABEL=<knob> pnpm perf:run` | Compare against a control run with no knobs |
 
 **PERF-07 server knobs.** All of them are off by default:
@@ -74,7 +74,7 @@ SCENARIO=baseline pnpm perf:run       # terminal 2
 
 Pass knobs after `--`, for example `pnpm perf:server -- --db-latency-ms 20`.
 
-Stop the server with Ctrl+C. It then prints the peak number of database connections and the webhook ledger counts, which verify that each event was processed once.
+Stop the server with Ctrl+C. It then prints the peak number of database connections and the webhook ledger counts, which verify that each event was processed once. Event IDs are fixed (`evt_perf_00000` onwards), so restart the server before each PERF-06 run. Otherwise every delivery finds an event that is already processed.
 
 ## Reading results
 
