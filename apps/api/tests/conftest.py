@@ -135,6 +135,12 @@ def _admin_url() -> str:
     return url
 
 
+def _database_required() -> bool:
+    """True in CI or when TEST_DATABASE_URL is set: database tests must run, not skip."""
+    ci = os.environ.get("CI", "").strip().lower() not in ("", "0", "false")
+    return ci or bool(os.environ.get("TEST_DATABASE_URL"))
+
+
 @pytest.fixture(scope="session")
 def database_url() -> Iterator[str]:
     admin = _admin_url()
@@ -142,7 +148,12 @@ def database_url() -> Iterator[str]:
     try:
         with psycopg.connect(admin, autocommit=True, connect_timeout=3) as conn:
             conn.execute(f'CREATE DATABASE "{name}"')
-    except psycopg.OperationalError:
+    except psycopg.OperationalError as error:
+        # Skipping is a local convenience only: in CI, or when a database was
+        # configured explicitly, an unreachable server must fail the run
+        # rather than let every database test silently skip.
+        if _database_required():
+            pytest.fail(f"PostgreSQL is not reachable for tests: {error}", pytrace=False)
         pytest.skip("PostgreSQL is not available; start it with `pnpm db:up`.")
     parsed = urlparse(admin)
     url = urlunparse(parsed._replace(path=f"/{name}"))

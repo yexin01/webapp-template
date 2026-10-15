@@ -3,8 +3,10 @@
  * Template initialization (REPO-07). Renames the project's identifiers,
  * fills in the community contacts (DEC-012, ADR-0002), optionally moves the
  * local PostgreSQL port (so several projects created from this template can
- * run side by side), and creates a local .env from .env.example. Never copies
- * or prints credentials. Safe to re-run.
+ * run side by side), names the Docker Compose project after the slug (so
+ * copies in folders with the same name do not share a database volume), and
+ * creates a local .env from .env.example. Never copies or prints credentials.
+ * Safe to re-run.
  *
  *   pnpm init-template --name "Acme Cloud" --slug acme-cloud \
  *     --security-contact security@acme.example --conduct-contact conduct@acme.example \
@@ -12,12 +14,15 @@
  *
  * The contact options are required while the placeholders are still present.
  * A copy is renamed once: a re-run with the same values changes nothing, and
- * a re-run with a different name, slug, port, or contact is refused.
+ * a re-run with a different name, slug, port, or contact is refused. Every
+ * target is checked for write access first, and package.json (the marker of an
+ * initialized copy) is written last, so a run that still fails part-way can be
+ * repeated with the same options to finish.
  *
  * The specification and evidence under dev-docs/ describe the template itself
  * and are intentionally left unchanged.
  */
-import { copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { accessSync, constants, copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
 
@@ -88,8 +93,15 @@ if (!name || name.length > 60 || !SAFE_NAME.test(name) || ORIGINAL.test(name)) {
 if (!slug || !/^[a-z][a-z0-9-]{1,40}$/.test(slug) || ORIGINAL.test(slug)) {
   usage("--slug is required: lowercase letters, digits, and hyphens, starting with a letter, and not the template's slug.");
 }
-if (dbPort !== undefined && (!/^\d{4,5}$/.test(dbPort) || Number(dbPort) < 1024 || Number(dbPort) > 65535)) {
-  usage("--db-port must be a number between 1024 and 65535.");
+// Ports the template's own servers use: web, API, and the performance server.
+const TAKEN_PORTS = new Set(["3000", "8000", "8001"]);
+if (
+  dbPort !== undefined &&
+  (!/^[1-9]\d{3,4}$/.test(dbPort) || Number(dbPort) < 1024 || Number(dbPort) > 65535 || TAKEN_PORTS.has(dbPort))
+) {
+  usage(
+    `--db-port must be a whole number from 1024 to 65535, without leading zeros, and not ${[...TAKEN_PORTS].join(", ")} (used by the template's servers).`,
+  );
 }
 const read = (rel) => (existsSync(path.join(root, rel)) ? readFileSync(path.join(root, rel), "utf8") : "");
 for (const { file, token, option } of PLACEHOLDERS) {
@@ -106,33 +118,38 @@ for (const { file, token, option } of PLACEHOLDERS) {
   }
 }
 
-// A copy is renamed once. Once package.json no longer carries the template's
-// slug, a re-run must repeat the same identity; anything else would silently
-// do nothing, because the original identifiers are gone.
+// A copy is renamed once. Once package.json or the API title no longer carries
+// the template's identity, a re-run must repeat the same identity; anything
+// else would silently do nothing, because the original identifiers are gone.
+// A copy with only some files renamed (a run that failed part-way) is resumed
+// by the same options: bootstrap.py, which carries the name, is written first,
+// and package.json, which carries the slug, last. Before package.json, the
+// Compose project name (written by the same run) carries the slug.
 const currentSlug = JSON.parse(read("package.json") || "{}").name;
-if (currentSlug && currentSlug !== ORIGINAL_SLUG) {
-  const currentName = /^API_TITLE = "(.*) API"$/m.exec(read("apps/api/app/bootstrap.py"))?.[1];
-  if (slug !== currentSlug || (currentName !== undefined && name !== currentName)) {
-    usage(
-      `This copy is already initialized as "${currentName ?? currentSlug}" (${currentSlug}). init-template renames a copy only once: re-run it with the same --name and --slug, or rename by hand.`,
-    );
-  }
-  const currentPort = /127\.0\.0\.1:(\d+):5432/.exec(read("docker-compose.yml"))?.[1];
-  if (dbPort && currentPort && currentPort !== ORIGINAL_DB_PORT && currentPort !== dbPort) {
-    usage(`The local PostgreSQL port was already moved to ${currentPort}. Change it by hand to move it again.`);
-  }
+const currentName = /^API_TITLE = "(.*) API"$/m.exec(read("apps/api/app/bootstrap.py"))?.[1];
+const composeName = /^name:\s*["']?([^\s"'#]+)/m.exec(read("docker-compose.yml"))?.[1];
+const initialized = Boolean(currentSlug && currentSlug !== ORIGINAL_SLUG);
+const renamedName = currentName !== undefined && currentName !== ORIGINAL_NAME ? currentName : undefined;
+const renamedSlug = initialized ? currentSlug : renamedName ? composeName : undefined;
+if ((renamedSlug && slug !== renamedSlug) || (renamedName && name !== renamedName)) {
+  usage(
+    `This copy is already initialized as "${renamedName ?? currentName ?? renamedSlug}" (${renamedSlug ?? currentSlug}). init-template renames a copy only once: re-run it with the same --name and --slug, or rename by hand.`,
+  );
+}
+const currentPort = /127\.0\.0\.1:(\d+):5432/.exec(read("docker-compose.yml"))?.[1];
+if (dbPort && currentPort && currentPort !== ORIGINAL_DB_PORT && currentPort !== dbPort) {
+  usage(`The local PostgreSQL port was already moved to ${currentPort}. Change it by hand to move it again.`);
 }
 
-const changes = new Set();
+/** New contents by file, computed in full before anything is written. */
+const pending = new Map();
 function rewrite(rel, transform) {
   const file = path.join(root, rel);
   if (!existsSync(file)) return;
-  const before = readFileSync(file, "utf8");
-  const after = transform(before);
-  if (after !== before) {
-    changes.add(rel);
-    if (!dryRun) writeFileSync(file, after);
-  }
+  const original = readFileSync(file, "utf8");
+  const after = transform(pending.get(rel) ?? original);
+  if (after !== original) pending.set(rel, after);
+  else pending.delete(rel);
 }
 
 for (const rel of IDENTIFIER_FILES) {
@@ -147,14 +164,52 @@ if (dbPort && dbPort !== ORIGINAL_DB_PORT) {
   const pattern = new RegExp(`(127\\.0\\.0\\.1:|")${ORIGINAL_DB_PORT}(?=[:/)"\`\\s]|$)`, "gm");
   for (const rel of PORT_FILES) rewrite(rel, (text) => text.replace(pattern, `$1${dbPort}`));
 }
+// Without a project name, Compose names the project (and its volume) after the
+// folder, so two copies in folders with the same name would share a database.
+// A copy initialized before this step existed keeps its folder-named project:
+// renaming it would silently switch `pnpm db:up` to a new, empty volume.
+let composeNotice;
+if (initialized && composeName === undefined) {
+  composeNotice = `docker-compose.yml was left without a project name, so your existing database volume stays in use. To stop copies in folders with the same name from sharing it, add "name: ${slug}" at the top yourself; \`pnpm db:up\` then starts a new, empty volume (dump and restore the data first if you need it).`;
+} else {
+  rewrite("docker-compose.yml", (text) =>
+    /^name:/m.test(text) ? text : text.replace(/^services:/m, `name: ${slug}\n\nservices:`),
+  );
+}
 
 const envFile = path.join(root, ".env");
 const envCreated = !existsSync(envFile);
-if (envCreated && !dryRun) copyFileSync(path.join(root, ".env.example"), envFile);
 
+if (!dryRun) {
+  // Check every target first, so a permission problem changes nothing.
+  const targets = [...pending.keys()].map((rel) => [rel, constants.W_OK]);
+  if (envCreated) targets.push([".", constants.W_OK | constants.X_OK]);
+  for (const [rel, mode] of targets) {
+    try {
+      accessSync(path.join(root, rel), mode);
+    } catch {
+      console.error(`${rel === "." ? "The project folder" : rel} is not writable; nothing was changed.`);
+      process.exit(2);
+    }
+  }
+  // bootstrap.py first and package.json last: they mark a run in progress and
+  // a finished one (see the identity check above).
+  const rank = (rel) => (rel === "apps/api/app/bootstrap.py" ? 0 : rel === "package.json" ? 2 : 1);
+  const order = [...pending.keys()].sort((a, b) => rank(a) - rank(b));
+  for (const rel of order) writeFileSync(path.join(root, rel), pending.get(rel));
+  if (envCreated) copyFileSync(path.join(root, ".env.example"), envFile);
+}
+
+const changes = new Set(pending.keys());
 console.log(JSON.stringify({ dryRun, updated: [...changes].sort(), envCreated }, null, 2));
 if (envCreated) {
   console.log("Next: fill in .env with your own sandbox keys (see docs/integrations.md).");
 } else if (dbPort && changes.has(".env.example")) {
   console.log(`Your existing .env was not changed: update the port in DATABASE_URL to ${dbPort} yourself.`);
+}
+if (composeNotice) console.log(composeNotice);
+else if (composeName === undefined && /^name:/m.test(pending.get("docker-compose.yml") ?? "")) {
+  console.log(
+    `The Docker Compose project is now named "${slug}": a database started before init (named after the folder) is no longer used.`,
+  );
 }

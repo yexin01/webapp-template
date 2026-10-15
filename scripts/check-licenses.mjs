@@ -31,6 +31,19 @@ const ALLOWED = new Set([
 ]);
 
 /**
+ * SPDX license exceptions accepted after WITH. Each only grants extra
+ * permissions on top of an allowed base license. Any other exception fails the
+ * whole expression, so restrictions dressed up as exceptions (for example
+ * "Apache-2.0 WITH Commons-Clause") never pass. Exceptions for copyleft bases
+ * (Classpath-exception-2.0, GCC-exception-3.1, and so on) are deliberately
+ * absent: their base licenses are not allowed, so such a package needs a
+ * reviewed entry in EXCEPTIONS below. No current dependency uses WITH.
+ */
+const ALLOWED_WITH = new Set([
+  "LLVM-exception", // Apache-2.0 WITH LLVM-exception: removes the attribution requirement for compiled output
+]);
+
+/**
  * Reviewed exceptions: one package (or package family) with one exact license
  * string each. A changed license fails again until it is reviewed.
  */
@@ -99,9 +112,10 @@ const normalize = (license) => ALIASES.get(license.trim()) ?? license.trim();
  * Evaluates an SPDX expression against the allowlist. Operators are
  * case-sensitive, as SPDX specifies, so the "-or-" in GPL-2.0-or-later is
  * part of the identifier. OR passes when any branch passes; AND when all do.
- * "X WITH exception" passes when X does. Anything unparseable fails.
+ * "X WITH exception" passes when X does and the exception is in ALLOWED_WITH;
+ * any other exception fails the whole expression. Anything unparseable fails.
  */
-function allowedExpression(expression, allowed = ALLOWED) {
+function allowedExpression(expression, allowed = ALLOWED, allowedWith = ALLOWED_WITH) {
   const aliased = ALIASES.get(expression.trim());
   if (aliased) return allowed.has(aliased);
   // Classifier lists are joined with " OR " by python_licenses.py; map each part.
@@ -125,7 +139,9 @@ function allowedExpression(expression, allowed = ALLOWED) {
     if (!token || ["AND", "OR", "WITH", ")"].includes(token)) throw new Error("expected a license");
     if (peek() === "WITH") {
       position += 1;
-      if (!tokens[position++]) throw new Error("expected an exception");
+      const exception = tokens[position++];
+      if (!exception || ["AND", "OR", "WITH", "(", ")"].includes(exception)) throw new Error("expected an exception");
+      if (!allowedWith.has(exception)) throw new Error(`exception not accepted: ${exception}`);
     }
     return allowed.has(normalize(token));
   }
@@ -164,6 +180,24 @@ function selfTest() {
     ["BSD License OR Apache Software License", true],
     ["MIT License", true],
     ["Apache-2.0 WITH LLVM-exception", true],
+    ["(Apache-2.0 WITH LLVM-exception) OR MIT", true],
+    ["MIT AND Apache-2.0 WITH LLVM-exception", true],
+    ["Apache-2.0 WITH Commons-Clause", false],
+    ["Apache-2.0 WITH llvm-exception", false],
+    ["Apache-2.0 WITH Commons-Clause OR MIT", false],
+    ["MIT WITH AND", false],
+    ["MIT WITH OR MIT", false],
+    ["MIT WITH WITH", false],
+    ["MIT WITH", false],
+    ["MIT WITH (LLVM-exception)", false],
+    ["MIT WITH MIT", false],
+    ["Apache-2.0 WITH LLVM-exception WITH LLVM-exception", false],
+    ["(MIT) WITH LLVM-exception", false],
+    ["WITH LLVM-exception", false],
+    ["LLVM-exception", false],
+    ["Apache-2.0 WITH LLVM-exception AND GPL-3.0-only", false],
+    ["GPL-2.0-only WITH Classpath-exception-2.0", false],
+    ["GPL-3.0-or-later WITH GCC-exception-3.1", false],
     ["GPL-2.0-or-later", false],
     ["LGPL-3.0-or-later", false],
     ["MIT AND GPL-3.0-only", false],

@@ -21,7 +21,7 @@ def pk(host: str, live: bool = False) -> str:
 LOCAL_CLERK = {
     "app_env": "local",
     "clerk_publishable_key": pk("example-app.clerk.accounts.dev"),
-    "clerk_secret_key": "sk_test_abcdefghijklmnop",
+    "clerk_secret_key": "sk_test_only_abcdefghijklmnop",
     "clerk_authorized_parties": "http://localhost:3000",
 }
 
@@ -74,7 +74,7 @@ def test_sandbox_billing_requires_prices_and_webhook_secret() -> None:
     with pytest.raises(ConfigError) as excinfo:
         make_settings(
             billing_mode="sandbox",
-            stripe_secret_key="sk_test_abcdefghijklmnop",
+            stripe_secret_key="sk_test_only_abcdefghijklmnop",
             stripe_webhook_secret="",
             stripe_price_pro_monthly="",
         )

@@ -14,6 +14,9 @@ updates:
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly }
+  # The postgres image in docker-compose.yml. Dependabot does not update the
+  # services images in .github/workflows/ci.yml (github-actions covers only
+  # `uses:` references), so bump those by hand to the same tag.
   - package-ecosystem: docker-compose
     directory: /
     schedule: { interval: monthly }

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 import psycopg
@@ -14,6 +16,7 @@ from tests.conftest import Harness, superuser_query
 pytestmark = pytest.mark.db
 
 ORG = "org_generated"
+OTHER_ORG = "org_generatedother"
 PERSONAL = "/api/v1/__path__"
 IN_ORG = f"/api/v1/orgs/{ORG}/__path__"
 
@@ -22,7 +25,24 @@ IN_ORG = f"/api/v1/orgs/{ORG}/__path__"
 def people(harness: Harness) -> dict[str, Any]:
     harness.directory.set("user_admin", [ExternalMembership(ORG, Role.ADMIN)])
     harness.directory.set("user_member", [ExternalMembership(ORG, Role.MEMBER)])
-    return {name: harness.login(f"user_{name}") for name in ("admin", "member", "outsider")}
+    harness.directory.set("user_rival", [ExternalMembership(OTHER_ORG, Role.ADMIN)])
+    return {name: harness.login(f"user_{name}") for name in ("admin", "member", "outsider", "rival")}
+
+
+@contextmanager
+def api_role(url: str, **context: str) -> Iterator[psycopg.Connection[Any]]:
+    """The request role with the given app.* context, bypassing the application's own filters."""
+    with psycopg.connect(url) as conn, conn.transaction():
+        conn.execute("SET LOCAL ROLE app_api")
+        for key, value in context.items():
+            conn.execute("SELECT set_config(%s, %s, true)", (f"app.{key}", value))
+        yield conn
+
+
+def one_id(url: str, sql: str, value: str) -> str:
+    rows = superuser_query(url, sql, (value,))
+    assert len(rows) == 1, (sql, value)
+    return str(rows[0][0])
 
 
 def test_personal_create_list_delete(harness: Harness, people: dict[str, Any]) -> None:
@@ -73,3 +93,32 @@ def test_api_role_without_context_sees_nothing(harness: Harness, people: dict[st
     with psycopg.connect(harness.database_url) as conn, conn.transaction():
         conn.execute("SET LOCAL ROLE app_api")
         assert conn.execute("SELECT count(*) FROM app.__module__").fetchone() == (0,)
+
+
+def test_api_role_without_context_cannot_insert(harness: Harness, people: dict[str, Any]) -> None:
+    harness.client.post(PERSONAL, json={"name": "provisions the user"}, headers=people["admin"])
+    admin = one_id(harness.database_url, "SELECT id FROM app.users WHERE clerk_user_id = %s", "user_admin")
+    with pytest.raises(psycopg.errors.InsufficientPrivilege), api_role(harness.database_url) as conn:
+        conn.execute(
+            "INSERT INTO app.__module__ (owner_user_id, created_by, name) VALUES (%s, %s, 'x')", (admin, admin)
+        )
+
+
+def test_database_requires_membership_of_the_context_organization(harness: Harness, people: dict[str, Any]) -> None:
+    """DB-07: a member of another organization who sets this organization's context sees and writes nothing."""
+    assert harness.client.post(IN_ORG, json={"name": "org secret"}, headers=people["admin"]).status_code == 201
+    # The rival is a verified member of their own organization only.
+    assert harness.client.get(f"/api/v1/orgs/{OTHER_ORG}/__path__", headers=people["rival"]).status_code == 200
+    url = harness.database_url
+    org = one_id(url, "SELECT id FROM app.organizations WHERE clerk_org_id = %s", ORG)
+    rival = one_id(url, "SELECT id FROM app.users WHERE clerk_user_id = %s", "user_rival")
+    memberships = superuser_query(url, "SELECT org_id FROM app.organization_memberships WHERE user_id = %s", (rival,))
+    assert len(memberships) == 1
+    assert str(memberships[0][0]) != org
+    with api_role(url, user_id=rival, org_id=org) as conn:
+        assert conn.execute("SELECT count(*) FROM app.__module__").fetchone() == (0,)
+    with pytest.raises(psycopg.errors.InsufficientPrivilege), api_role(url, user_id=rival, org_id=org) as conn:
+        conn.execute("INSERT INTO app.__module__ (org_id, created_by, name) VALUES (%s, %s, 'x')", (org, rival))
+    # Without an organization context, organization rows stay out of reach too.
+    with pytest.raises(psycopg.errors.InsufficientPrivilege), api_role(url, user_id=rival) as conn:
+        conn.execute("INSERT INTO app.__module__ (org_id, created_by, name) VALUES (%s, %s, 'x')", (org, rival))

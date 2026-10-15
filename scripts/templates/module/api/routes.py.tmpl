@@ -50,8 +50,12 @@ class __Entity__Create(StrictInput):
 
 
 def build_router(service: __Module__Service, auth: AuthDeps, request_transaction: Any) -> APIRouter:
-    # Database-only: each request is one request-scoped transaction.
-    router = APIRouter(tags=["__path__"], dependencies=[Depends(request_transaction, scope="function")])
+    # Database-only: each request is one request-scoped transaction. The token is
+    # verified before the request takes an admission place.
+    router = APIRouter(
+        tags=["__path__"],
+        dependencies=[Depends(auth.authenticate), Depends(request_transaction, scope="function")],
+    )
     Personal = Annotated[TenantContext, Depends(auth.personal)]
     Organization = Annotated[TenantContext, Depends(auth.organization)]
 

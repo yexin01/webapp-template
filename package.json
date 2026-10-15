@@ -16,7 +16,7 @@
     "build": "pnpm --filter web build",
     "lint": "pnpm --filter web lint && pnpm api:lint",
     "api:lint": "cd apps/api && uv run ruff check app tests index.py ../../perf && uv run ruff format --check app tests index.py ../../perf && uv run lint-imports",
-    "format": "pnpm --filter web format && cd apps/api && uv run ruff format app tests index.py",
+    "format": "pnpm --filter web format && cd apps/api && uv run ruff format app tests index.py ../../perf",
     "typecheck": "pnpm --filter web typecheck && cd apps/api && uv run mypy",
     "test": "pnpm test:api && pnpm test:web",
     "test:api": "cd apps/api && uv run pytest",

@@ -1,3 +1,9 @@
+# Directory patterns that a module or feature name could match (logs, tmp,
+# build, secrets, ...) are anchored to where tools write them: the repository
+# root and the package roots (apps/*, packages/*). Unanchored, `logs/` would
+# also hide apps/api/app/modules/logs/ from `pnpm new:module logs`, which
+# refuses names git would ignore.
+
 # ---------------------------------------------------------------------------
 # Secrets and environment files — never commit real values.
 # Only the placeholder template is tracked.
@@ -14,7 +20,8 @@
 *.jks
 *.keystore
 .secrets/
-secrets/
+/secrets/
+/*/*/secrets/
 .vercel/.env*
 
 # ---------------------------------------------------------------------------
@@ -29,9 +36,12 @@ node_modules/
 *.tsbuildinfo
 next-env.d.ts
 .next/
-out/
-dist/
-build/
+/out/
+/*/*/out/
+/dist/
+/*/*/dist/
+/build/
+/*/*/build/
 .turbo/
 .vite/
 .eslintcache
@@ -48,8 +58,10 @@ __pycache__/
 *.py[cod]
 *.so
 .venv/
-venv/
-env/
+/venv/
+/*/*/venv/
+/env/
+/*/*/env/
 *.egg-info/
 .eggs/
 .pytest_cache/
@@ -59,7 +71,8 @@ env/
 .hypothesis/
 .tox/
 .nox/
-pip-wheel-metadata/
+/pip-wheel-metadata/
+/*/*/pip-wheel-metadata/
 
 # ---------------------------------------------------------------------------
 # Platform and local service state
@@ -74,15 +87,20 @@ supabase/.env
 # Raw outputs can contain tokens or identifiers; summaries belong in
 # dev-docs/evidence/ after review.
 # ---------------------------------------------------------------------------
-coverage/
+/coverage/
+/*/*/coverage/
 .coverage
 .coverage.*
-htmlcov/
+/htmlcov/
+/*/*/htmlcov/
 coverage.xml
 junit*.xml
-playwright-report/
-test-results/
-blob-report/
+/playwright-report/
+/*/*/playwright-report/
+/test-results/
+/*/*/test-results/
+/blob-report/
+/*/*/blob-report/
 playwright/.cache/
 perf/results/
 *.har
@@ -92,8 +110,10 @@ perf/results/
 # Logs and temporary files
 # ---------------------------------------------------------------------------
 *.log
-logs/
-tmp/
+/logs/
+/*/*/logs/
+/tmp/
+/*/*/tmp/
 .tmp/
 *.tmp
 *.swp

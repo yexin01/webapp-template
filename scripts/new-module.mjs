@@ -10,13 +10,26 @@
  *
  *   pnpm new:module <name> [--entity EntityName] [--dry-run]
  *
- * <name> is snake_case and plural: notes, time_entries. The generated code
- * follows the projects module. Names that would collide with existing code
- * are refused before anything is written. `pnpm test:new-module` checks this
- * generator end to end.
+ * <name> is snake_case and plural: notes, time_entries. The entity name is
+ * derived from it only for clear, regular plurals; otherwise pass --entity.
+ * The generated code follows the projects module. Names that would collide
+ * with existing code, or whose files git would ignore, are refused before
+ * anything is written, and a failed write is rolled back.
+ * `pnpm test:new-module` checks this generator end to end.
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import {
+  accessSync,
+  constants,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
 
@@ -26,7 +39,64 @@ const templates = path.join(import.meta.dirname, "templates", "module");
 const RESERVED = new Set([
   "api", "app", "audit", "billing", "diagnostics", "events", "identity", "jobs", "kernel", "llm", "modules",
   "organizations", "outbox", "projects", "settings", "subscriptions", "users", "webhooks",
+  // The alias of app.organization_memberships in the generated row-level security policy.
+  "membership",
 ]);
+
+// -- Singular entity names ----------------------------------------------------------
+// Only clear, regular plurals are singularized; anything ambiguous (caches:
+// cache or cach? abuses, quizzes, news, series) needs --entity instead of a
+// wrong guess.
+const IRREGULAR = new Map(
+  Object.entries({
+    people: "person", children: "child", men: "man", women: "woman", mice: "mouse", geese: "goose", feet: "foot",
+    teeth: "tooth", criteria: "criterion", phenomena: "phenomenon", indices: "index", matrices: "matrix",
+    vertices: "vertex", appendices: "appendix", analyses: "analysis", crises: "crisis", theses: "thesis",
+    hypotheses: "hypothesis", diagnoses: "diagnosis", syntheses: "synthesis", aliases: "alias", biases: "bias",
+    gases: "gas", atlases: "atlas", canvases: "canvas", heroes: "hero", potatoes: "potato", tomatoes: "tomato",
+    echoes: "echo", vetoes: "veto", knives: "knife", wives: "wife", wolves: "wolf", halves: "half",
+    shelves: "shelf", thieves: "thief", calves: "calf", menus: "menu", gurus: "guru", emus: "emu", haikus: "haiku",
+  }),
+);
+// Same in both numbers, or with more than one plausible singular.
+const NO_CLEAR_SINGULAR = new Set([
+  "news", "series", "species", "means", "axes", "bases", "leaves", "lives", "headquarters", "crossroads",
+  "physics", "mathematics", "economics", "politics", "ethics", "logistics", "athletics", "linguistics",
+  "gymnastics", "diabetes", "measles",
+]);
+// Singular -us words whose plural adds -es (statuses), unlike abuses or fuses.
+const US_WORDS = new Set([
+  "status", "bonus", "virus", "campus", "census", "focus", "bus", "syllabus", "prospectus", "apparatus", "nexus",
+  "consensus", "surplus", "chorus", "circus", "corpus", "genius", "octopus", "cactus", "walrus", "thesaurus",
+  "minus", "plus",
+]);
+// Singular -ie words whose plural is -ies (movies), unlike categories.
+const IE_WORDS = new Set([
+  "movie", "cookie", "zombie", "rookie", "calorie", "hoodie", "selfie", "smoothie", "brownie", "goalie", "genie",
+  "prairie", "sortie", "freebie", "newbie", "techie", "birdie", "auntie", "lingerie",
+]);
+
+/** The singular of one plural word, or undefined when it is not clear. */
+function singularOf(word) {
+  if (IRREGULAR.has(word)) return IRREGULAR.get(word);
+  // Not a regular plural: -ss (class), -us (status), -sis or -xis (analysis, axis).
+  if (NO_CLEAR_SINGULAR.has(word) || !word.endsWith("s") || /(ss|us|sis|xis)$/.test(word)) return undefined;
+  const drop = (n) => word.slice(0, -n) || undefined;
+  if (word.endsWith("ies")) {
+    // pies, movies; categories; but not -aies or -eies.
+    if (word.length <= 4 || IE_WORDS.has(drop(1))) return drop(1);
+    return /[^aeiou]ies$/.test(word) ? `${drop(3)}y` : undefined;
+  }
+  if (/(sses|shes|xes)$/.test(word)) return drop(2); // classes, dishes, boxes
+  // matches, beaches; but caches, niches, and headaches end in -che.
+  if (word.endsWith("ches")) return /(^|[^aeiou])[aeiy]ches$/.test(word) ? undefined : drop(2);
+  if (word.endsWith("uses")) {
+    if (US_WORDS.has(drop(2))) return drop(2); // statuses
+    return /[ao]uses$/.test(word) ? drop(1) : undefined; // houses, causes; abuses and fuses are unclear
+  }
+  if (word.endsWith("zzes")) return undefined; // quizzes, buzzes
+  return drop(1); // notes, cases, invoices, days
+}
 // Python's keyword.kwlist: such a module cannot be imported, and such an entity cannot be declared.
 const PYTHON_KEYWORDS = new Set([
   "False", "None", "True", "and", "as", "assert", "async", "await", "break", "class", "continue", "def", "del",
@@ -84,11 +154,17 @@ const snake = (pascalName) => pascalName.replace(/(?<!^)([A-Z])/g, "_$1").toLowe
 
 let Entity = values.entity;
 if (Entity === undefined) {
-  if (name.endsWith("ies")) Entity = pascal(`${name.slice(0, -3)}y`);
-  else if (name.endsWith("s") && !name.endsWith("ss")) Entity = pascal(name.slice(0, -1));
-  else fail(`Cannot derive a singular entity name from "${name}"; pass --entity, e.g. --entity ${pascal(name)}Item.`);
+  const words = name.split("_");
+  const one = singularOf(words.at(-1));
+  if (!one) {
+    fail(`Cannot derive a singular entity name from "${name}"; pass --entity, e.g. --entity ${pascal(name)}Item.`);
+  }
+  Entity = pascal([...words.slice(0, -1), one].join("_"));
 }
-if (!/^[A-Z][A-Za-z0-9]{1,40}$/.test(Entity)) fail("--entity must be PascalCase, e.g. TimeEntry.");
+// At least one lowercase letter: an all-caps name (URL) reads as a constant to the linters.
+if (!/^[A-Z][A-Za-z0-9]{1,40}$/.test(Entity) || !/[a-z]/.test(Entity)) {
+  fail("--entity must be PascalCase with at most 41 characters, e.g. TimeEntry.");
+}
 for (const id of [Entity, snake(Entity)]) {
   if (PYTHON_KEYWORDS.has(id)) fail(`--entity ${Entity}: "${id}" is a Python keyword.`);
 }
@@ -191,6 +267,24 @@ for (const rel of Object.keys(files)) {
   if (existsSync(path.join(root, rel))) fail(`${rel} already exists.`);
 }
 
+// A generated file that git ignores would silently stay out of commits and CI.
+// Skipped when the copy is not a git checkout or git is unavailable.
+const ignoreCheck = spawnSync("git", ["check-ignore", "--verbose", "-z", "--stdin"], {
+  cwd: root,
+  input: Object.keys(files).join("\0"),
+  encoding: "utf8",
+});
+if (ignoreCheck.status === 0) {
+  const fields = ignoreCheck.stdout.split("\0");
+  for (let i = 0; i + 3 < fields.length; i += 4) {
+    const [source, line, pattern, rel] = fields.slice(i, i + 4);
+    // A matching "!" pattern re-includes the path.
+    if (!pattern.startsWith("!")) {
+      fail(`${rel} would be ignored by git (${source}:${line}: ${pattern}). Pick another name, or fix the ignore rule.`);
+    }
+  }
+}
+
 const edits = [
   ["apps/api/app/bootstrap.py", "# new:module:imports", `from app.modules.${name}.module import ${M}Module, build_${name}\n`],
   ["apps/api/app/bootstrap.py", "    # new:module:fields", `    ${name}: ${M}Module\n`],
@@ -207,16 +301,81 @@ for (const [rel, marker, insertion] of edits) {
   edited.set(rel, text.slice(0, at) + insertion + text.slice(at));
 }
 
+// Every target directory must be writable before anything is written: files are
+// written to a temporary name and renamed into place, so that takes write access
+// to the nearest existing directory of each new file and to the directory of
+// each edited file.
+const nearestDirectory = (rel) => {
+  let dir = path.dirname(path.join(root, rel));
+  while (!existsSync(dir)) dir = path.dirname(dir);
+  return dir;
+};
+for (const target of new Set([...[...Object.keys(files), ...edited.keys()].map(nearestDirectory)])) {
+  let writable = statSync(target).isDirectory();
+  try {
+    accessSync(target, constants.W_OK | constants.X_OK);
+  } catch {
+    writable = false;
+  }
+  if (!writable) fail(`${path.relative(root, target) || "."} is not a writable directory; nothing was written.`);
+}
+
 console.log(JSON.stringify({ dryRun, module: name, entity: Entity, create: Object.keys(files), update: [...edited.keys()] }, null, 2));
 if (dryRun) process.exit(0);
 
 // -- Write ------------------------------------------------------------------------
+// Each file is written to a temporary name and renamed into place. If anything
+// fails, every created file and directory is removed and every edited file is
+// restored, so a failed run can simply be repeated. A temporary file left by an
+// interrupted run (or a concurrent one) makes the write fail, and is not removed.
 
-for (const [rel, text] of Object.entries(files)) {
-  mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
-  writeFileSync(path.join(root, rel), text);
+const createdDirs = [];
+const created = [];
+const restore = [];
+const temporaries = new Set();
+const writeAtomically = (file, text) => {
+  const temporary = path.join(path.dirname(file), `.${path.basename(file)}.new-module.tmp`);
+  writeFileSync(temporary, text, { flag: "wx" });
+  temporaries.add(temporary);
+  renameSync(temporary, file);
+  temporaries.delete(temporary);
+};
+try {
+  for (const [rel, text] of Object.entries(files)) {
+    const file = path.join(root, rel);
+    const first = mkdirSync(path.dirname(file), { recursive: true });
+    if (first) createdDirs.push(first);
+    writeAtomically(file, text);
+    created.push(file);
+  }
+  for (const [rel, text] of edited) {
+    const file = path.join(root, rel);
+    const original = readFileSync(file, "utf8");
+    writeAtomically(file, text);
+    restore.push([file, original]);
+  }
+} catch (error) {
+  const leftovers = [];
+  const attempt = (label, action) => {
+    try {
+      action();
+    } catch {
+      leftovers.push(label);
+    }
+  };
+  for (const [file, original] of restore) attempt(path.relative(root, file), () => writeFileSync(file, original));
+  for (const file of [...created, ...temporaries]) attempt(path.relative(root, file), () => rmSync(file, { force: true }));
+  for (const dir of createdDirs.reverse()) {
+    attempt(path.relative(root, dir), () => rmSync(dir, { recursive: true, force: true }));
+  }
+  console.error(`Writing the module failed: ${error.message}`);
+  console.error(
+    leftovers.length
+      ? `Could not roll back, remove or restore by hand: ${leftovers.join(", ")}`
+      : "Every change was rolled back; fix the cause and run the command again.",
+  );
+  process.exit(1);
 }
-for (const [rel, text] of edited) writeFileSync(path.join(root, rel), text);
 
 // Best effort: format generated code and re-sort the wiring imports.
 const pyFiles = [...Object.keys(files).filter((f) => f.endsWith(".py")), "apps/api/app/bootstrap.py"].map((f) =>

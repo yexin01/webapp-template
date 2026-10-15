@@ -7,7 +7,13 @@
 // in browsers), so the check compares actual values. Values are read from the
 // environment and the root .env file and are never printed.
 //
-//   node scripts/check-bundle-secrets.mjs              scan apps/web/.next/static
+// What browsers receive: everything in .next/static, and the prerendered
+// pages Next serves as they are (HTML, RSC payloads, route-handler bodies,
+// their headers, and Pages Router data) under .next/server/app and
+// .next/server/pages. Server JavaScript and build manifests there never reach
+// a browser and are not scanned.
+//
+//   node scripts/check-bundle-secrets.mjs              scan apps/web/.next
 //   node scripts/check-bundle-secrets.mjs --self-test  prove planted secrets are caught
 import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -25,9 +31,10 @@ const SERVER_ONLY_NAMES = [
   "DATABASE_URL",
   "LLM_API_KEY",
   "SENTRY_AUTH_TOKEN",
-  "SENTRY_DSN",
   "CRON_SECRET",
 ];
+// SENTRY_DSN is deliberately absent: a DSN is a public client key, and the
+// browser receives the same value as NEXT_PUBLIC_SENTRY_DSN.
 const SECRET_PATTERNS = [
   /\b[sr]k_(?:live|test)_[A-Za-z0-9]{10,}/, // Stripe and Clerk secret / restricted keys
   /\bwhsec_[A-Za-z0-9+/=]{10,}/, // webhook signing secrets
@@ -38,11 +45,50 @@ const SECRET_PATTERNS = [
   /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
 ];
 
-function* files(dir) {
+const isDirectory = (dir) => {
+  try {
+    return statSync(dir).isDirectory();
+  } catch {
+    return false;
+  }
+};
+
+// Next's own build manifests (and *.nft.json file traces) beside the server
+// code. Only these names are skipped: a route of the same shape, such as
+// pages/manifest.json, is still scanned.
+const NEXT_SERVER_FILES = new Set([
+  "app-paths-manifest.json",
+  "build-manifest.json",
+  "dynamic-css-manifest.json",
+  "font-manifest.json",
+  "functions-config-manifest.json",
+  "middleware-manifest.json",
+  "next-font-manifest.json",
+  "pages-manifest.json",
+  "prefetch-hints.json",
+  "react-loadable-manifest.json",
+  "server-reference-manifest.json",
+  "subresource-integrity-manifest.json",
+]);
+
+/** Browser-facing outputs of a Next build directory, each with the files to scan. */
+const TARGETS = [
+  { dir: "static", include: (entry) => /\.(js|mjs|css|json|html|map|rsc|txt)$/.test(entry) },
+  ...["server/app", "server/pages"].map((dir) => ({
+    dir,
+    // Prerendered HTML, RSC payloads (including .segments/), route-handler
+    // bodies and headers, and Pages Router data; not server code or manifests.
+    include: (entry) =>
+      /\.(html|rsc|body|meta)$/.test(entry) ||
+      (entry.endsWith(".json") && !entry.endsWith(".nft.json") && !NEXT_SERVER_FILES.has(entry)),
+  })),
+];
+
+function* files(dir, include) {
   for (const entry of readdirSync(dir)) {
     const full = path.join(dir, entry);
-    if (statSync(full).isDirectory()) yield* files(full);
-    else if (/\.(js|css|json|html|map)$/.test(entry)) yield full;
+    if (statSync(full).isDirectory()) yield* files(full, include);
+    else if (include(entry)) yield full;
   }
 }
 
@@ -82,14 +128,20 @@ function serverOnlyValues(envText, environment) {
   return values.filter(([, value]) => value.length >= 12);
 }
 
-/** @returns findings, each naming a file and a variable or pattern, never a value */
-export function scan(staticDir, secrets) {
+/**
+ * Scans the browser-facing outputs of a Next build directory (`.next`).
+ * @returns findings, each naming a file and a variable or pattern, never a value
+ */
+export function scan(nextDir, secrets) {
   const findings = [];
-  for (const file of files(staticDir)) {
-    const text = readFileSync(file, "utf8");
-    const where = path.relative(root, file);
-    for (const [name, value] of secrets) if (text.includes(value)) findings.push(`${where}: value of ${name}`);
-    for (const pattern of SECRET_PATTERNS) if (pattern.test(text)) findings.push(`${where}: matches ${pattern}`);
+  for (const { dir, include } of TARGETS) {
+    if (!isDirectory(path.join(nextDir, dir))) continue;
+    for (const file of files(path.join(nextDir, dir), include)) {
+      const text = readFileSync(file, "utf8");
+      const where = path.relative(root, file);
+      for (const [name, value] of secrets) if (text.includes(value)) findings.push(`${where}: value of ${name}`);
+      for (const pattern of SECRET_PATTERNS) if (pattern.test(text)) findings.push(`${where}: matches ${pattern}`);
+    }
   }
   return findings;
 }
@@ -111,8 +163,13 @@ function selfTest() {
   const dir = mkdtempSync(path.join(tmpdir(), "bundle-secrets-"));
   const failures = [];
   try {
-    const staticDir = path.join(dir, ".next", "static");
+    const nextDir = path.join(dir, ".next");
+    const staticDir = path.join(nextDir, "static");
+    const appDir = path.join(nextDir, "server", "app");
+    const pagesDir = path.join(nextDir, "server", "pages");
     mkdirSync(path.join(staticDir, "chunks"), { recursive: true });
+    mkdirSync(path.join(appDir, "pricing"), { recursive: true });
+    mkdirSync(pagesDir, { recursive: true });
     const token = (length) => randomBytes(length).toString("hex").slice(0, length);
     const cronSecret = token(40);
     const llmKey = `${token(16)} # ${token(16)}`;
@@ -142,16 +199,44 @@ function selfTest() {
     const secrets = serverOnlyValues(envText, { STRIPE_SECRET_KEY: planted["value of STRIPE_SECRET_KEY"] });
 
     writeFileSync(path.join(staticDir, "chunks", "clean.js"), 'console.log("process.env.CLERK_SECRET_KEY");\n');
-    const clean = scan(staticDir, secrets);
+    writeFileSync(path.join(appDir, "pricing.html"), "<p>Pricing</p>\n");
+    writeFileSync(path.join(appDir, "pricing.rsc"), '1:["$","p",null,{"children":"Pricing"}]\n');
+    // Server code and build manifests never reach a browser: values there are not findings.
+    writeFileSync(path.join(appDir, "pricing", "page.js"), `const key = ${JSON.stringify(cronSecret)};\n`);
+    writeFileSync(path.join(appDir, "pricing", "build-manifest.json"), JSON.stringify({ key: cronSecret }));
+    writeFileSync(path.join(appDir, "pricing", "page.js.nft.json"), JSON.stringify({ key: cronSecret }));
+    writeFileSync(path.join(pagesDir, "_app.js"), `const key = ${JSON.stringify(cronSecret)};\n`);
+    const clean = scan(nextDir, secrets);
     if (clean.length) failures.push(`a clean build was flagged: ${clean.join("; ")}`);
 
-    for (const [label, value] of Object.entries(planted)) {
-      const file = path.join(staticDir, "chunks", "planted.js");
-      writeFileSync(file, `const leaked = ${JSON.stringify(value)};\n`);
-      const found = scan(staticDir, secrets);
-      if (!found.some((finding) => finding.includes(label.trim()))) failures.push(`missed ${label.trim()}`);
-      if (found.some((finding) => finding.includes(value))) failures.push(`printed the value of ${label}`);
-      rmSync(file);
+    // Each value is planted, one at a time, in every kind of browser-facing
+    // output: a browser chunk; a prerendered App Router page (HTML and RSC), a
+    // route-handler body and its headers; Pages Router HTML and data, including
+    // a route that happens to be named like a manifest.
+    const html = (value) => `<!DOCTYPE html><p>${value}</p>\n`;
+    const json = (value) => `${JSON.stringify({ pageProps: { value } })}\n`;
+    const plantings = [
+      [path.join(staticDir, "chunks", "planted.js"), (value) => `const leaked = ${JSON.stringify(value)};\n`],
+      [path.join(appDir, "x.rsc"), (value) => `1:["$","p",null,{"children":${JSON.stringify(value)}}]\n`],
+      [path.join(appDir, "x.html"), html],
+      [path.join(appDir, "x.body"), (value) => `${value}\n`],
+      [path.join(appDir, "x.meta"), (value) => `${JSON.stringify({ status: 200, headers: { "x-value": value } })}\n`],
+      [path.join(pagesDir, "x.html"), html],
+      [path.join(pagesDir, "x.json"), json],
+      [path.join(pagesDir, "manifest.json"), json],
+    ];
+    for (const [file, render] of plantings) {
+      const where = path.relative(root, file);
+      for (const [label, value] of Object.entries(planted)) {
+        writeFileSync(file, render(value));
+        const found = scan(nextDir, secrets);
+        const name = label.trim();
+        if (!found.some((finding) => finding.startsWith(`${where}: `) && finding.includes(name))) {
+          failures.push(`missed ${name} in ${path.basename(file)}`);
+        }
+        if (found.some((finding) => finding.includes(value))) failures.push(`printed the value of ${name}`);
+        rmSync(file);
+      }
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -168,23 +253,19 @@ if (process.argv.includes("--self-test")) {
   process.exit(0);
 }
 
-const staticDir = path.join(root, "apps/web/.next/static");
-let exists = true;
-try {
-  statSync(staticDir);
-} catch {
-  exists = false;
-}
-if (!exists) {
+const nextDir = path.join(root, "apps/web/.next");
+if (!isDirectory(path.join(nextDir, "static"))) {
   console.error("No build output found. Run `pnpm build` first.");
   process.exit(2);
 }
 
 const secrets = serverOnlyValues(readEnvFile(), process.env);
-const findings = scan(staticDir, secrets);
+const findings = scan(nextDir, secrets);
 if (findings.length) {
-  console.error("Server-only values found in the browser bundle (values not shown):");
+  console.error("Server-only values found in browser-facing build output (values not shown):");
   for (const f of findings) console.error(`  - ${f}`);
   process.exit(1);
 }
-console.log(`No server-only values (${secrets.length} checked) or secret-shaped strings found in the browser bundle.`);
+console.log(
+  `No server-only values (${secrets.length} checked) or secret-shaped strings found in the browser bundle or prerendered pages.`,
+);

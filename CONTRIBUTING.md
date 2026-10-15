@@ -22,7 +22,7 @@ pnpm test:e2e
   - be covered by negative tests: cross-user, cross-tenant, and role.
 
   The route-manifest test fails if an endpoint is unprotected.
-- **Respect layer boundaries.** In the API: `domain` → `application` → `ports` ← `infrastructure`, with `http` as transport only. CI enforces these with `lint-imports`. The web app holds no business logic, secrets, or direct database or Stripe access.
+- **Respect module and layer boundaries.** The API is a modular monolith (ADR-0003): feature modules in `app/modules/` on a shared kernel in `app/kernel/`. Inside a module, `module.py` wires `routes.py` and `adapters.py` to `service.py`, which depends on `ports.py` and `domain.py`; the domain is framework-free. A module reaches another module only through its `api.py`, and the kernel never imports a module. Add a module with `pnpm new:module`. [docs/architecture.md](docs/architecture.md#module-anatomy) has the full rules; CI enforces them with `lint-imports` and the architecture tests. The web app holds no business logic, secrets, or direct database or Stripe access.
 - **Contracts.** If you change API schemas, run `pnpm contracts` and commit the regenerated files.
 - **Migrations** are additive and immutable once merged. Destructive changes need an expand → contract plan and explicit maintainer approval.
 - **Never weaken tests or checks** to make CI pass. Never commit secrets, real personal data, or production identifiers. Tests use synthetic data only.

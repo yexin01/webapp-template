@@ -25,6 +25,8 @@ jobs:
     timeout-minutes: 20
     services:
       postgres:
+        # Keep in step with docker-compose.yml. Dependabot updates that file
+        # (docker-compose ecosystem) but not service images in workflows.
         image: postgres:17.6-alpine
         env:
           POSTGRES_USER: postgres
@@ -71,6 +73,8 @@ jobs:
     timeout-minutes: 25
     services:
       postgres:
+        # Keep in step with docker-compose.yml. Dependabot updates that file
+        # (docker-compose ecosystem) but not service images in workflows.
         image: postgres:17.6-alpine
         env:
           POSTGRES_USER: postgres
@@ -114,8 +118,10 @@ jobs:
         run: |
           node scripts/check-bundle-secrets.mjs --self-test
           pnpm check:bundle-secrets
+      # Any severity, matching pip-audit, which has no severity filter. Scope
+      # and reasons: scripts/security-audit.mjs.
       - name: Dependency audit (production)
-        run: pnpm audit --prod --audit-level high
+        run: pnpm audit --prod
       - name: License compliance (allowlist)
         run: |
           node scripts/check-licenses.mjs --self-test
@@ -135,12 +141,25 @@ jobs:
     name: Secret scan
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    # On pull requests the action lists the pull request's commits through the
+    # API, which needs pull-requests: read on private repositories.
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
           persist-credentials: false
-      # Organizations need a free GITLEAKS_LICENSE; personal repositories do not.
+      # Repositories owned by an organization need a free gitleaks-action
+      # license: store it as the GITLEAKS_LICENSE secret and pass it below as
+      # GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }} (an owner action).
+      # Personal repositories do not. Pull requests from forks never receive
+      # secrets, so in an organization this step fails on fork pull requests
+      # unless it is replaced by the gitleaks CLI, which needs no license.
       - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Review comments would need pull-requests: write. Findings go to the
+          # job log, summary, and a redacted SARIF artifact instead.
+          GITLEAKS_ENABLE_COMMENTS: "false"

@@ -21,7 +21,7 @@ from tests.integration.test_billing import customer_of, event_payload, make_pro,
 
 pytestmark = pytest.mark.db
 
-CRON_SECRET = "cron-test-secret-0123456789abcdef0123"  # test-only value
+CRON_SECRET = "cron-secret-test_only-0123456789abcdef0123"  # test-only value
 
 
 def outbox_rows(h: Harness) -> list[tuple[Any, ...]]:
