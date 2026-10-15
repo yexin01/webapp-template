@@ -577,3 +577,227 @@ def test_unresolvable_flags_never_stop_the_job_from_covering_every_customer(harn
         service.reconcile_job(apply=True, batch_size=2)
         harness.clock.advance(seconds=1)
     assert set(customers) <= set(checked)
+
+
+def _record_checks(h: Harness, rejected: set[str] | None = None) -> list[str]:
+    """Record every customer the provider is asked about; reject those in ``rejected``."""
+    checked: list[str] = []
+    original = InMemoryBillingProvider.list_customer_subscriptions
+
+    def recording(self: InMemoryBillingProvider, customer_id: str) -> list[SubscriptionSnapshot]:
+        checked.append(customer_id)
+        if rejected and customer_id in rejected:
+            raise InvalidRequestError("The billing request was rejected.")
+        return original(self, customer_id)
+
+    h.billing.list_customer_subscriptions = recording.__get__(h.billing)  # type: ignore[method-assign]
+    return checked
+
+
+@pytest.mark.parametrize("apply", [True, False])
+def test_customers_stripe_rejects_move_to_the_back_of_the_rotation(harness: Harness, apply: bool) -> None:
+    customers = [make_pro(harness, f"user_{i}") for i in range(3)]
+    service = harness.container.billing.service
+    order = [
+        row[0]
+        for row in superuser_query(
+            harness.database_url,
+            "SELECT stripe_customer_id FROM app.billing_customers ORDER BY reconciled_at NULLS FIRST, user_id",
+        )
+    ]
+    for customer in order[:2]:  # the two the job picks first: canceled, then deleted in Stripe
+        harness.billing.set_subscriptions(customer, [snapshot(customer, SubscriptionStatus.CANCELED)])
+        assert send_webhook(harness, event_payload(customer)).json()["status"] == "processed"
+        harness.billing.delete_customer(customer)
+    checked = _record_checks(harness)
+    summaries = []
+    for _ in range(2):
+        summaries.append(service.reconcile_job(apply=apply, batch_size=2))
+        harness.clock.advance(seconds=1)
+    assert summaries[0]["rejected"] == 2  # nothing left to read by ID: Stripe rejects the customer
+    assert set(checked) == set(customers)  # the healthy customer is reached, not starved by the rejected ones
+
+
+def test_a_batch_of_one_is_not_taken_by_an_unresolvable_flag(harness: Harness) -> None:
+    customers = [make_pro(harness, f"user_{i}") for i in range(2)]
+    assert send_webhook(harness, event_payload("cus_orphan0")).json()["status"] == "needs_reconciliation"
+    checked = _record_checks(harness)
+    for _ in range(2):
+        harness.container.billing.service.reconcile_job(apply=True, batch_size=1)
+        harness.clock.advance(seconds=1)
+    assert set(customers) <= set(checked)
+
+
+def test_reconcile_job_stops_starting_checks_when_its_time_budget_is_spent(harness: Harness) -> None:
+    for i in range(3):
+        make_pro(harness, f"user_{i}")
+    service = harness.container.billing.service
+    service._reconcile_time_budget = 0.0
+    assert service.reconcile_job(apply=False, batch_size=10)["customers"] == 0
+
+
+def test_redelivered_flagged_event_during_reconciliation_does_not_deadlock(harness: Harness) -> None:
+    """Both paths take the customer lock before ledger rows (lock ordering)."""
+    customer = make_pro(harness, "user_a")
+    payload = event_payload(customer, event_id="evt_flagged")
+    harness.billing.fail_with = lambda: InvalidRequestError("rejected")
+    assert send_webhook(harness, payload).json()["status"] == "needs_reconciliation"
+    harness.billing.fail_with = None
+    harness.billing.set_subscriptions(customer, [snapshot(customer, SubscriptionStatus.CANCELED)])
+
+    original = InMemoryBillingProvider.list_customer_subscriptions
+    started = threading.Event()
+    delivered: list[Any] = []
+    redelivery: threading.Thread | None = None
+
+    def racing(self: InMemoryBillingProvider, customer_id: str) -> list[SubscriptionSnapshot]:
+        nonlocal redelivery
+        if redelivery is None:  # reconciliation holds the customer lock: redeliver the flagged event now
+            redelivery = threading.Thread(target=lambda: delivered.append(send_webhook(harness, payload)))
+            redelivery.start()
+            started.wait(0.5)  # give the redelivery time to queue behind the lock
+        return original(self, customer_id)
+
+    harness.billing.list_customer_subscriptions = racing.__get__(harness.billing)  # type: ignore[method-assign]
+    harness.container.billing.service.reconcile(user_id=None, apply=True)
+    assert redelivery is not None
+    redelivery.join(timeout=20)
+    assert delivered[0].status_code == 200
+    assert delivered[0].json()["status"] == "processed"  # resolved by reconciliation; acknowledged without work
+
+
+def test_sync_slots_bound_the_callers_that_wait() -> None:
+    """Waiting callers hold threadpool threads, so only ``max_waiting`` of them wait (BILL-10)."""
+    from app.modules.billing.service import _Slots
+
+    slots = _Slots(1, wait_seconds=5.0, max_waiting=1)
+    holder, waiting = threading.Event(), threading.Event()
+    results: list[str] = []
+
+    def hold() -> None:
+        with slots.admit():
+            holder.set()
+            waiting.wait(5)
+
+    def wait_for_slot() -> None:
+        try:
+            with slots.admit():
+                results.append("admitted")
+        except DependencyUnavailableError:
+            results.append("busy")
+
+    first = threading.Thread(target=hold)
+    first.start()
+    holder.wait(5)
+    second = threading.Thread(target=wait_for_slot)
+    second.start()
+    deadline = time.monotonic() + 5
+    while slots._waiting == 0 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    started = time.monotonic()
+    wait_for_slot()  # a third caller finds the slot taken and the queue full
+    assert results == ["busy"]
+    assert time.monotonic() - started < 1  # refused at once, without holding its thread
+    waiting.set()
+    first.join(5)
+    second.join(5)
+    assert results == ["busy", "admitted"]
+    with slots.admit():  # every slot was given back
+        pass
+
+
+def test_deleting_the_customer_in_stripe_ends_pro(harness: Harness) -> None:
+    """A deleted customer cannot be listed; its canceled subscriptions are read one by one."""
+    customer = make_pro(harness, "user_a")
+    ended = snapshot(customer, SubscriptionStatus.CANCELED, ended_at=harness.clock.now())
+    harness.billing.set_subscriptions(customer, [ended])
+    harness.billing.delete_customer(customer)
+    result = send_webhook(harness, event_payload(customer, "customer.subscription.deleted"))
+    assert result.json()["status"] == "processed"
+    assert harness.client.get("/api/v1/billing/status", headers=harness.login("user_a")).json()["plan"] == "free"
+
+
+@pytest.mark.parametrize("apply", [False, True])
+def test_reconciliation_reads_a_deleted_customers_subscriptions_by_id(harness: Harness, apply: bool) -> None:
+    customer = make_pro(harness, "user_a")
+    harness.billing.set_subscriptions(customer, [snapshot(customer, SubscriptionStatus.CANCELED)])
+    harness.billing.delete_customer(customer)
+    report = harness.container.billing.service.reconcile(user_id=None, apply=apply)
+    assert (report.rejected_customers, [d.kind for d in report.divergences]) == ([], ["differs"])
+    plan = harness.client.get("/api/v1/billing/status", headers=harness.login("user_a")).json()["plan"]
+    assert plan == ("free" if apply else "pro")
+
+
+def test_a_subscription_stripe_does_not_return_changes_nothing(harness: Harness) -> None:
+    """With a key for another account, every read is rejected: Pro is kept and the event flagged, never revoked."""
+    customer = make_pro(harness, "user_a")
+    harness.billing.set_subscriptions(customer, [])  # the subscription cannot be found by ID either
+    harness.billing.delete_customer(customer)
+    result = send_webhook(harness, event_payload(customer))
+    assert result.json()["status"] == "needs_reconciliation"
+    assert harness.client.get("/api/v1/billing/status", headers=harness.login("user_a")).json()["plan"] == "pro"
+
+
+def test_an_active_subscription_on_an_unknown_price_is_logged(
+    harness: Harness, caplog: pytest.LogCaptureFixture
+) -> None:
+    customer = make_pro(harness, "user_a")
+    harness.billing.set_subscriptions(
+        customer, [snapshot(customer, SubscriptionStatus.ACTIVE, plan_key=PlanKey.UNKNOWN, price_id="price_replaced")]
+    )
+    with caplog.at_level("WARNING"):
+        send_webhook(harness, event_payload(customer))
+    assert "billing_unknown_price" in {r.getMessage() for r in caplog.records}
+
+
+def test_a_webhook_burst_waits_in_the_event_loop_not_on_threads(make_harness: Any) -> None:
+    """Deliveries queue for a synchronization slot without holding threadpool threads (BILL-10)."""
+    from fastapi.testclient import TestClient
+
+    from app.bootstrap import create_app
+
+    h = make_harness()
+    customer = make_pro(h, "user_a")
+    service = h.container.billing.service
+    original_list = InMemoryBillingProvider.list_customer_subscriptions
+
+    def slow_list(self: InMemoryBillingProvider, customer_id: str) -> list[SubscriptionSnapshot]:
+        time.sleep(0.5)
+        return original_list(self, customer_id)
+
+    h.billing.list_customer_subscriptions = slow_list.__get__(h.billing)  # type: ignore[method-assign]
+    original_process = service.process_webhook
+    lock = threading.Lock()
+    inside, peak = 0, 0
+
+    def counting(event: Any) -> Any:
+        nonlocal inside, peak
+        with lock:
+            inside += 1
+            peak = max(peak, inside)
+        try:
+            return original_process(event)
+        finally:
+            with lock:
+                inside -= 1
+
+    service.process_webhook = counting  # type: ignore[method-assign]
+    with TestClient(create_app(h.container), raise_server_exceptions=False) as client:  # one event loop
+        codes: list[int] = []
+
+        def deliver() -> None:
+            payload = event_payload(customer)
+            headers = {"Stripe-Signature": sign(payload), "Content-Type": "application/json"}
+            codes.append(client.post("/api/v1/webhooks/stripe", content=payload, headers=headers).status_code)
+
+        threads = [threading.Thread(target=deliver) for _ in range(6)]
+        for t in threads:
+            t.start()
+        time.sleep(0.2)
+        started = time.monotonic()
+        assert client.get("/api/v1/ready").status_code == 200
+        assert time.monotonic() - started < 1.0
+        for t in threads:
+            t.join(30)
+    assert codes == [200] * 6  # the burst was absorbed, not refused
+    assert peak <= service.sync_slots  # the others waited without a thread

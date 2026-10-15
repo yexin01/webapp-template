@@ -6,7 +6,7 @@ import threading
 
 from app.kernel.application.rate_limit import RateLimiter
 from app.kernel.authorization import authorize
-from app.kernel.errors import RateLimitedError
+from app.kernel.errors import BudgetExceededError, RateLimitedError
 from app.kernel.ports import Analytics
 from app.kernel.tenancy import TenantContext
 from app.modules.llm.domain import LLM_CHECK, LLMCheckResult
@@ -36,11 +36,15 @@ class LLMService:
 
     def check(self, ctx: TenantContext) -> LLMCheckResult:
         authorize(ctx, LLM_CHECK)
-        self._rate_limiter.hit(f"llm:user:{ctx.user_id}", self._per_user, 60)
-        self._rate_limiter.hit("llm:global", self._global, _DAY)
+        # The concurrency bound comes first, so a request it refuses uses none of the caller's or the global quota.
         if not self._in_flight.acquire(blocking=False):
             raise RateLimitedError(retry_after_seconds=1)
         try:
+            self._rate_limiter.hit(f"llm:user:{ctx.user_id}", self._per_user, 60)
+            try:
+                self._rate_limiter.hit("llm:global", self._global, _DAY)
+            except RateLimitedError as exc:
+                raise BudgetExceededError(exc.retry_after_seconds) from exc
             result = self._provider.check()
         finally:
             self._in_flight.release()

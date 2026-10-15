@@ -10,7 +10,7 @@ from uuid import UUID
 import stripe
 
 from app.kernel.errors import DependencyUnavailableError, InvalidRequestError, WebhookSignatureError
-from app.modules.billing.domain import PriceCatalog, SubscriptionSnapshot, SubscriptionStatus
+from app.modules.billing.domain import PlanKey, PriceCatalog, SubscriptionSnapshot, SubscriptionStatus
 from app.modules.billing.ports import BillingWebhookEvent, PriceDescription
 
 logger = logging.getLogger(__name__)
@@ -44,11 +44,14 @@ def _id(value: Any) -> str | None:
 
 def to_snapshot(sub: Any, catalog: PriceCatalog) -> SubscriptionSnapshot:
     items = _get(_get(sub, "items"), "data") or []
-    first = items[0] if items else None
-    price = _get(first, "price")
-    price_id = _id(price)
+    # A subscription may carry more items (add-ons); the plan is the item with a known price.
+    item = next(
+        (i for i in items if catalog.key_for(_id(_get(i, "price"))) is not PlanKey.UNKNOWN),
+        items[0] if items else None,
+    )
+    price_id = _id(_get(item, "price"))
     # Since API version 2025-03-31, billing periods live on subscription items.
-    period_end = _get(first, "current_period_end") or _get(sub, "current_period_end")
+    period_end = _get(item, "current_period_end") or _get(sub, "current_period_end")
     status_raw = str(_get(sub, "status"))
     try:
         status = SubscriptionStatus(status_raw)
@@ -146,6 +149,9 @@ class StripeBillingProvider:
             params={"customer": customer_id, "status": "all", "limit": _MAX_SUBSCRIPTIONS_PER_CUSTOMER},
         )
         return [to_snapshot(sub, self._catalog) for sub in result.data]
+
+    def retrieve_subscription(self, subscription_id: str) -> SubscriptionSnapshot:
+        return to_snapshot(self._call(self._client.v1.subscriptions.retrieve, subscription_id), self._catalog)
 
     def describe_price(self, price_id: str) -> PriceDescription:
         # Diagnostics only: unlike customer-facing calls, failures are specific

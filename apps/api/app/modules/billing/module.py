@@ -19,7 +19,7 @@ from app.modules.billing.ports import BillingProvider, BillingWebhookVerifier
 from app.modules.billing.probe import BillingProbe
 from app.modules.billing.routes import build_action_router, build_read_router, build_webhook_router
 from app.modules.billing.service import BillingService, BillingUrls
-from app.modules.billing.settings import BillingSettings
+from app.modules.billing.settings import BillingSettings, retained_prices
 
 
 @dataclass
@@ -41,7 +41,8 @@ def build_billing(
                 (PlanKey.PRO_YEARLY, settings.stripe_price_pro_yearly),
             )
             if price
-        }
+        },
+        retained_prices(settings),
     )
     provider: BillingProvider | None = pick(overrides, "billing_provider", lambda: _provider(core, settings, catalog))
     webhooks: BillingWebhookVerifier | None = pick(
@@ -64,8 +65,8 @@ def build_billing(
         rate_limiter=kernel.rate_limiter,
         checkouts_per_hour=settings.checkouts_per_user_per_hour,
         # Synchronization holds a worker connection across Stripe calls; leave
-        # at least one worker connection for everything else.
-        sync_slots=max(1, core.database_worker_pool_max_size - 1),
+        # at least one worker connection for everything else (the pool has two or more).
+        sync_slots=core.database_worker_pool_max_size - 1,
         sync_wait_seconds=core.database_connect_timeout_seconds,
     )
 

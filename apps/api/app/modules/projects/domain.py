@@ -30,6 +30,8 @@ class Project:
 
 def clean_name(name: str) -> str:
     clean = name.strip()
+    if "\x00" in clean:
+        raise InvalidRequestError("Name must not contain NUL characters.")
     if not 1 <= len(clean) <= MAX_NAME_LENGTH:
         raise InvalidRequestError(f"Project name must be 1 to {MAX_NAME_LENGTH} characters.")
     return clean

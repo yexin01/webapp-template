@@ -5,6 +5,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field, SecretStr
 
 from app.kernel.infrastructure.config import CoreSettings, Mode, mode_problems, secret
+from app.modules.billing.domain import PlanKey
 
 
 class BillingSettings(BaseModel):
@@ -13,6 +14,9 @@ class BillingSettings(BaseModel):
     stripe_webhook_secret: SecretStr | None = None
     stripe_price_pro_monthly: str | None = None
     stripe_price_pro_yearly: str | None = None
+    # Comma-separated prices that are no longer sold but still grant Pro to existing subscribers.
+    stripe_price_pro_monthly_retained: str = ""
+    stripe_price_pro_yearly_retained: str = ""
     checkouts_per_user_per_hour: int = Field(default=10, ge=1, le=1_000)
     # The scheduled reconcile-billing job reports divergences; it applies them only when true.
     billing_reconcile_apply: bool = False
@@ -21,7 +25,7 @@ class BillingSettings(BaseModel):
 
 
 def billing_problems(s: BillingSettings, core: CoreSettings) -> list[str]:
-    problems = mode_problems("BILLING_MODE", s.billing_mode, core.app_env)
+    problems = mode_problems("BILLING_MODE", s.billing_mode, core.app_env) + retained_problems(s)
     if s.billing_mode is Mode.DISABLED:
         problems.append("BILLING_MODE must be mock, sandbox, or live")
     if s.billing_mode is Mode.MOCK:
@@ -40,4 +44,38 @@ def billing_problems(s: BillingSettings, core: CoreSettings) -> list[str]:
     ):
         if not value or not value.startswith("price_"):
             problems.append(f"{name} is required and must be a Stripe price ID")
+    return problems
+
+
+def retained_prices(s: BillingSettings) -> dict[str, PlanKey]:
+    """Replaced prices that still grant Pro (``STRIPE_PRICE_PRO_*_RETAINED``)."""
+    retained: dict[str, PlanKey] = {}
+    for key, raw in (
+        (PlanKey.PRO_MONTHLY, s.stripe_price_pro_monthly_retained),
+        (PlanKey.PRO_YEARLY, s.stripe_price_pro_yearly_retained),
+    ):
+        for price in (p.strip() for p in raw.split(",")):
+            if price:
+                retained[price] = key
+    return retained
+
+
+def retained_problems(s: BillingSettings) -> list[str]:
+    problems = []
+    current = {s.stripe_price_pro_monthly, s.stripe_price_pro_yearly}
+    seen: set[str] = set()
+    for name, raw in (
+        ("STRIPE_PRICE_PRO_MONTHLY_RETAINED", s.stripe_price_pro_monthly_retained),
+        ("STRIPE_PRICE_PRO_YEARLY_RETAINED", s.stripe_price_pro_yearly_retained),
+    ):
+        for price in (p.strip() for p in raw.split(",")):
+            if not price:
+                continue
+            if not price.startswith("price_"):
+                problems.append(f"{name} must list Stripe price IDs, separated by commas")
+            elif price in current:
+                problems.append(f"{name} must not list a price that is still sold")
+            elif price in seen:
+                problems.append(f"{name} lists a price more than once")
+            seen.add(price)
     return problems

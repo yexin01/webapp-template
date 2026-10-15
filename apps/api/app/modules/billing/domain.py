@@ -8,7 +8,7 @@ renders its output and never re-derives it.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from typing import ClassVar
@@ -174,9 +174,15 @@ def summarize(
 
 @dataclass(frozen=True, slots=True)
 class PriceCatalog:
-    """Server-side allowlist of purchasable prices (BILL-03)."""
+    """Server-side allowlist of purchasable prices (BILL-03).
+
+    ``retained`` maps prices that are no longer sold to their plan key, so
+    subscribers who still pay a replaced price keep Pro. Stripe prices cannot
+    be edited: changing a price creates a new price ID.
+    """
 
     prices: Mapping[PlanKey, str]
+    retained: Mapping[str, PlanKey] = field(default_factory=dict)
 
     def price_for(self, key: PlanKey) -> str | None:
         return self.prices.get(key)
@@ -185,7 +191,9 @@ class PriceCatalog:
         for key, value in self.prices.items():
             if value == price_id:
                 return key
-        return PlanKey.UNKNOWN
+        if price_id is None:
+            return PlanKey.UNKNOWN
+        return self.retained.get(price_id, PlanKey.UNKNOWN)
 
 
 # Billing is owned by individuals, so it is never managed from an organization

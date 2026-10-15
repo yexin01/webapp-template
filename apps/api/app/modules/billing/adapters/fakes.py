@@ -18,6 +18,7 @@ class InMemoryBillingProvider:
         self._customers: dict[str, UUID] = {}
         self._subscriptions: dict[str, list[SubscriptionSnapshot]] = {}
         self._prices: dict[str, PriceDescription] = {}
+        self._deleted_customers: set[str] = set()
         self.calls: list[str] = []
         self.fail_with: Callable[[], Exception] | None = None
 
@@ -54,7 +55,18 @@ class InMemoryBillingProvider:
     def list_customer_subscriptions(self, customer_id: str) -> list[SubscriptionSnapshot]:
         self._maybe_fail("list_customer_subscriptions")
         with self._lock:
+            if customer_id in self._deleted_customers:
+                raise InvalidRequestError("The billing request was rejected.")
             return list(self._subscriptions.get(customer_id, []))
+
+    def retrieve_subscription(self, subscription_id: str) -> SubscriptionSnapshot:
+        self._maybe_fail("retrieve_subscription")
+        with self._lock:
+            for subs in self._subscriptions.values():
+                for sub in subs:
+                    if sub.stripe_subscription_id == subscription_id:
+                        return sub
+        raise InvalidRequestError("The billing request was rejected.")
 
     def get_customer_app_user_id(self, customer_id: str) -> UUID | None:
         self._maybe_fail("get_customer_app_user_id")
@@ -82,3 +94,8 @@ class InMemoryBillingProvider:
     def set_subscriptions(self, customer_id: str, subs: list[SubscriptionSnapshot]) -> None:
         with self._lock:
             self._subscriptions[customer_id] = list(subs)
+
+    def delete_customer(self, customer_id: str) -> None:
+        """Like Stripe: the customer is gone, and its subscriptions can still be read one by one."""
+        with self._lock:
+            self._deleted_customers.add(customer_id)

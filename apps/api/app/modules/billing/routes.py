@@ -7,10 +7,13 @@ portal, a Pro-gated example, and the Stripe webhook."""
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
+import anyio
+from anyio.lowlevel import RunVar
 from fastapi import APIRouter, Depends, Header, Request
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
+from app.kernel.errors import DependencyUnavailableError
 from app.kernel.http.auth import AuthDeps
 from app.kernel.http.schemas import StrictInput, WebhookAck, errors
 from app.kernel.ports import Clock
@@ -50,7 +53,8 @@ class ProInsight(BaseModel):
 
 def build_read_router(billing: BillingService, clock: Clock, auth: AuthDeps, request_transaction: Any) -> APIRouter:
     """Database-only reads: one request-scoped transaction each."""
-    router = APIRouter(dependencies=[Depends(request_transaction, scope="function")])
+    # The token is verified before the request takes an admission place (KDB-2).
+    router = APIRouter(dependencies=[Depends(auth.authenticate), Depends(request_transaction, scope="function")])
     Personal = Annotated[TenantContext, Depends(auth.personal)]
     Organization = Annotated[TenantContext, Depends(auth.organization)]
 
@@ -111,11 +115,37 @@ def build_action_router(billing: BillingService, auth: AuthDeps) -> APIRouter:
 def build_webhook_router(billing: BillingService) -> APIRouter:
     """Authenticated by signature on the raw body, not by session (SEC-13)."""
     router = APIRouter(tags=["webhooks"])
+    # One admission gate per event loop: a burst of deliveries waits here, holding no
+    # threadpool thread, for one of the synchronization slots (BILL-10).
+    gates: RunVar[anyio.Semaphore] = RunVar(f"billing_webhook_gate_{id(billing)}")
+
+    def gate() -> anyio.Semaphore:
+        try:
+            return gates.get()
+        except LookupError:
+            created = anyio.Semaphore(billing.sync_slots)
+            gates.set(created)
+            return created
 
     @router.post("/webhooks/stripe", response_model=WebhookAck, responses=errors(400, 503))
     async def stripe_webhook(request: Request) -> WebhookAck:
         payload = await request.body()  # unmodified bytes, as Stripe signed them
-        status = await run_in_threadpool(billing.handle_webhook, payload, request.headers.get("stripe-signature"))
+        # Verified first, so forged requests get 400 at once and never queue for a slot.
+        event = await run_in_threadpool(billing.verify_webhook, payload, request.headers.get("stripe-signature"))
+        if not billing.requires_sync(event):
+            status = await run_in_threadpool(billing.process_webhook, event)
+            return WebhookAck(received=True, status=status.value)
+        admission = gate()
+        admitted = False
+        with anyio.move_on_after(billing.sync_wait_seconds):
+            await admission.acquire()
+            admitted = True
+        if not admitted:
+            raise DependencyUnavailableError("Billing synchronization is busy. Retry shortly.")
+        try:
+            status = await run_in_threadpool(billing.process_webhook, event)
+        finally:
+            admission.release()
         return WebhookAck(received=True, status=status.value)
 
     return router

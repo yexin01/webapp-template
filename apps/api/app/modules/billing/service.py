@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import re
 import threading
+import time
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -27,7 +28,7 @@ from app.kernel.errors import (
     NotConfiguredError,
 )
 from app.kernel.events import StoredEvent
-from app.kernel.jobs import JobSummary
+from app.kernel.jobs import TIME_BUDGET_SECONDS, JobSummary
 from app.kernel.ports import Analytics, Clock, Transactions, Tx
 from app.kernel.tenancy import TenantContext
 from app.kernel.webhooks import EventStatus
@@ -46,7 +47,12 @@ from app.modules.billing.domain import (
     entitling_subscriptions,
     summarize,
 )
-from app.modules.billing.ports import BillingProvider, BillingRepository, BillingWebhookVerifier
+from app.modules.billing.ports import (
+    BillingProvider,
+    BillingRepository,
+    BillingWebhookEvent,
+    BillingWebhookVerifier,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +134,7 @@ class BillingService:
         checkouts_per_hour: int,
         sync_slots: int = 1,
         sync_wait_seconds: float = 5.0,
+        reconcile_time_budget_seconds: float = TIME_BUDGET_SECONDS,
     ) -> None:
         self._tx = tx
         self._provider = provider
@@ -138,8 +145,10 @@ class BillingService:
         self._analytics = analytics
         self._rate_limiter = rate_limiter
         self._checkouts_per_hour = checkouts_per_hour
-        self._sync_slots = threading.BoundedSemaphore(sync_slots)
-        self._sync_wait_seconds = sync_wait_seconds
+        self.sync_slots = sync_slots
+        self.sync_wait_seconds = sync_wait_seconds
+        self._sync_slots = _Slots(sync_slots, sync_wait_seconds)
+        self._reconcile_time_budget = reconcile_time_budget_seconds
 
     # -- Reads ---------------------------------------------------------------
 
@@ -210,11 +219,23 @@ class BillingService:
     # -- Webhooks and synchronization ----------------------------------------
 
     def handle_webhook(self, payload: bytes, signature_header: str | None) -> EventStatus:
+        return self.process_webhook(self.verify_webhook(payload, signature_header))
+
+    def verify_webhook(self, payload: bytes, signature_header: str | None) -> BillingWebhookEvent:
+        """Check the signature on the raw body (BILL-08). No I/O."""
         if self._verifier is None:
             raise NotConfiguredError()
-        event = self._verifier.verify(payload, signature_header)
+        return self._verifier.verify(payload, signature_header)
 
-        if event.event_type not in SYNC_EVENT_TYPES or event.customer_id is None:
+    @staticmethod
+    def requires_sync(event: BillingWebhookEvent) -> bool:
+        """Whether the event re-reads a customer from Stripe, holding a worker connection meanwhile."""
+        return event.event_type in SYNC_EVENT_TYPES and event.customer_id is not None
+
+    def process_webhook(self, event: BillingWebhookEvent) -> EventStatus:
+        """Record a verified event and synchronize its customer when it can change subscriptions."""
+        customer_id = event.customer_id if self.requires_sync(event) else None
+        if customer_id is None:
             with self._tx.as_system() as t:
                 status = t.repo.claim_billing_event(event)
                 if status in (EventStatus.PROCESSED, EventStatus.IGNORED):
@@ -222,14 +243,18 @@ class BillingService:
                 t.repo.finish_billing_event(event.event_id, EventStatus.IGNORED)
                 return EventStatus.IGNORED
 
-        with self._sync_slot(), self._tx.as_system() as t:
+        with self._sync_slots.admit(), self._tx.as_system() as t:
+            # The customer lock comes first, on every path that takes both it
+            # and ledger rows (reconciliation resolves flagged rows under it),
+            # so the two can never deadlock.
+            t.repo.lock_customer(customer_id)
             # Inserts the ledger row or locks the existing one, so concurrent
             # duplicate deliveries are serialized (BILL-09, BILL-14).
             status = t.repo.claim_billing_event(event)
             if status in (EventStatus.PROCESSED, EventStatus.IGNORED):
                 return status
             try:
-                result = self._sync_customer(t, event.customer_id)
+                result = self._sync_customer(t, customer_id)
             except InvalidRequestError:
                 # Stripe rejected the re-read (for example, the customer no
                 # longer exists). A retry cannot succeed, so the event is
@@ -239,33 +264,17 @@ class BillingService:
             t.repo.finish_billing_event(event.event_id, result)
             return result
 
-    @contextmanager
-    def _sync_slot(self) -> Iterator[None]:
-        """Admit one synchronization: a worker connection held across Stripe calls (BILL-10).
-
-        Fewer slots than worker connections exist, so a burst of webhooks
-        never takes the connections that readiness, rate limits, and
-        membership refreshes need. A delivery that finds no slot gets ``503``,
-        and Stripe retries it.
-        """
-        if not self._sync_slots.acquire(timeout=self._sync_wait_seconds):
-            raise DependencyUnavailableError("Billing synchronization is busy. Retry shortly.")
-        try:
-            yield
-        finally:
-            self._sync_slots.release()
-
     def _sync_customer(self, t: Tx[BillingRepository], customer_id: str) -> EventStatus:
-        """Re-read the customer's subscriptions from Stripe and store them, under the customer lock."""
+        """Re-read the customer's subscriptions from Stripe and store them. The caller holds the customer lock."""
         provider = self._require_provider()
         repo = t.repo
-        repo.lock_customer(customer_id)
         user_id = repo.find_user_by_customer(customer_id)
         if user_id is None:
             user_id = self._adopt_customer(repo, provider, customer_id)
             if user_id is None:
                 return EventStatus.NEEDS_RECONCILIATION
-        self._store(t, user_id, customer_id, provider.list_customer_subscriptions(customer_id))
+        remote = _read_remote(provider, customer_id, repo.list_subscriptions_by_customer(customer_id))
+        self._store(t, user_id, customer_id, remote)
         return EventStatus.PROCESSED
 
     def _store(
@@ -337,16 +346,34 @@ class BillingService:
         Customers with the most recently flagged webhook events take up to
         half the batch; the rest are the customers checked least recently, so
         successive runs cover every customer even while some flags cannot be
-        resolved automatically.
+        resolved automatically. A customer Stripe rejects still counts as
+        checked, so it moves to the back of the rotation. The run stops
+        starting new checks once its time budget is spent.
         """
         self._require_provider()
         report = ReconciliationReport(applied=apply)
         with self._tx.as_system() as t:
-            flagged = t.repo.list_recently_flagged_customers(max(1, batch_size // 2))
+            flagged = t.repo.list_recently_flagged_customers(batch_size // 2)
             least_recent = t.repo.list_least_recently_reconciled(batch_size)
         batch = list(dict.fromkeys([*flagged, *least_recent]))[:batch_size]
+        deadline = time.monotonic() + self._reconcile_time_budget
         for customer_id in batch:
+            if time.monotonic() >= deadline:
+                break
             self._reconcile_customer(customer_id, apply, report)
+        # The summary holds counts only; these name what an operator has to look at.
+        for d in report.divergences:
+            logger.warning(
+                "billing_divergence",
+                extra={
+                    "stripe_subscription_id": d.stripe_subscription_id,
+                    "kind": d.kind,
+                    "local_status": d.local_status,
+                    "remote_status": d.remote_status,
+                },
+            )
+        for customer_id in report.rejected_customers:
+            logger.warning("billing_reconcile_rejected", extra={"stripe_customer_id": customer_id})
         return {
             "customers": report.customers_checked,
             "divergences": len(report.divergences),
@@ -362,6 +389,9 @@ class BillingService:
             self._check_customer(customer_id, apply, report)
         except InvalidRequestError:
             report.rejected_customers.append(customer_id)
+            # Recorded as checked, or the customer would head every scheduled batch.
+            with self._tx.as_system() as t:
+                t.repo.mark_reconciled(customer_id, self._clock.now())
 
     def _check_customer(self, customer_id: str, apply: bool, report: ReconciliationReport) -> None:
         provider = self._require_provider()
@@ -369,7 +399,7 @@ class BillingService:
             # Stripe is read under the customer lock, as webhook synchronization
             # does, so a concurrent webhook can never be overwritten by an older
             # read (BILL-10).
-            with self._sync_slot(), self._tx.as_system() as t:
+            with self._sync_slots.admit(), self._tx.as_system() as t:
                 t.repo.lock_customer(customer_id)
                 user_id = t.repo.find_user_by_customer(customer_id) or self._adopt_customer(
                     t.repo, provider, customer_id
@@ -377,8 +407,9 @@ class BillingService:
                 if user_id is None:
                     report.unlinked_customers.append(customer_id)
                     return
-                remote = provider.list_customer_subscriptions(customer_id)
-                diffs = _diff(user_id, _by_id(t.repo.list_subscriptions_by_customer(customer_id)), _by_id(remote))
+                local = t.repo.list_subscriptions_by_customer(customer_id)
+                remote = _read_remote(provider, customer_id, local)
+                diffs = _diff(user_id, _by_id(local), _by_id(remote))
                 if diffs:
                     self._store(t, user_id, customer_id, remote)
                 t.repo.resolve_flagged_events(customer_id)
@@ -388,11 +419,12 @@ class BillingService:
 
         with self._tx.as_system() as t:
             user_id = t.repo.find_user_by_customer(customer_id)
+            known = t.repo.list_subscriptions_by_customer(customer_id)
         if user_id is None:
             # Linking a customer is a write, so a dry run only reports it.
             report.unlinked_customers.append(customer_id)
             return
-        remote = provider.list_customer_subscriptions(customer_id)
+        remote = _read_remote(provider, customer_id, known)
         with self._tx.as_system() as t:
             local = t.repo.list_subscriptions_by_customer(customer_id)
             t.repo.mark_reconciled(customer_id, self._clock.now())
@@ -408,6 +440,81 @@ class BillingService:
         if self._provider is None:
             raise NotConfiguredError("Billing is not configured in this environment.")
         return self._provider
+
+
+class _Slots:
+    """Admission for synchronizations: each holds a worker connection across Stripe calls (BILL-10).
+
+    Fewer slots than worker connections exist, so a burst of webhooks never
+    takes the connections that readiness, rate limits, and membership
+    refreshes need. Webhook deliveries queue for a slot in the event loop
+    first (``routes.build_webhook_router``), where waiting holds no thread;
+    here they contend only with reconciliation. A caller waits briefly. A
+    waiting caller holds a threadpool thread (40 by default, shared by every
+    synchronous route), so only ``max_waiting`` callers wait; anyone else gets
+    ``503`` at once, and Stripe retries the delivery.
+    """
+
+    def __init__(self, slots: int, wait_seconds: float, max_waiting: int = 8) -> None:
+        self._slots = threading.BoundedSemaphore(slots)
+        self._max_waiting = max_waiting
+        self._waiting = 0
+        self._lock = threading.Lock()
+        self._wait_seconds = wait_seconds
+
+    @contextmanager
+    def admit(self) -> Iterator[None]:
+        if not self._slots.acquire(blocking=False):
+            with self._lock:
+                if self._waiting >= self._max_waiting:
+                    raise _busy()
+                self._waiting += 1
+            try:
+                admitted = self._slots.acquire(timeout=self._wait_seconds)
+            finally:
+                with self._lock:
+                    self._waiting -= 1
+            if not admitted:
+                raise _busy()
+        try:
+            yield
+        finally:
+            self._slots.release()
+
+
+def _busy() -> DependencyUnavailableError:
+    return DependencyUnavailableError("Billing synchronization is busy. Retry shortly.")
+
+
+_FINAL_STATUSES = frozenset({SubscriptionStatus.CANCELED, SubscriptionStatus.INCOMPLETE_EXPIRED})
+
+
+def _read_remote(
+    provider: BillingProvider, customer_id: str, local: Sequence[SubscriptionSnapshot]
+) -> list[SubscriptionSnapshot]:
+    """Stripe's state of the customer's subscriptions, including stored ones the listing no longer returns.
+
+    Deleting a customer in Stripe cancels its subscriptions, and the customer
+    can no longer be listed. Every subscription stored as not yet final is
+    then read by its ID, so its end is recorded instead of Pro lasting
+    forever. Only what Stripe returns is applied: a subscription Stripe does
+    not return (for example, because the key belongs to another account)
+    rejects the read, and nothing changes.
+    """
+    rejected: InvalidRequestError | None = None
+    try:
+        remote = provider.list_customer_subscriptions(customer_id)
+    except InvalidRequestError as exc:
+        rejected, remote = exc, []
+    listed = {s.stripe_subscription_id for s in remote}
+    unlisted = [
+        s.stripe_subscription_id
+        for s in local
+        if s.stripe_subscription_id not in listed and s.status not in _FINAL_STATUSES
+    ]
+    if rejected is not None and not unlisted:
+        raise rejected
+    return [*remote, *(provider.retrieve_subscription(sub_id) for sub_id in unlisted)]
 
 
 def _diff(
@@ -438,6 +545,13 @@ def _log_anomalies(customer_id: str, subs: Sequence[SubscriptionSnapshot], now: 
         if sub.status is SubscriptionStatus.TRIALING:
             # Trials are out of scope (DEC-010, spec §9.5): not entitled, and logged.
             logger.warning("billing_trialing_anomaly", extra={"stripe_subscription_id": sub.stripe_subscription_id})
+        if sub.plan_key is PlanKey.UNKNOWN and sub.status not in _FINAL_STATUSES:
+            # A price outside the catalog never grants Pro: for example, a replaced
+            # price that is not listed in STRIPE_PRICE_PRO_*_RETAINED.
+            logger.warning(
+                "billing_unknown_price",
+                extra={"stripe_subscription_id": sub.stripe_subscription_id, "price_id": sub.price_id},
+            )
     if len(entitling_subscriptions(subs, now)) > 1:
         # One user paying for more than one Pro subscription (for example, two
         # checkouts completed in parallel). Resolve it in Stripe and refund.

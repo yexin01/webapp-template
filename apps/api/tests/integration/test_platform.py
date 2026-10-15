@@ -191,6 +191,26 @@ def test_project_name_validation(harness: Harness) -> None:
         assert harness.client.post("/api/v1/projects", json={"name": name}, headers=headers).status_code in (400, 422)
 
 
+def test_text_with_a_nul_character_is_invalid_input_not_a_server_error(harness: Harness) -> None:
+    """PostgreSQL text cannot hold U+0000, so every input model refuses it (API-02)."""
+    headers = harness.login("user_a")
+    harness.directory.set("user_a", [ExternalMembership("org_nul", Role.ADMIN)])
+    for path in ("/api/v1/projects", "/api/v1/orgs/org_nul/projects"):
+        response = harness.client.post(path, json={"name": "a\u0000b"}, headers=headers)
+        assert response.status_code == 422, path
+        assert response.json()["code"] == "VALIDATION_FAILED"
+        assert "a\\u0000b" not in response.text  # the submitted value is never echoed (JSON escapes NUL)
+
+
+def test_deeply_nested_input_is_invalid_not_a_server_error(harness: Harness) -> None:
+    headers = harness.login("user_a")
+    body = '{"name": ' + "[" * 900 + "]" * 900 + "}"  # deep, yet within what the JSON parser accepts
+    response = harness.client.post(
+        "/api/v1/projects", content=body, headers={**headers, "Content-Type": "application/json"}
+    )
+    assert response.status_code == 422
+
+
 # -- Resilience -----------------------------------------------------------------
 
 
@@ -244,11 +264,29 @@ def test_llm_outage_only_affects_llm_feature(make_harness: Any) -> None:
 def test_llm_per_user_and_global_limits(make_harness: Any) -> None:
     h = make_harness({"llm_checks_per_user_per_minute": 2, "llm_checks_global_per_day": 3})
     a, b = h.login("user_a"), h.login("user_b")
-    assert [h.client.post("/api/v1/llm/check", headers=a).status_code for _ in range(3)] == [200, 200, 429]
+    responses = [h.client.post("/api/v1/llm/check", headers=a) for _ in range(3)]
+    assert [r.status_code for r in responses] == [200, 200, 429]
+    assert responses[2].json()["code"] == "RATE_LIMITED"  # the caller's own limit
     assert h.client.post("/api/v1/llm/check", headers=b).status_code == 200  # global count reaches 3
-    assert h.client.post("/api/v1/llm/check", headers=b).status_code == 429  # global budget exhausted
+    exhausted = h.client.post("/api/v1/llm/check", headers=b)
+    assert exhausted.status_code == 429
+    assert exhausted.json()["code"] == "BUDGET_EXCEEDED"  # LLM-02: told apart from the caller's own limit
+    assert int(exhausted.headers["Retry-After"]) > 60
     h.clock.advance(minutes=1)
-    assert h.client.post("/api/v1/llm/check", headers=a).status_code == 429  # still over the daily budget
+    still_over = h.client.post("/api/v1/llm/check", headers=a)
+    assert still_over.json()["code"] == "BUDGET_EXCEEDED"  # the daily budget outlasts the per-user window
+
+
+def test_llm_check_refused_by_the_concurrency_bound_uses_no_quota(make_harness: Any) -> None:
+    h = make_harness({"llm_checks_per_user_per_minute": 1, "llm_max_concurrent_checks": 1})
+    headers = h.login("user_a")
+    service = h.container.llm.service
+    assert service._in_flight.acquire(blocking=False)  # another check is in flight
+    try:
+        assert h.client.post("/api/v1/llm/check", headers=headers).status_code == 429
+    finally:
+        service._in_flight.release()
+    assert h.client.post("/api/v1/llm/check", headers=headers).status_code == 200  # the quota is untouched
 
 
 # -- Telemetry leakage (OBS-08) -------------------------------------------------

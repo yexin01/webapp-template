@@ -103,10 +103,33 @@ class TestSubscriptionMapping:
     def test_unknown_status_is_never_entitled(self) -> None:
         assert to_snapshot(self.raw(status="something_new"), CATALOG).status is SubscriptionStatus.INCOMPLETE
 
+    def test_a_retained_price_keeps_its_plan_but_is_not_sold(self) -> None:
+        catalog = PriceCatalog(CATALOG.prices, {"price_old": PlanKey.PRO_MONTHLY})
+        raw = self.raw(items={"data": [{"price": {"id": "price_old"}, "current_period_end": 1}]})
+        assert to_snapshot(raw, catalog).plan_key is PlanKey.PRO_MONTHLY
+        assert to_snapshot(raw, CATALOG).plan_key is PlanKey.UNKNOWN  # without it, a price change drops Pro
+        assert catalog.price_for(PlanKey.PRO_MONTHLY) == "price_m"  # checkout still sells only the current price
+
+    def test_the_plan_comes_from_the_item_with_a_known_price(self) -> None:
+        raw = self.raw(
+            items={
+                "data": [
+                    {"price": {"id": "price_addon"}, "current_period_end": 1},
+                    {"price": {"id": "price_y"}, "current_period_end": 1_790_000_000},
+                ]
+            }
+        )
+        snap = to_snapshot(raw, CATALOG)
+        assert (snap.plan_key, snap.price_id) == (PlanKey.PRO_YEARLY, "price_y")
+        assert snap.current_period_end is not None
+        assert int(snap.current_period_end.timestamp()) == 1_790_000_000
+
 
 class TestLLMProviders:
-    def make(self, cls: Any, handler: Any) -> Any:
-        provider = cls(api_key="sk-test-key-not-real-000", model="model-x", timeout_seconds=1.0, sleep=lambda _s: None)
+    def make(self, cls: Any, handler: Any, timeout: float = 30.0) -> Any:
+        provider = cls(
+            api_key="sk-test-key-not-real-000", model="model-x", timeout_seconds=timeout, sleep=lambda _s: None
+        )
         provider._client = httpx.Client(base_url="https://llm.invalid", transport=httpx.MockTransport(handler))
         return provider
 
@@ -157,6 +180,30 @@ class TestLLMProviders:
 
         result = self.make(OpenAIProvider, handler).check()
         assert (seen, result.error_code) == (calls, error)
+
+    def test_retries_fit_inside_the_checks_own_timeout(self) -> None:
+        """LLM-03: the whole check, retries included, is bounded by LLM_TIMEOUT_SECONDS."""
+        timeouts: list[float] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            timeouts.append(request.extensions["timeout"]["read"])
+            return httpx.Response(429, headers={"retry-after": "2"})
+
+        result = self.make(OpenAIProvider, handler, timeout=1.0).check()
+        assert (len(timeouts), result.error_code) == (1, "rate_limited")  # a 2 s wait cannot fit in 1 s
+        assert all(t <= 1.0 for t in timeouts)
+
+    def test_the_response_body_is_never_read(self) -> None:
+        """A slow or endless body cannot hold the check: only the status and headers matter."""
+
+        class EndlessBody(httpx.SyncByteStream):
+            def __iter__(self) -> Any:
+                raise AssertionError("the body was read")
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, stream=EndlessBody())
+
+        assert self.make(AnthropicProvider, handler).check().ok
 
     def test_connection_failures_before_sending_are_retried(self) -> None:
         seen = 0

@@ -56,6 +56,13 @@ class RateLimitedError(DomainError):
         super().__init__(message)
 
 
+class BudgetExceededError(RateLimitedError):
+    """A shared spending budget is used up (LLM-02, LLM-06), as opposed to the caller's own limit."""
+
+    code = "BUDGET_EXCEEDED"
+    default_message = "The usage budget for this feature is used up. Try again later."
+
+
 class DependencyUnavailableError(DomainError):
     code = "DEPENDENCY_UNAVAILABLE"
     default_message = "A required service is temporarily unavailable."

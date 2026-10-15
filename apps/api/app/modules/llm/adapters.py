@@ -2,10 +2,12 @@
 
 The connectivity check retrieves the configured model's metadata. This proves
 the key, network path, and model ID are valid without generating tokens, so
-the check itself is not billed. Requests are bounded by a timeout and at most
-two retries, and only when the provider provably did not accept the request
-(LLM-03): the connection failed before anything was sent, or a ``429``/``503``
-came with retry guidance short enough to honour.
+the check itself is not billed. Only the status line and headers are read,
+never the body. Attempts share the timeout: each one gets what is left of it
+(for connecting, sending, and each read), and a retry happens only if its
+wait fits. It retries at most twice, and only when the provider provably did
+not accept the request (LLM-03): the connection failed before anything was
+sent, or a ``429``/``503`` came with retry guidance short enough to honour.
 """
 
 from __future__ import annotations
@@ -58,6 +60,7 @@ class _HttpModelCheck:
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self._model = model
+        self._timeout = timeout_seconds
         self._sleep = sleep
         self._client = httpx.Client(base_url=base_url, headers=headers, timeout=timeout_seconds)
 
@@ -66,11 +69,14 @@ class _HttpModelCheck:
 
     def check(self) -> LLMCheckResult:
         started = time.monotonic()
+        deadline = started + self._timeout
         error = "unavailable"
         for attempt in range(_MAX_RETRIES + 1):
             delay: float | None = None
             try:
-                response = self._client.get(self._path())
+                remaining = max(deadline - time.monotonic(), 0.001)
+                with self._client.stream("GET", self._path(), timeout=remaining) as response:
+                    status, guidance = response.status_code, _retry_delay(response)
             except httpx.ConnectTimeout:
                 # Nothing was sent, so the provider never saw the request.
                 error, delay = "timeout", min(0.5 * 2**attempt, _MAX_BACKOFF_SECONDS)
@@ -81,11 +87,10 @@ class _HttpModelCheck:
             except httpx.HTTPError:
                 error = "unavailable"
             else:
-                if response.status_code == 200:
+                if status == 200:
                     return self._result(True, started, None)
-                error = _normalize_status(response.status_code)
-                delay = _retry_delay(response)
-            if delay is None or attempt == _MAX_RETRIES:
+                error, delay = _normalize_status(status), guidance
+            if delay is None or attempt == _MAX_RETRIES or time.monotonic() + delay >= deadline:
                 break
             self._sleep(delay)
         logger.warning("llm_check_failed", extra={"provider": self.name, "error_code": error})
