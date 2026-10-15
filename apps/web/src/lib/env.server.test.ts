@@ -11,6 +11,8 @@ const base = {
 };
 const serving = { serving: true };
 
+const ORIGIN_PROBLEM = "API_ORIGIN must be an http(s) origin, with no path, query, fragment, or credentials";
+
 function problems(env: Record<string, string | undefined>, options = serving): string[] {
   try {
     loadServerEnv(env, options);
@@ -47,7 +49,16 @@ describe("web server configuration (ENV-03)", () => {
     [{ CLERK_SECRET_KEY: undefined }, "CLERK_SECRET_KEY is required"],
     [{ CLERK_JWT_KEY: "not a pem" }, "CLERK_JWT_KEY must be a PEM-encoded public key"],
     [{ APP_ENV: "staging" }, "APP_ENV must be local, test, preview, or production"],
-    [{ API_ORIGIN: "127.0.0.1:8000" }, "API_ORIGIN must be an absolute http(s) URL"],
+    [{ API_ORIGIN: "127.0.0.1:8000" }, ORIGIN_PROBLEM],
+    [{ API_ORIGIN: "ftp://api.example.com" }, ORIGIN_PROBLEM],
+    [{ API_ORIGIN: "https://api.example.com//" }, ORIGIN_PROBLEM],
+    [{ API_ORIGIN: "https://api.example.com/v2" }, ORIGIN_PROBLEM],
+    [{ API_ORIGIN: "https://api.example.com/api/v1/" }, ORIGIN_PROBLEM],
+    [{ API_ORIGIN: "https://api.example.com?x=1" }, ORIGIN_PROBLEM],
+    [{ API_ORIGIN: "https://api.example.com/?" }, ORIGIN_PROBLEM],
+    [{ API_ORIGIN: "https://api.example.com#frag" }, ORIGIN_PROBLEM],
+    [{ API_ORIGIN: "https://user:pass@api.example.com" }, ORIGIN_PROBLEM],
+    [{ API_ORIGIN: "https://token@api.example.com" }, ORIGIN_PROBLEM],
     [{ ANALYTICS_MODE: "live" }, "ANALYTICS_MODE=live is only allowed when APP_ENV=production"],
     [{ ERROR_REPORTING_MODE: "live" }, "ERROR_REPORTING_MODE=live is only allowed when APP_ENV=production"],
     [{ ANALYTICS_MODE: "mock" }, "ANALYTICS_MODE must be disabled, sandbox, or live"],
@@ -73,6 +84,15 @@ describe("web server configuration (ENV-03)", () => {
     ],
   ])("rejects %o", (patch, message) => {
     expect(problems({ ...base, ...patch })).toContain(message);
+  });
+
+  it.each([
+    ["https://api.example.com", "https://api.example.com"],
+    ["https://api.example.com/", "https://api.example.com"],
+    ["http://127.0.0.1:8100", "http://127.0.0.1:8100"],
+    ["HTTPS://API.Example.com:443/", "https://api.example.com"],
+  ])("accepts the API origin %s as %s", (value, origin) => {
+    expect(loadServerEnv({ ...base, API_ORIGIN: value }, serving).apiOrigin).toBe(origin);
   });
 
   it("names variables but never echoes their values", () => {

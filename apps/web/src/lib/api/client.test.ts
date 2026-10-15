@@ -3,11 +3,14 @@ import { expectTypeOf } from "vitest";
 import {
   createApiClient,
   isAllowedRedirect,
+  PROVIDER_TIMEOUT_MS,
+  REQUEST_TIMEOUT_MS,
   withDeadline,
   type ApiClient,
   type ApiFetchClient,
   type Schemas,
 } from "./client";
+import { PROXY_TIMEOUT_MS } from "./deadlines";
 import { ApiError, presentError } from "./errors";
 
 /**
@@ -158,6 +161,11 @@ describe("api client", () => {
     expect((error as ApiError).code).toBe("NETWORK_ERROR");
     expect(presentError(new Error("internal detail")).message).not.toContain("internal detail");
     expect(presentError(new ApiError(401, "UNAUTHENTICATED", "x", null)).action).toBe("sign-in");
+    expect(presentError(new ApiError(429, "BUDGET_EXCEEDED", "Budget used up.", null))).toEqual({
+      title: "Limit reached",
+      message: "Budget used up.",
+      action: "none",
+    });
   });
 
   it("re-throws an aborted request untouched", async () => {
@@ -219,6 +227,34 @@ describe("api client", () => {
     expect(error).toBeInstanceOf(ApiError);
     expect((error as ApiError).code).toBe("TIMEOUT");
     expect(presentError(error)).toMatchObject({ title: "Temporarily unavailable", action: "retry" });
+  });
+
+  it("times out when the session token never arrives, without sending the request", async () => {
+    const fetchMock = mockFetch(200, { user_id: "u1" });
+    const hung = () => new Promise<string | null>(() => undefined);
+    const error = await createApiClient(hung, { timeoutMs: 20 })
+      .me()
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).code).toBe("TIMEOUT");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("maps a failed session-token lookup to a safe network error", async () => {
+    const fetchMock = mockFetch(200, { user_id: "u1" });
+    const failing = () => Promise.reject(new Error("clerk-js failed: internal detail"));
+    const error = await createApiClient(failing)
+      .me()
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).code).toBe("NETWORK_ERROR");
+    expect((error as ApiError).message).not.toContain("internal detail");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("sizes the dev/start rewrite proxy beyond the longest client deadline", () => {
+    expect(PROXY_TIMEOUT_MS).toBeGreaterThan(PROVIDER_TIMEOUT_MS);
+    expect(PROVIDER_TIMEOUT_MS).toBeGreaterThan(REQUEST_TIMEOUT_MS);
   });
 
   it("gives calls that wait on an external provider the longer deadline", async () => {

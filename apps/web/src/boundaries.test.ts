@@ -157,6 +157,24 @@ describe("FE-02, ENV-03, and ENV-07 guards", { timeout: 30_000 }, () => {
     ["dynamic import of a scoped package", 'export const stripe = import("@stripe/stripe-js");\n'],
     ["dynamic import of a subpath", 'export const pg = import("pg/lib/client");\n'],
     ["require of an LLM SDK", 'export const sdk = require("openai");\n'],
+    ["destructuring process itself", "const { env } = process;\nexport const key = env.STRIPE_SECRET_KEY;\n"],
+    ["aliasing process", "const p = process;\nexport const key = p.env.STRIPE_SECRET_KEY;\n"],
+    ["Reflect.get on process", 'export const key = Reflect.get(process, "env").STRIPE_SECRET_KEY;\n'],
+    ["another property of process", "export const argv = process.argv;\n"],
+    ["dynamic import of the server configuration", 'export const config = import("@/lib/env.server");\n'],
+    ["dynamic import of the env-file loader", 'export const loader = import("../../lib/env-files.ts");\n'],
+    ["require of the server configuration", 'export const config = require("./env.server");\n'],
+    ["dynamic import of node:process", 'export const proc = import("node:process");\n'],
+    ["require of the process module", 'export const proc = require("process");\n'],
+    ["dynamic import of stripe as a template literal", "export const stripe = import(`stripe`);\n"],
+    [
+      "dynamic import of the server configuration as a template literal",
+      "export const config = import(`@/lib/env.server`);\n",
+    ],
+    [
+      "require of the server configuration as a template literal",
+      "export const c = require(`./env.server`);\n",
+    ],
   ])("rejects %s with no-restricted-syntax", async (_case, code) => {
     expect(await guardErrors(app, code)).toContain("no-restricted-syntax");
   });
@@ -176,6 +194,10 @@ describe("FE-02, ENV-03, and ENV-07 guards", { timeout: 30_000 }, () => {
       'import { loadEnvFiles } from "@/lib/env-files";\nexport default loadEnvFiles;\n',
     ],
     ["a re-export of stripe", 'export { default } from "stripe";\n'],
+    [
+      "the server configuration by file name",
+      'import { loadServerEnv } from "@/lib/env.server.ts";\nexport default loadServerEnv;\n',
+    ],
   ])("rejects importing %s", async (_case, code) => {
     expect(await guardErrors(app, code)).toContain("no-restricted-imports");
   });
@@ -185,15 +207,38 @@ describe("FE-02, ENV-03, and ENV-07 guards", { timeout: 30_000 }, () => {
     ["NODE_ENV", "export const dev = process.env.NODE_ENV !== 'production';\n"],
     ["the public configuration", 'import { publicEnv } from "@/lib/env";\nexport default publicEnv;\n'],
     ["a lazily loaded local module", 'export const view = import("./paywall");\n'],
+    ["a lazily loaded local module as a template literal", "export const view = import(`./paywall`);\n"],
     ["a package whose name only starts like a banned one", 'export const lib = import("aim");\n'],
+    ["a property named process", "export const step = { process: 1 }.process;\n"],
+    [
+      "a module whose name only ends like the configuration",
+      'export const m = import("./my-env.server-docs");\n',
+    ],
   ])("allows %s", async (_case, code) => {
     expect(await guardErrors(app, code)).toEqual([]);
+  });
+
+  it("lets tests use process for tooling, but still not read server-only variables", async () => {
+    const test = "src/lib/probe.test.ts";
+    expect(await guardErrors(test, "export const node = process.execPath;\n")).toEqual([]);
+    expect(await guardErrors(test, "export const key = process.env.STRIPE_SECRET_KEY;\n")).toContain(
+      "no-restricted-syntax",
+    );
+    expect(await guardErrors(test, 'export const config = import("@/lib/env.server");\n')).toContain(
+      "no-restricted-syntax",
+    );
   });
 
   it("lets server entry points read server-only variables and the server configuration", async () => {
     const code =
       'import { loadServerEnv } from "./lib/env.server";\nexport const env = loadServerEnv(process.env);\n';
     expect(await guardErrors("src/sentry.server.config.ts", code)).toEqual([]);
+    expect(
+      await guardErrors("src/sentry.server.config.ts", 'export const lazy = import("./lib/env.server");\n'),
+    ).toEqual([]);
+    expect(
+      await guardErrors("src/sentry.server.config.ts", 'export const p = import("node:process");\n'),
+    ).toContain("no-restricted-syntax");
     expect(
       await guardErrors("src/sentry.server.config.ts", 'export const s = import("stripe");\n'),
     ).toContain("no-restricted-syntax");

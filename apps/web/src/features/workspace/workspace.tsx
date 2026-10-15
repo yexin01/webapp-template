@@ -1,6 +1,6 @@
 "use client";
 
-import { useOrganization } from "@clerk/nextjs";
+import { useAuth, useOrganization } from "@clerk/nextjs";
 import { useCallback } from "react";
 
 import { PlanBadge } from "@/features/billing";
@@ -13,9 +13,11 @@ import { LoadingState } from "@/ui/state-views";
 /**
  * The active tenant follows Clerk's organization switcher. The role shown
  * here only adjusts presentation; the API re-verifies membership and role on
- * every request (FE-05).
+ * every request (FE-05). Panels remount per user and tenant, so nothing the
+ * previous user or tenant loaded or created stays on screen after a switch.
  */
 export function Workspace() {
+  const { userId } = useAuth();
   const { isLoaded, organization, membership } = useOrganization();
   const api = useApi();
   const orgId = organization?.id ?? null;
@@ -34,7 +36,7 @@ export function Workspace() {
         <h1>{organization ? organization.name : "Personal workspace"}</h1>
         {plan && <PlanBadge plan={plan} />}
       </div>
-      <ProjectsPanel key={orgId ?? "personal"} orgId={orgId} canDelete={canDelete} />
+      <ProjectsPanel key={`${userId}:${orgId ?? "personal"}`} orgId={orgId} canDelete={canDelete} />
       <LlmCheck />
     </div>
   );

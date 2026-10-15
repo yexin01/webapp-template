@@ -1,5 +1,6 @@
 import createClient, { type Client } from "openapi-fetch";
 
+import { PROVIDER_TIMEOUT_MS, REQUEST_TIMEOUT_MS } from "./deadlines";
 import { ApiError, type Problem } from "./errors";
 import type { components, paths } from "./schema";
 
@@ -11,13 +12,7 @@ export type ApiFetchClient = Client<paths>;
 
 type Settled<D> = { data?: D; error?: unknown; response: Response };
 
-/** Every request has a deadline (ARCH-07), so a stalled API cannot leave a screen busy forever. */
-export const REQUEST_TIMEOUT_MS = 30_000;
-/**
- * Calls the API answers only after reaching an external provider (Stripe,
- * the LLM, integration checks), each bounded by its own server-side timeout.
- */
-export const PROVIDER_TIMEOUT_MS = 90_000;
+export { PROVIDER_TIMEOUT_MS, REQUEST_TIMEOUT_MS } from "./deadlines";
 
 export type ApiClientOptions = { timeoutMs?: number; providerTimeoutMs?: number };
 
@@ -59,16 +54,32 @@ export function withDeadline(signal: AbortSignal, ms: number): { signal: AbortSi
   return { signal: controller.signal, clear };
 }
 
+/** Settles like `pending`, or rejects with the signal's reason once it aborts. */
+function untilAborted<T>(pending: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason as unknown);
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(signal.reason as unknown);
+    signal.addEventListener("abort", abort, { once: true });
+    pending.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+  });
+}
+
 /**
- * Sends one request under a deadline and reads its body under the same
- * deadline. Network failures and timeouts become safe errors, a success
- * response whose body is not JSON is an error rather than data, and a
- * caller's abort is re-thrown untouched.
+ * Gets a session token, then sends one request and reads its body, all under
+ * one deadline: a session token that never arrives (Clerk unreachable) times
+ * out like a stalled API. Network failures, a failed token lookup, and
+ * timeouts become safe errors, a success response whose body is not JSON is
+ * an error rather than data, and a caller's abort is re-thrown untouched.
  */
-function transport(timeoutMs: number) {
+function transport(timeoutMs: number, getToken: TokenGetter) {
   return async (request: Request): Promise<Response> => {
     const deadline = withDeadline(request.signal, timeoutMs);
     try {
+      const token = await untilAborted(
+        getToken().catch(() => Promise.reject(ApiError.network())),
+        deadline.signal,
+      );
+      if (token) request.headers.set("Authorization", `Bearer ${token}`);
       const response = await globalThis.fetch(request, { signal: deadline.signal });
       if (NO_BODY.has(response.status)) return response;
       const text = await response.text();
@@ -107,21 +118,14 @@ async function send<D>(pending: Promise<Settled<D>>): Promise<D> {
  */
 export function createApiClient(getToken: TokenGetter, options: ApiClientOptions = {}) {
   const { timeoutMs = REQUEST_TIMEOUT_MS, providerTimeoutMs = PROVIDER_TIMEOUT_MS } = options;
-  const viaProvider = { fetch: transport(providerTimeoutMs) };
+  const viaProvider = { fetch: transport(providerTimeoutMs, getToken) };
   const client: ApiFetchClient = createClient<paths>({
     // Same-origin: requests go to /api/v1/... on the page's own origin.
     baseUrl: "",
-    fetch: transport(timeoutMs),
+    fetch: transport(timeoutMs, getToken),
     headers: { Accept: "application/json" },
     credentials: "omit",
     cache: "no-store",
-  });
-  client.use({
-    async onRequest({ request }) {
-      const token = await getToken();
-      if (token) request.headers.set("Authorization", `Bearer ${token}`);
-      return request;
-    },
   });
 
   const org = (orgId: string) => ({ path: { org_id: orgId } });

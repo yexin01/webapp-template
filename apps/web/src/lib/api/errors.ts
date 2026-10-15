@@ -73,6 +73,9 @@ export function presentError(error: unknown): ErrorPresentation {
         message: "Too many requests. Wait a moment and try again.",
         action: "retry",
       };
+    case "BUDGET_EXCEEDED":
+      // A shared budget, not the user's own pace: retrying soon cannot help.
+      return { title: "Limit reached", message: error.message, action: "none" };
     case "DEPENDENCY_UNAVAILABLE":
     case "NOT_CONFIGURED":
     case "NETWORK_ERROR":

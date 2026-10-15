@@ -1,7 +1,7 @@
 import * as Sentry from "@sentry/nextjs";
 
 import { loadServerEnv } from "./lib/env.server";
-import { redactText, stripQuery } from "./lib/redact";
+import { scrubBreadcrumb, scrubEvent } from "./lib/redact";
 
 // Validated configuration (ENV-03). Error reporting needs no Clerk secret, so
 // this check does not repeat the serving requirements next.config.ts enforces.
@@ -25,20 +25,7 @@ if (errorReporting.enabled) {
       stackFrameVariables: false,
     },
     tracesSampleRate: errorReporting.tracesSampleRate,
-    beforeSend(event) {
-      if (event.request) {
-        delete event.request.cookies;
-        delete event.request.headers;
-        delete event.request.data;
-        if (event.request.url) event.request.url = stripQuery(event.request.url);
-        delete event.request.query_string;
-      }
-      delete event.user;
-      for (const exception of event.exception?.values ?? []) {
-        if (exception.value) exception.value = redactText(exception.value);
-      }
-      if (event.message) event.message = redactText(event.message);
-      return event;
-    },
+    beforeSend: scrubEvent,
+    beforeBreadcrumb: scrubBreadcrumb,
   });
 }

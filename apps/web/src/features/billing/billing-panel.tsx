@@ -1,7 +1,7 @@
 "use client";
 
 import { useSearchParams } from "next/navigation";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { track } from "@/lib/analytics";
 import { isAllowedRedirect, type Schemas } from "@/lib/api/client";
@@ -49,6 +49,16 @@ export function BillingPanel() {
 
   const fetchStatus = useCallback(() => api.billingStatus(), [api]);
   const { data: status, error, reload } = useResource(fetchStatus, "billing-status");
+
+  // Back from Stripe, the browser may restore this page from its back/forward
+  // cache exactly as it was left: mid-redirect, with every button disabled.
+  useEffect(() => {
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (event.persisted) setPending(null);
+    };
+    window.addEventListener("pageshow", onPageShow);
+    return () => window.removeEventListener("pageshow", onPageShow);
+  }, []);
 
   async function go(action: "portal" | PlanKey) {
     setPending(action);

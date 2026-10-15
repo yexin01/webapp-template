@@ -5,6 +5,7 @@ import { withSentryConfig } from "@sentry/nextjs/config";
 import type { NextConfig } from "next";
 import { PHASE_DEVELOPMENT_SERVER, PHASE_PRODUCTION_SERVER } from "next/constants";
 
+import { PROXY_TIMEOUT_MS } from "./src/lib/api/deadlines";
 import { buildContentSecurityPolicy } from "./src/lib/csp";
 import { loadEnvFiles } from "./src/lib/env-files";
 import { isWebVariable, loadServerEnv } from "./src/lib/env.server";
@@ -46,6 +47,11 @@ function nextConfig(phase: string): NextConfig {
   return {
     reactStrictMode: true,
     poweredByHeader: false,
+    experimental: {
+      // The /api/v1 rewrite proxy of `next dev` and `next start` would otherwise give up after
+      // 30 s with a bare 500, before the client's 90 s provider deadline (src/lib/api/deadlines.ts).
+      proxyTimeout: PROXY_TIMEOUT_MS,
+    },
     // Expose only derived, non-secret flags to the browser bundle (read through src/lib/env.ts).
     env: {
       NEXT_PUBLIC_ANALYTICS_ENABLED: String(env.analytics.enabled),

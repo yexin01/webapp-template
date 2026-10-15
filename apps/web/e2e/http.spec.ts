@@ -49,3 +49,20 @@ test("API errors use the problem-details contract through the web origin", async
   expect(body).toMatchObject({ status: 404, code: "NOT_FOUND" });
   expect(typeof body.request_id).toBe("string");
 });
+
+// The proxy (src/proxy.ts) does not run on these paths, so nothing the root
+// layout renders may need it: a missing file is a 404, never a server error.
+for (const path of ["/favicon.ico", "/missing.png", "/api/v1x", "/_nextx", "/static/app.js"]) {
+  test(`unmatched path ${path} is a 404, not a server error`, async ({ request }) => {
+    const response = await request.get(path);
+    expect(response.status()).toBe(404);
+  });
+}
+
+test("the app icon is served and linked from pages", async ({ request }) => {
+  const icon = await request.get("/icon.svg");
+  expect(icon.status()).toBe(200);
+  expect(icon.headers()["content-type"]).toContain("image/svg+xml");
+  const page = await request.get("/", { headers: { Accept: "application/json" } });
+  expect(await page.text()).toMatch(/<link rel="icon" href="\/icon\.svg\?[^"]*"/);
+});

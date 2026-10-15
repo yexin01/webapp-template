@@ -1,4 +1,4 @@
-import { buildContentSecurityPolicy, clerkFrontendApiOrigin } from "./csp";
+import { buildContentSecurityPolicy, clerkFrontendApiOrigin, posthogOrigins } from "./csp";
 
 const key = `pk_test_${btoa("example-app.clerk.accounts.dev$")}`;
 
@@ -30,5 +30,52 @@ describe("content security policy", () => {
     expect(csp).toContain("https://eu-assets.i.posthog.com");
     expect(csp).toContain("https://o123.ingest.de.sentry.io");
     expect(csp).toContain("'unsafe-eval'");
+  });
+
+  it.each([
+    [
+      "https://us.i.posthog.com",
+      ["https://us.i.posthog.com", "https://us-assets.i.posthog.com"],
+      ["https://us-assets.i.posthog.com"],
+    ],
+    [
+      "https://eu.i.posthog.com/",
+      ["https://eu.i.posthog.com", "https://eu-assets.i.posthog.com"],
+      ["https://eu-assets.i.posthog.com"],
+    ],
+    // The app (UI) hosts: events go to the region's ingestion host, flags to the host itself.
+    [
+      "https://us.posthog.com",
+      ["https://us.i.posthog.com", "https://us-assets.i.posthog.com", "https://us.posthog.com"],
+      ["https://us-assets.i.posthog.com"],
+    ],
+    [
+      "https://eu.posthog.com",
+      ["https://eu.i.posthog.com", "https://eu-assets.i.posthog.com", "https://eu.posthog.com"],
+      ["https://eu-assets.i.posthog.com"],
+    ],
+    [
+      "https://app.posthog.com",
+      ["https://us.i.posthog.com", "https://us-assets.i.posthog.com"],
+      ["https://us-assets.i.posthog.com"],
+    ],
+    // A reverse proxy serves events and assets itself; a path is not part of the origin.
+    ["https://ph.example.com/ingest", ["https://ph.example.com"], ["https://ph.example.com"]],
+    ["https://e.example-assets.com", ["https://e.example-assets.com"], ["https://e.example-assets.com"]],
+    ["not a url", [], []],
+  ])("routes PostHog host %s as posthog-js does", (host, connect, script) => {
+    expect(posthogOrigins(host)).toEqual({ connect, script });
+    const csp = buildContentSecurityPolicy({ clerkPublishableKey: key, posthogHost: host, isDev: false });
+    const directive = (name: string) =>
+      csp
+        .split("; ")
+        .find((d) => d.startsWith(`${name} `))
+        ?.split(" ")
+        .slice(1) ?? [];
+    for (const origin of connect) expect(directive("connect-src")).toContain(origin);
+    for (const origin of script) expect(directive("script-src")).toContain(origin);
+    // Nothing derived by rewriting the host name, such as https://us-assets.posthog.com.
+    expect(csp).not.toMatch(/https:\/\/[a-z]+-assets\.posthog\.com/);
+    expect(csp).not.toContain("ph-assets.example.com");
   });
 });

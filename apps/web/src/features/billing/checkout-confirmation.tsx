@@ -1,13 +1,18 @@
 "use client";
 
+import { useAuth } from "@clerk/nextjs";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import { useApi } from "@/lib/api/use-api";
 import { LoadingState } from "@/ui/state-views";
 
-const ATTEMPTS = 20;
 const INTERVAL_MS = 1500;
+/**
+ * How long the page waits for confirmation, by the clock: a slow or hanging
+ * API (each request may take up to its own deadline) cannot stretch it.
+ */
+const BUDGET_MS = 30_000;
 
 /**
  * After Stripe redirects back, Pro is granted only once the server has
@@ -16,16 +21,21 @@ const INTERVAL_MS = 1500;
  */
 export function CheckoutConfirmation() {
   const api = useApi();
+  const { isLoaded } = useAuth();
   const [state, setState] = useState<"waiting" | "confirmed" | "delayed">("waiting");
 
   useEffect(() => {
+    // Polling starts once Clerk has loaded: the client changes when the user
+    // arrives, and starting earlier would run a second chain.
+    if (!isLoaded) return;
     // One polling chain per effect run. Cleanup (navigation, or StrictMode's
     // remount) stops it on every path: no state update and no further request.
     let cancelled = false;
     let timer: number | undefined;
-    let attempt = 0;
+    const deadline = Date.now() + BUDGET_MS;
+    // Gives up on time even while a request is still pending; a late "pro" answer still confirms.
+    const giveUp = window.setTimeout(() => setState((s) => (s === "waiting" ? "delayed" : s)), BUDGET_MS);
     async function poll() {
-      attempt += 1;
       try {
         const status = await api.billingStatus();
         if (cancelled) return;
@@ -37,15 +47,16 @@ export function CheckoutConfirmation() {
         /* keep polling; transient failures are expected here */
       }
       if (cancelled) return;
-      if (attempt >= ATTEMPTS) setState("delayed");
+      if (Date.now() + INTERVAL_MS >= deadline) setState("delayed");
       else timer = window.setTimeout(() => void poll(), INTERVAL_MS);
     }
     void poll();
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
+      window.clearTimeout(giveUp);
     };
-  }, [api]);
+  }, [api, isLoaded]);
 
   return (
     <section className="card" aria-live="polite">

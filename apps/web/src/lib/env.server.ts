@@ -65,6 +65,22 @@ function isHttpUrl(value: string): boolean {
   }
 }
 
+/**
+ * An http(s) origin: scheme, host, and optional port, with at most a bare
+ * trailing slash. A path, query, fragment, or credentials would be spliced
+ * into the /api/v1 rewrite destination, so they are rejected, not dropped.
+ */
+function httpOrigin(value: string): string | null {
+  if (/[?#]/.test(value)) return null;
+  try {
+    const url = new URL(value);
+    const http = url.protocol === "https:" || url.protocol === "http:";
+    return http && url.pathname === "/" && !url.username && !url.password ? url.origin : null;
+  } catch {
+    return null;
+  }
+}
+
 /** A Sentry DSN is an http(s) URL whose user part is the project's public key. */
 function isSentryDsn(value: string): boolean {
   return isHttpUrl(value) && new URL(value).username.length > 0;
@@ -139,8 +155,10 @@ export function loadServerEnv(env: Source, options: LoadOptions): ServerEnv {
   if (!isAppEnv(rawAppEnv)) problems.push("APP_ENV must be local, test, preview, or production");
   const appEnv: AppEnv = isAppEnv(rawAppEnv) ? rawAppEnv : "local";
 
-  const apiOrigin = (source("API_ORIGIN") ?? "http://127.0.0.1:8000").replace(/\/$/, "");
-  if (!isHttpUrl(apiOrigin)) problems.push("API_ORIGIN must be an absolute http(s) URL");
+  const apiOrigin = httpOrigin(source("API_ORIGIN") ?? "http://127.0.0.1:8000");
+  if (!apiOrigin) {
+    problems.push("API_ORIGIN must be an http(s) origin, with no path, query, fragment, or credentials");
+  }
 
   problems.push(...clerkProblems(source, appEnv, options));
 
@@ -172,7 +190,7 @@ export function loadServerEnv(env: Source, options: LoadOptions): ServerEnv {
     problems.push("SENTRY_TRACES_SAMPLE_RATE must be a number from 0 to 1");
   }
 
-  if (problems.length) throw new ConfigError(problems);
+  if (problems.length || !apiOrigin) throw new ConfigError(problems);
   return Object.freeze({
     appEnv,
     apiOrigin,

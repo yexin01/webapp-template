@@ -1,5 +1,7 @@
-import { Show, SignUpButton } from "@clerk/nextjs";
+import { SignUpButton } from "@clerk/nextjs";
 import Link from "next/link";
+
+import { SignedInOnly, SignedOutOnly } from "@/ui/signed-in-state";
 
 export default function HomePage() {
   return (
@@ -10,21 +12,21 @@ export default function HomePage() {
         enforced on the server.
       </p>
       <div className="button-row">
-        <Show when="signed-in">
+        <SignedInOnly>
           <Link className="button button-primary" href="/dashboard">
             Open dashboard
           </Link>
           <Link className="button" href="/integrations">
             Check integrations
           </Link>
-        </Show>
-        <Show when="signed-out">
+        </SignedInOnly>
+        <SignedOutOnly>
           <SignUpButton>
             <button type="button" className="button button-primary">
               Get started free
             </button>
           </SignUpButton>
-        </Show>
+        </SignedOutOnly>
       </div>
     </section>
   );

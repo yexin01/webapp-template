@@ -1,7 +1,7 @@
 import * as Sentry from "@sentry/nextjs";
 
 import { publicEnv } from "./lib/env";
-import { redactText, stripQuery } from "./lib/redact";
+import { scrubBreadcrumb, scrubEvent } from "./lib/redact";
 
 if (publicEnv.errorReporting.enabled) {
   Sentry.init({
@@ -22,24 +22,7 @@ if (publicEnv.errorReporting.enabled) {
     },
     tracesSampleRate: 0,
     // Session replay is not enabled; it would require an approved privacy review.
-    beforeSend(event) {
-      delete event.user;
-      if (event.request?.url) event.request.url = stripQuery(event.request.url);
-      if (event.request) {
-        delete event.request.headers;
-        delete event.request.cookies;
-        delete event.request.query_string;
-      }
-      for (const exception of event.exception?.values ?? []) {
-        if (exception.value) exception.value = redactText(exception.value);
-      }
-      return event;
-    },
-    beforeBreadcrumb(breadcrumb) {
-      if (breadcrumb.category === "ui.input") return null;
-      if (typeof breadcrumb.data?.url === "string") breadcrumb.data.url = stripQuery(breadcrumb.data.url);
-      if (breadcrumb.message) breadcrumb.message = redactText(breadcrumb.message);
-      return breadcrumb;
-    },
+    beforeSend: scrubEvent,
+    beforeBreadcrumb: scrubBreadcrumb,
   });
 }

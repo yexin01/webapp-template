@@ -43,11 +43,36 @@ function sentryIngestOrigin(dsn: string | undefined): string | null {
   }
 }
 
+export type PostHogOrigins = { connect: string[]; script: string[] };
+
+/**
+ * The origins posthog-js uses for a configured host, mirroring its request
+ * router (posthog-js lib/src/utils/request-router.js). A PostHog Cloud host
+ * (us/eu, also app.posthog.com) sends events to https://{region}.i.posthog.com
+ * and loads assets from https://{region}-assets.i.posthog.com, while
+ * feature-flag requests go to the configured host itself. Any other host is a
+ * reverse proxy that serves events and assets alike.
+ */
+export function posthogOrigins(host: string | undefined): PostHogOrigins {
+  // As the SDK normalizes api_host, and maps the legacy app host to US ingestion.
+  let apiHost = (host ?? "").trim().replace(/\/$/, "");
+  if (apiHost === "https://app.posthog.com") apiHost = "https://us.i.posthog.com";
+  const configured = originOf(apiHost);
+  if (!configured) return { connect: [], script: [] };
+  const region = /https:\/\/(app|us|us-assets)(\.i)?\.posthog\.com/i.test(apiHost)
+    ? "us"
+    : /https:\/\/(eu|eu-assets)(\.i)?\.posthog\.com/i.test(apiHost)
+      ? "eu"
+      : null;
+  if (!region) return { connect: [configured], script: [configured] };
+  const assets = `https://${region}-assets.i.posthog.com`;
+  const connect = [`https://${region}.i.posthog.com`, assets, configured];
+  return { connect: [...new Set(connect)], script: [assets] };
+}
+
 export function buildContentSecurityPolicy(input: CspInput): string {
   const clerk = clerkFrontendApiOrigin(input.clerkPublishableKey);
-  const posthog = originOf(input.posthogHost);
-  // PostHog serves its assets from a sibling "-assets" host.
-  const posthogAssets = posthog ? posthog.replace(/^(https:\/\/)([a-z]+)\./, "$1$2-assets.") : null;
+  const posthog = posthogOrigins(input.posthogHost);
   const sentry = sentryIngestOrigin(input.sentryDsn);
   const list = (...items: (string | null | false)[]) => items.filter(Boolean).join(" ");
 
@@ -59,14 +84,13 @@ export function buildContentSecurityPolicy(input: CspInput): string {
       input.isDev && "'unsafe-eval'",
       clerk,
       "https://challenges.cloudflare.com",
-      posthogAssets,
+      ...posthog.script,
     ),
     "connect-src": list(
       "'self'",
       clerk,
       "https://clerk-telemetry.com",
-      posthog,
-      posthogAssets,
+      ...posthog.connect,
       sentry,
       input.isDev && "ws:",
     ),

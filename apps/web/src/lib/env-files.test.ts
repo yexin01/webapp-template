@@ -21,7 +21,7 @@ describe("loading the shared root .env", () => {
         "export ANALYTICS_MODE=disabled",
         "NEXT_PUBLIC_POSTHOG_HOST=https://eu.i.posthog.com # comment",
         "STRIPE_SECRET_KEY=sk_test_not_a_real_secret",
-        "DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:54329/app",
+        "DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/app",
         "LLM_API_KEY=not_a_real_secret",
         "CRON_SECRET=not_a_real_secret_but_32_characters",
       ].join("\n"),

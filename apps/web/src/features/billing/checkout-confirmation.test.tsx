@@ -6,11 +6,19 @@ import { ApiError } from "@/lib/api/errors";
 import { CheckoutConfirmation } from "./checkout-confirmation";
 
 const api = vi.hoisted(() => ({ billingStatus: vi.fn() }));
-vi.mock("@/lib/api/use-api", () => ({ useApi: () => api }));
+const auth = vi.hoisted(() => ({ isLoaded: true, userId: "user_1" as string | undefined }));
+// A new client once the user arrives, as useApi does when Clerk finishes loading.
+const clients = vi.hoisted(() => ({ pending: {}, loaded: {} }));
+vi.mock("@/lib/api/use-api", () => ({
+  useApi: () => Object.assign(auth.isLoaded ? clients.loaded : clients.pending, api),
+}));
+vi.mock("@clerk/nextjs", () => ({ useAuth: () => auth }));
 
 const free = { plan: "free", state: "processing" };
 
 beforeEach(() => {
+  auth.isLoaded = true;
+  auth.userId = "user_1";
   vi.useFakeTimers();
   api.billingStatus.mockReset();
 });
@@ -48,6 +56,22 @@ describe("checkout confirmation", () => {
     expect(api.billingStatus).toHaveBeenCalledTimes(calls);
   });
 
+  it("starts one polling chain once Clerk has loaded", async () => {
+    api.billingStatus.mockResolvedValue(free);
+    auth.isLoaded = false;
+    auth.userId = undefined;
+    const { rerender } = render(<CheckoutConfirmation />);
+    await advance(0);
+    expect(api.billingStatus).not.toHaveBeenCalled();
+    auth.isLoaded = true;
+    auth.userId = "user_1";
+    rerender(<CheckoutConfirmation />);
+    await advance(0);
+    expect(api.billingStatus).toHaveBeenCalledOnce();
+    await advance(1500 * 3);
+    expect(api.billingStatus).toHaveBeenCalledTimes(4);
+  });
+
   it("runs a single polling chain under StrictMode", async () => {
     api.billingStatus.mockRejectedValue(new ApiError(0, "NETWORK_ERROR", "Offline.", null));
     render(
@@ -68,5 +92,31 @@ describe("checkout confirmation", () => {
     await advance(1500 * 25);
     expect(screen.getByText(/do not need to pay again/)).toBeInTheDocument();
     expect(api.billingStatus).toHaveBeenCalledTimes(20);
+  });
+
+  it("keeps to a 30-second budget when each request takes long", async () => {
+    // Every answer takes 10 s; counting attempts would wait about 20 x 11.5 s.
+    api.billingStatus.mockImplementation(
+      () => new Promise((resolve) => setTimeout(() => resolve(free), 10_000)),
+    );
+    render(<CheckoutConfirmation />);
+    await advance(29_000);
+    expect(screen.queryByText(/do not need to pay again/)).toBeNull();
+    await advance(1_000);
+    expect(screen.getByText(/do not need to pay again/)).toBeInTheDocument();
+    const calls = api.billingStatus.mock.calls.length;
+    await advance(60_000);
+    expect(api.billingStatus).toHaveBeenCalledTimes(calls);
+  });
+
+  it("gives up on time while a request hangs, and still confirms a late answer", async () => {
+    let answer: (value: unknown) => void = () => undefined;
+    api.billingStatus.mockImplementation(() => new Promise((resolve) => (answer = resolve)));
+    render(<CheckoutConfirmation />);
+    await advance(30_000);
+    expect(screen.getByText(/do not need to pay again/)).toBeInTheDocument();
+    expect(api.billingStatus).toHaveBeenCalledOnce();
+    await act(async () => answer({ plan: "pro", state: "active" }));
+    expect(screen.getByText(/You are now on Pro/)).toBeInTheDocument();
   });
 });

@@ -13,6 +13,7 @@ const api = vi.hoisted(() => ({
 }));
 vi.mock("@/lib/api/use-api", () => ({ useApi: () => api }));
 vi.mock("next/navigation", () => ({ usePathname: () => "/dashboard" }));
+vi.mock("@clerk/nextjs", () => ({ useAuth: () => ({ isLoaded: true, userId: "user_1" }) }));
 
 function project(id: string, name: string): Schemas["Project"] {
   return { id, name, created_at: "2026-10-01T00:00:00Z", organization_scoped: false };

@@ -55,9 +55,17 @@ export default defineConfig({
       reuseExistingServer: false,
       env: {
         API_ORIGIN: apiOrigin,
+        // Account-free runs are "mocked" evidence: pinned like the API above, so a
+        // developer's root .env cannot switch telemetry on (process values win over .env).
         ...(sandbox
           ? {}
-          : { NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: placeholderKey, CLERK_SECRET_KEY: "sk_test_placeholder" }),
+          : {
+              APP_ENV: "test",
+              ANALYTICS_MODE: "disabled",
+              ERROR_REPORTING_MODE: "disabled",
+              NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: placeholderKey,
+              CLERK_SECRET_KEY: "sk_test_placeholder",
+            }),
       },
     },
   ],

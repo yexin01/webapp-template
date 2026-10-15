@@ -1,5 +1,7 @@
-import { OrganizationSwitcher, Show, SignInButton, SignUpButton, UserButton } from "@clerk/nextjs";
+import { OrganizationSwitcher, SignInButton, SignUpButton, UserButton } from "@clerk/nextjs";
 import Link from "next/link";
+
+import { SignedInOnly, SignedOutOnly } from "./signed-in-state";
 
 export function SiteHeader() {
   return (
@@ -8,7 +10,7 @@ export function SiteHeader() {
         <Link href="/" className="brand">
           SaaS Template
         </Link>
-        <Show when="signed-in">
+        <SignedInOnly>
           <ul className="nav-links">
             <li>
               <Link href="/dashboard">Dashboard</Link>
@@ -23,16 +25,16 @@ export function SiteHeader() {
               <Link href="/integrations">Integrations</Link>
             </li>
           </ul>
-        </Show>
+        </SignedInOnly>
         <div className="nav-actions">
-          <Show when="signed-in">
+          <SignedInOnly>
             <OrganizationSwitcher
               afterSelectOrganizationUrl="/dashboard"
               afterSelectPersonalUrl="/dashboard"
             />
             <UserButton />
-          </Show>
-          <Show when="signed-out">
+          </SignedInOnly>
+          <SignedOutOnly>
             <SignInButton>
               <button type="button" className="button">
                 Sign in
@@ -43,7 +45,7 @@ export function SiteHeader() {
                 Sign up
               </button>
             </SignUpButton>
-          </Show>
+          </SignedOutOnly>
         </div>
       </nav>
     </header>
