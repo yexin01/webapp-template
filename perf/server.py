@@ -20,8 +20,15 @@ Degradation knobs for PERF-07 (all default off, so other scenarios are unchanged
 - ``--telemetry``: the real PostHog and Sentry SDKs run, pointed at a
   loopback sink on this machine. Nothing leaves the machine.
 
-On exit (Ctrl+C) it prints database statistics as JSON: webhook ledger
-counts, the peak number of connections observed, and telemetry sink counts.
+Pool sizes: ``--pool-size`` (request pool) and ``--worker-pool-size``
+(system pool; the app default when omitted). Billing synchronization admits
+``worker pool - 1`` webhooks at a time, so that caps how many deliveries
+reach the database together (PERF-06). Startup and exit reports print all three.
+
+On exit (Ctrl+C) it prints JSON: webhook ledger counts, the number of Stripe
+re-reads against the number of events processed (PERF-06 exactly-once), the
+peak number of connections observed, and telemetry sink counts. It exits
+non-zero when the re-reads and processed events differ.
 """
 
 from __future__ import annotations
@@ -38,7 +45,7 @@ from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import parse_qs, urlparse, urlunparse
 
 API_DIR = Path(__file__).resolve().parents[1] / "apps" / "api"
 sys.path.insert(0, str(API_DIR))
@@ -158,6 +165,9 @@ def seed(url: str, users: int, orgs: int, projects: int) -> dict[str, int]:
         }
 
 
+PROXY_HOST = "127.0.0.1"
+
+
 class DelayProxy(threading.Thread):
     """Loopback TCP proxy to PostgreSQL that adds a fixed round-trip delay (PERF-07)."""
 
@@ -172,7 +182,7 @@ class DelayProxy(threading.Thread):
         asyncio.run(self._serve())
 
     async def _serve(self) -> None:
-        server = await asyncio.start_server(self._handle, "127.0.0.1", 0)
+        server = await asyncio.start_server(self._handle, PROXY_HOST, 0)
         self.port = server.sockets[0].getsockname()[1]
         self.ready.set()
         async with server:
@@ -192,6 +202,28 @@ class DelayProxy(threading.Thread):
             pass
         finally:
             writer.close()
+
+
+def proxied_url(url: str, proxy_port: int) -> str:
+    """``url`` with its server replaced by the loopback proxy; credentials and options are kept.
+
+    Fails loudly rather than return a URL that still reaches the database
+    directly, which would silently measure no added latency.
+    """
+    parsed = urlparse(url)
+    overrides = {"host", "hostaddr", "port"} & set(parse_qs(parsed.query))
+    if overrides:
+        raise SystemExit(f"--db-latency-ms: the database URL sets {sorted(overrides)} in its query; remove them.")
+    if not parsed.hostname:
+        raise SystemExit("--db-latency-ms needs a database URL with a TCP host.")
+    userinfo, at, _ = parsed.netloc.rpartition("@")
+    host = f"[{PROXY_HOST}]" if ":" in PROXY_HOST else PROXY_HOST
+    result = urlunparse(parsed._replace(netloc=f"{userinfo}{at}{host}:{proxy_port}"))
+    check = urlparse(result)
+    target = (check.hostname, check.port)
+    if target != (PROXY_HOST, proxy_port) or target == (parsed.hostname, parsed.port or 5432):
+        raise SystemExit("--db-latency-ms: could not point the database URL at the latency proxy.")
+    return result
 
 
 class Delayed:
@@ -248,6 +280,7 @@ def build_app(
     orgs: int,
     pool_size: int,
     *,
+    worker_pool_size: int | None = None,
     provider_latency_ms: float = 0,
     telemetry_port: int | None = None,
     traces_sample_rate: float = 0.0,
@@ -263,12 +296,14 @@ def build_app(
             "sentry_dsn": f"http://perflocal@127.0.0.1:{telemetry_port}/1",
             "sentry_traces_sample_rate": traces_sample_rate,
         }
+    pools: dict[str, Any] = {"database_pool_max_size": pool_size}
+    if worker_pool_size is not None:
+        pools["database_worker_pool_max_size"] = worker_pool_size
     settings = load_settings(
         _env_file=None,
         app_env="test",
         app_base_url="http://localhost:3000",
         database_url=url,
-        database_pool_max_size=pool_size,
         billing_mode="mock",
         stripe_price_pro_monthly=PRICE_MONTHLY,
         stripe_price_pro_yearly=PRICE_YEARLY,
@@ -278,6 +313,7 @@ def build_app(
         llm_checks_per_user_per_minute=600,
         llm_checks_global_per_day=100_000,
         log_level="WARNING",
+        **pools,
         **telemetry,
     )
     if telemetry_port is not None:
@@ -334,11 +370,47 @@ class ConnectionSampler(threading.Thread):
 
 
 def ledger_stats(url: str) -> dict[str, Any]:
+    """Ledger rows by status. ``claims`` counts deliveries that reached the ledger (duplicates included)."""
     with psycopg.connect(url) as conn:
         rows = conn.execute(
             "SELECT status, count(*), coalesce(sum(attempts), 0) FROM app.billing_events GROUP BY status"
         ).fetchall()
-    return {status: {"events": count, "deliveries": int(attempts)} for status, count, attempts in rows}
+    return {status: {"events": count, "claims": int(attempts)} for status, count, attempts in rows}
+
+
+def webhook_report(url: str, billing: InMemoryBillingProvider) -> dict[str, Any]:
+    """PERF-06 oracle: every distinct event must re-read Stripe exactly once.
+
+    The ledger cannot show this on its own: a duplicate delivery that runs the
+    synchronization again leaves the same final row (status and attempts). Each
+    synchronization re-reads the customer's subscriptions from the mocked
+    Stripe API once, so the re-reads must equal the events processed. No other
+    perf scenario calls that API. A synchronization that failed after the
+    re-read and was retried also adds one; such a delivery got a non-200.
+    Only this local server can count the re-reads: a deployed target cannot.
+    """
+    ledger = ledger_stats(url)
+    processed = int(ledger.get("processed", {}).get("events", 0))
+    calls = Counter(billing.calls)
+    resyncs = calls["list_customer_subscriptions"]
+    return {
+        "billing_events": ledger,
+        "stripe_calls": dict(calls),
+        "events_processed": processed,
+        "stripe_resyncs": resyncs,
+        "exactly_once": None if processed == resyncs == 0 else processed == resyncs,
+    }
+
+
+def pool_report(app: Any) -> dict[str, int]:
+    settings = app.state.container.settings
+    worker = settings.database_worker_pool_max_size
+    return {
+        "api_pool_max_size": settings.database_pool_max_size,
+        "worker_pool_max_size": worker,
+        # As wired in app/modules/billing/module.py: one worker connection stays free.
+        "billing_sync_slots": worker - 1,
+    }
 
 
 def main() -> None:
@@ -346,7 +418,13 @@ def main() -> None:
     parser.add_argument("--users", type=int, default=200)
     parser.add_argument("--orgs", type=int, default=20)
     parser.add_argument("--projects", type=int, default=50, help="projects per tenant")
-    parser.add_argument("--pool-size", type=int, default=10)
+    parser.add_argument("--pool-size", type=int, default=10, help="request (app_api) pool")
+    parser.add_argument(
+        "--worker-pool-size",
+        type=int,
+        default=None,
+        help="system (app_worker) pool, app default when omitted; billing sync slots are this minus one",
+    )
     parser.add_argument("--port", type=int, default=8001)
     parser.add_argument("--db-latency-ms", type=float, default=0, help="added API-to-database round-trip time")
     parser.add_argument("--provider-latency-ms", type=float, default=0, help="added latency per mocked provider call")
@@ -364,24 +442,29 @@ def main() -> None:
     app_url = url
     if args.db_latency_ms > 0:
         parsed = urlparse(url)
-        proxy = DelayProxy(parsed.hostname or "127.0.0.1", parsed.port or 5432, args.db_latency_ms)
+        if not parsed.hostname:
+            parser.error("--db-latency-ms needs a database URL with a TCP host")
+        proxy = DelayProxy(parsed.hostname, parsed.port or 5432, args.db_latency_ms)
         proxy.start()
-        proxy.ready.wait(5)
-        app_url = urlunparse(parsed._replace(netloc=parsed.netloc.replace(f":{parsed.port}", f":{proxy.port}")))
+        if not proxy.ready.wait(5):
+            sys.exit("--db-latency-ms: the latency proxy did not start")
+        app_url = proxied_url(url, proxy.port)
     sink: TelemetrySink | None = None
     if args.telemetry:
         sink = TelemetrySink()
         sink.start()
 
-    app, _ = build_app(
+    app, billing = build_app(
         app_url,
         args.users,
         args.orgs,
         args.pool_size,
+        worker_pool_size=args.worker_pool_size,
         provider_latency_ms=args.provider_latency_ms,
         telemetry_port=sink.port if sink else None,
         traces_sample_rate=args.traces_sample_rate,
     )
+    pools = pool_report(app)
     degradation = {
         "db_latency_ms": args.db_latency_ms,
         "provider_latency_ms": args.provider_latency_ms,
@@ -394,6 +477,7 @@ def main() -> None:
                 "dataset": counts,
                 "seed_seconds": round(time.monotonic() - started, 2),
                 "port": args.port,
+                "pools": pools,
                 "degradation": degradation,
             }
         ),
@@ -407,16 +491,22 @@ def main() -> None:
         uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning", access_log=False)
     finally:
         sampler.stop()
+        webhooks = webhook_report(url, billing)
         print(
             json.dumps(
                 {
                     "peak_database_connections": sampler.peak,
-                    "pool_max_size": args.pool_size,
-                    "billing_events": ledger_stats(url),
+                    "pools": pools,
+                    "webhooks": webhooks,
                     "telemetry_sink_requests": dict(sink.requests) if sink else None,
                 }
             ),
             flush=True,
+        )
+    if webhooks["exactly_once"] is False:
+        sys.exit(
+            f"PERF-06 FAILED: {webhooks['stripe_resyncs']} Stripe re-reads for {webhooks['events_processed']} "
+            "processed events. Exactly-once is violated, unless deliveries that got a non-200 explain the difference."
         )
 
 

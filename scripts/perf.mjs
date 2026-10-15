@@ -8,11 +8,15 @@
  *
  * BASE_URL must point at a local server unless an owner-approved run plan
  * says otherwise (spec §15.2). A deployed target also needs PERF_USERS_FILE
- * (synthetic users' session tokens) or, for webhooks, PERF_WEBHOOK_SECRET;
- * see perf/run-plan-template.md. Neither value is printed or put on a command line.
+ * (synthetic users' session tokens) or, for webhooks, PERF_WEBHOOK_SECRET, and
+ * a protected preview needs VERCEL_AUTOMATION_BYPASS_SECRET; see
+ * perf/run-plan-template.md. None of these values is printed or put on a command line.
+ *
+ * Needs Docker Desktop: k6 reaches the perf server, which listens on 127.0.0.1,
+ * through host.docker.internal. On Linux, see perf/README.md.
  */
 import { spawnSync } from "node:child_process";
-import { mkdirSync, statSync } from "node:fs";
+import { mkdirSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 
 const root = path.resolve(import.meta.dirname, "..");
@@ -43,7 +47,10 @@ function fail(message) {
 }
 
 const baseUrl = process.env.BASE_URL ?? "http://host.docker.internal:8001";
-const host = new URL(baseUrl).hostname;
+const parsedUrl = new URL(baseUrl);
+// Credentials in the URL would land on the docker command line and in the results.
+if (parsedUrl.username || parsedUrl.password) fail("BASE_URL must not contain a user name or password.");
+const host = parsedUrl.hostname;
 const local = ["host.docker.internal", "localhost", "127.0.0.1"].includes(host);
 if (!local && process.env.PERF_ALLOW_REMOTE !== "1") {
   fail(`Refusing to load-test ${host}: only local targets are allowed without an approved run plan.`);
@@ -63,17 +70,20 @@ const env = ["-e", `BASE_URL=${baseUrl}`];
 for (const name of PASSTHROUGH) if (process.env[name]) env.push("-e", `${name}=${process.env[name]}`);
 const mounts = [];
 if (usersFile) {
-  // It holds bearer tokens, so it must never land in the working tree.
-  const relative = path.relative(root, usersFile);
+  if (!statSync(usersFile, { throwIfNoEntry: false })?.isFile()) fail("PERF_USERS_FILE is not a readable file.");
+  // It holds bearer tokens, so it must never land in the working tree. Real
+  // paths, so a symbolic link or a differently cased path cannot slip inside.
+  const relative = path.relative(realpathSync.native(root), realpathSync.native(usersFile));
   if (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)) {
     fail("Keep PERF_USERS_FILE outside the repository: it holds session tokens.");
   }
-  if (!statSync(usersFile, { throwIfNoEntry: false })?.isFile()) fail("PERF_USERS_FILE is not a readable file.");
   mounts.push("-v", `${usersFile}:${USERS_FILE_IN_CONTAINER}:ro`);
   env.push("-e", `PERF_USERS_FILE=${USERS_FILE_IN_CONTAINER}`);
 }
-// Name only: Docker copies the value from this process's environment.
-if (process.env.PERF_WEBHOOK_SECRET) env.push("-e", "PERF_WEBHOOK_SECRET");
+// Names only: Docker copies the values from this process's environment.
+for (const name of ["PERF_WEBHOOK_SECRET", "VERCEL_AUTOMATION_BYPASS_SECRET"]) {
+  if (process.env[name]) env.push("-e", name);
+}
 
 const result = spawnSync(
   "docker",

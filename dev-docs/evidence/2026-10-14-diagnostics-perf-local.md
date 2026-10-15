@@ -162,3 +162,13 @@ None of these files are tracked.
 - Browser rendering, accessibility, and signed-in flows, including the new integrations page e2e. They need a Clerk development instance.
 - Remote CI, including the new `test:init-template` step and the gitleaks history scan with `.gitleaksignore`.
 - Deployment (DEC-001), performance targets (DEC-003), retention policy (DEC-004), and recovery objectives (DEC-005).
+
+## Correction (2026-10-15)
+
+A review of the perf harness found that parts of this record do not hold as written. The recorded figures are left as they were and have not been re-recorded.
+
+- **PERF-06 did not demonstrate exactly-once processing.**
+  - The harness version used (`0aaf248`) sent the copies of each event 100 iterations apart (iteration number modulo event count). With 20 VUs, the copies were seldom in flight together, so this was not a concurrent-duplicate test. Concurrent copies arrived with `88d11be`.
+  - The ledger counts (100 events `processed`, 300 recorded attempts) are the same whether or not a duplicate re-ran the synchronization, so they cannot detect reprocessing. "Duplicates did not cause reprocessing" was therefore not demonstrated.
+  - PERF-06 must be re-recorded with the 2026-10-15 harness. Its server report compares the mocked Stripe re-reads with the events processed and fails on a mismatch, and k6 fails the run unless every delivery is acknowledged as `processed`.
+- **The PERF-03 throughput figures are whole-run averages.** "About 212" and "about 226 requests/s", and the "about 210–230 requests/s" saturation point, are k6's request rate over the whole run. That run includes the ramp from 5 iterations/s and the lower steps, so these figures understate the rate sustained at saturation and must not be read as it. The stages also ramped linearly between levels instead of holding each level. From 2026-10-15 the harness holds each step and reports achieved against offered rate per stage. Re-record PERF-03 with it before quoting a saturation point.

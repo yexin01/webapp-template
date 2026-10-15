@@ -56,6 +56,12 @@ REPO = HERE.parents[1]
 API_DIR = REPO / "apps" / "api"
 # Strings that must never reach a client: stack traces and file-system paths.
 LEAK_MARKERS = ("Traceback", 'File "', "/var/task", "site-packages", "/Users/", "/home/")
+# Vercel's documented maximum for a Python function bundle: 500 MB uncompressed.
+# Compared in decimal megabytes, the stricter reading.
+BUNDLE_LIMIT_MB = 500
+API_RUNTIME = "python3.12"
+# Vercel Deployment Protection: Protection Bypass for Automation (preview probes only).
+BYPASS_ENV = "VERCEL_AUTOMATION_BYPASS_SECRET"
 
 
 # -- Helpers ------------------------------------------------------------------
@@ -223,6 +229,7 @@ def cmd_bundle(args: argparse.Namespace) -> None:
             count += 1
 
     native = [k for k in mapping if k.endswith(".so") or ".so." in k]
+    platforms = {k: binary_platform(root / mapping[k]) for k in native}
     web_funcs = list((output / "services" / "web" / "functions").rglob("*.func"))
     result = {
         "runtime": vc.get("runtime"),
@@ -233,10 +240,13 @@ def cmd_bundle(args: argparse.Namespace) -> None:
         "files": count,
         "uncompressed_bytes": total,
         "uncompressed_mib": round(total / 1_048_576, 1),
-        "documented_limit_mib": 500,
+        "documented_limit_mb": BUNDLE_LIMIT_MB,
         "test_files_included": sum(1 for k in mapping if k.startswith("tests/")),
         "largest": [{"package": k, "mib": round(v / 1_048_576, 1)} for k, v in sizes.most_common(10)],
         "native_libraries": len(native),
+        # From each file's header: the filename tag is missing on abi3 and vendored libraries.
+        "native_platforms": dict(Counter(platforms.values())),
+        "native_not_linux_x86_64": sorted(k for k, v in platforms.items() if v != "linux-x86_64")[:20],
         "native_linux_x86_64_tagged": sum(1 for k in native if "x86_64-linux" in k),
         "native_macos_tagged": sum(1 for k in native if "darwin" in k or "macosx" in k),
         "services": [
@@ -244,11 +254,118 @@ def cmd_bundle(args: argparse.Namespace) -> None:
         ],
         "routes": [r for r in config.get("routes", []) if "src" in r],
         "crons": config.get("crons", []),
+        "registered_jobs": registered_jobs(),
         "web_functions": len(web_funcs),
         "assembled_task_root": str(task),
     }
+    checks = bundle_checks(result, total)
+    result["checks"], result["passed"] = checks.items, checks.passed
     write_json(Path(args.results) / "bundle.json", result)
     print(json.dumps({k: result[k] for k in ("runtime", "architecture", "files", "uncompressed_mib")}))
+    if not checks.passed:
+        sys.exit("bundle: some checks failed")
+
+
+# ELF e_machine values, and the magic numbers of Mach-O (macOS) binaries, thin and universal.
+_ELF_MACHINES = {3: "x86", 40: "arm", 62: "x86_64", 183: "aarch64"}
+_MACHO_MAGICS = {
+    b"\xfe\xed\xfa\xce",
+    b"\xfe\xed\xfa\xcf",
+    b"\xce\xfa\xed\xfe",
+    b"\xcf\xfa\xed\xfe",
+    b"\xca\xfe\xba\xbe",
+}
+
+
+def header_platform(head: bytes) -> str:
+    """Classify a native binary by its first 20 bytes: ``linux-x86_64``, ``elf-<arch>``, ``macos``, or ``unknown``."""
+    if head[:4] == b"\x7fELF" and len(head) >= 20:
+        machine = int.from_bytes(head[18:20], "little" if head[5] == 1 else "big")
+        if machine == 62 and head[4] == 2:  # EM_X86_64, ELFCLASS64
+            return "linux-x86_64"
+        return f"elf-{_ELF_MACHINES.get(machine, f'machine-{machine}')}-{32 if head[4] == 1 else 64}bit"
+    if head[:4] in _MACHO_MAGICS:
+        return "macos"
+    return "unknown"
+
+
+def binary_platform(path: Path) -> str:
+    with path.open("rb") as f:
+        return header_platform(f.read(20))
+
+
+def registered_jobs() -> dict[str, str]:
+    """The API's job registry as Vercel Cron paths and schedules. Builds the app without contacting any service."""
+    sys.path.insert(0, str(API_DIR))
+    from app.bootstrap import build_container
+    from app.modules.billing.adapters.fakes import InMemoryBillingProvider
+    from app.settings import load_settings
+
+    settings = load_settings(
+        _env_file=None,
+        app_env="test",
+        database_url="postgresql://unused:unused@127.0.0.1:1/unused",
+        billing_mode="mock",
+        stripe_price_pro_monthly="price_placeholder_monthly",
+        stripe_price_pro_yearly="price_placeholder_yearly",
+        llm_mode="mock",
+    )
+    container = build_container(settings, billing_provider=InMemoryBillingProvider())
+    try:
+        return {f"/api/v1/jobs/{job.name}": job.schedule for job in container.kernel.jobs.all()}
+    finally:
+        container.close()
+
+
+def bundle_checks(result: dict[str, Any], total_bytes: int) -> Checks:
+    checks = Checks()
+    # Controls: the header check must tell a Linux x86-64 library from the binaries it has to reject.
+    elf = b"\x7fELF\x02\x01\x01" + bytes(11)
+    controls = {
+        "x86_64": header_platform(elf + (62).to_bytes(2, "little")),
+        "aarch64": header_platform(elf + (183).to_bytes(2, "little")),
+        "macos_arm64": header_platform(b"\xcf\xfa\xed\xfe" + bytes(16)),
+        "macos_universal": header_platform(b"\xca\xfe\xba\xbe" + bytes(16)),
+        "not_a_binary": header_platform(b"#!/usr/bin/env python3\n"),
+    }
+    checks.add(
+        "native_header_controls",
+        controls
+        == {
+            "x86_64": "linux-x86_64",
+            "aarch64": "elf-aarch64-64bit",
+            "macos_arm64": "macos",
+            "macos_universal": "macos",
+            "not_a_binary": "unknown",
+        },
+        **controls,
+    )
+    checks.add("api_runtime", result["runtime"] == API_RUNTIME, runtime=result["runtime"], expected=API_RUNTIME)
+    checks.add("api_architecture", result["architecture"] == "x86_64", architecture=result["architecture"])
+    checks.add(
+        "within_bundle_limit",
+        total_bytes < BUNDLE_LIMIT_MB * 1_000_000,
+        uncompressed_mib=result["uncompressed_mib"],
+        limit_mb=BUNDLE_LIMIT_MB,
+    )
+    checks.add("no_test_files", result["test_files_included"] == 0, test_files=result["test_files_included"])
+    checks.add(
+        "native_libraries_linux_x86_64",
+        not result["native_not_linux_x86_64"] and result["native_macos_tagged"] == 0,
+        platforms=result["native_platforms"],
+        macos_tagged=result["native_macos_tagged"],
+        offending=result["native_not_linux_x86_64"],
+    )
+    scheduled = {c.get("path"): c.get("schedule") for c in result["crons"]}
+    registered = result["registered_jobs"]
+    checks.add(
+        "crons_match_job_registry",
+        bool(registered) and len(scheduled) == len(result["crons"]) and scheduled == registered,
+        missing=sorted(registered.keys() - scheduled.keys()),
+        unknown=sorted(scheduled.keys() - registered.keys()),
+        schedule_differs=sorted(k for k in scheduled.keys() & registered.keys() if scheduled[k] != registered[k]),
+    )
+    return checks
 
 
 # -- runtime ------------------------------------------------------------------
@@ -268,24 +385,25 @@ def runtime_env(env_file: Path, database_url: str) -> dict[str, str]:
     return env
 
 
-def docker_env_args(env: dict[str, str]) -> list[str]:
-    args: list[str] = []
-    for key, value in env.items():
-        args += ["-e", f"{key}={value}"]
-    return args
+def docker_env(env: dict[str, str]) -> tuple[list[str], dict[str, str]]:
+    """``-e NAME`` arguments, and the environment for the docker CLI that holds the values.
+
+    Docker copies each value from its own environment, so none is on a command line.
+    """
+    return [arg for key in env for arg in ("-e", key)], {**os.environ, **env}
 
 
 def cmd_runtime(args: argparse.Namespace) -> None:
-    env = runtime_env(Path(args.env_file), args.database_url)
+    env_args, docker_process_env = docker_env(runtime_env(Path(args.env_file), args.database_url))
     subprocess.run(["docker", "rm", "-f", args.name], capture_output=True, check=False)
     command = [
         "docker", "run", "-d", "--name", args.name, "--platform", "linux/amd64",
         "--network", args.network, "-p", f"127.0.0.1:{args.port}:8920",
         "-v", f"{args.task}:/var/task:ro", "-v", f"{HERE / 'emulator.py'}:/opt/emulator.py:ro",
         "-v", f"{args.results}:/results",
-        *docker_env_args(env), "--entrypoint", "python3", args.image, "/opt/emulator.py", "serve",
+        *env_args, "--entrypoint", "python3", args.image, "/opt/emulator.py", "serve",
     ]  # fmt: skip
-    subprocess.run(command, check=True, capture_output=True)
+    subprocess.run(command, check=True, capture_output=True, env=docker_process_env)
     deadline = time.monotonic() + args.timeout
     while time.monotonic() < deadline:
         state = subprocess.run(
@@ -333,6 +451,12 @@ def unsigned_token(claims: dict[str, Any]) -> str:
         return base64.urlsafe_b64encode(json.dumps(data).encode()).decode().rstrip("=")
 
     return f"{part({'alg': 'none', 'typ': 'JWT'})}.{part(claims)}."
+
+
+def bypass_headers() -> dict[str, str]:
+    """Vercel's Protection Bypass for Automation header, when the secret is set. Never logged or saved."""
+    secret = os.environ.get(BYPASS_ENV)
+    return {"x-vercel-protection-bypass": secret} if secret else {}
 
 
 def stripe_signature(payload: bytes, secret: str, timestamp: int) -> str:
@@ -429,7 +553,9 @@ async def isolation(base: str, tokens: Tokens, users: int, run_id: str, ids: Inv
     user_ids: dict[str, str] = {}
     flight = {"now": 0, "peak": 0}
     limits = httpx.Limits(max_connections=users * 3, max_keepalive_connections=users * 3)
-    async with httpx.AsyncClient(base_url=base, timeout=60, limits=limits, event_hooks=ids.async_hooks()) as client:
+    async with httpx.AsyncClient(
+        base_url=base, timeout=60, limits=limits, headers=bypass_headers(), event_hooks=ids.async_hooks()
+    ) as client:
 
         async def call(method: str, path: str, token: str, **kwargs: Any) -> httpx.Response:
             started = time.perf_counter()
@@ -497,7 +623,7 @@ def cmd_probe(args: argparse.Namespace) -> None:
     base = args.base_url.rstrip("/")
     checks = Checks()
     bodies: list[str] = []
-    client = httpx.Client(base_url=base, timeout=60, event_hooks=ids.hooks())
+    client = httpx.Client(base_url=base, timeout=60, headers=bypass_headers(), event_hooks=ids.hooks())
 
     def request(method: str, path: str, **kwargs: Any) -> httpx.Response:
         response = client.request(method, path, **kwargs)
@@ -506,6 +632,13 @@ def cmd_probe(args: argparse.Namespace) -> None:
 
     print(f"probing {base} ({args.label})")
     r = request("GET", "/api/v1/health")
+    if r.status_code == 401:
+        # The API never answers /health with 401; Vercel Deployment Protection does.
+        action = "It rejected" if bypass_headers() else "Set"
+        sys.exit(
+            f"probe {args.label}: /api/v1/health returned 401: the deployment is behind Vercel Deployment "
+            f"Protection. {action} {BYPASS_ENV} (the project's Protection Bypass for Automation secret)."
+        )
     checks.add("health", r.status_code == 200, status=r.status_code)
     r = request("GET", "/api/v1/proof-route-that-does-not-exist")
     checks.add(
@@ -870,18 +1003,19 @@ def free_port() -> int:
 def cmd_coldstart(args: argparse.Namespace) -> None:
     results = Path(args.results)
     (results / "coldstart.jsonl").unlink(missing_ok=True)
-    env = runtime_env(Path(args.env_file), args.database_url)
+    env_args, docker_process_env = docker_env(runtime_env(Path(args.env_file), args.database_url))
     for i in range(args.runs):
         for path in ("/api/v1/health", "/api/v1/ready"):
             subprocess.run(
                 [
                     "docker", "run", "--rm", "--platform", "linux/amd64", "--network", args.network,
                     "-v", f"{args.task}:/var/task:ro", "-v", f"{HERE / 'emulator.py'}:/opt/emulator.py:ro",
-                    "-v", f"{results}:/results", *docker_env_args(env),
+                    "-v", f"{results}:/results", *env_args,
                     "--entrypoint", "python3", args.image, "/opt/emulator.py", "once", path,
                 ],
                 check=True,
                 capture_output=True,
+                env=docker_process_env,
             )  # fmt: skip
         print(f"  container cold start {i + 1}/{args.runs}")
     container = [json.loads(line) for line in (results / "coldstart.jsonl").read_text().splitlines()]
@@ -907,7 +1041,8 @@ def cmd_coldstart(args: argparse.Namespace) -> None:
                         health_ms = (time.perf_counter() - started) * 1000
                         break
                 except httpx.HTTPError:
-                    time.sleep(0.005)
+                    pass
+                time.sleep(0.005)
             t = time.perf_counter()
             ready = httpx.get(f"http://127.0.0.1:{port}/api/v1/ready", timeout=10)
             native.append(
@@ -919,7 +1054,11 @@ def cmd_coldstart(args: argparse.Namespace) -> None:
             )
         finally:
             proc.terminate()
-            proc.wait(timeout=10)
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
         print(f"  host cold start {i + 1}/{args.runs}")
 
     def series(rows: list[dict[str, Any]], key: str, path: str | None = None) -> dict[str, Any]:
@@ -979,19 +1118,27 @@ def cmd_report(args: argparse.Namespace) -> None:
         lines += [f"- {k}: `{v}`" for k, v in meta.items()] + [""]
     if bundle:
         lines += [
-            "## Packaging (`vercel build`, without Vercel credentials)",
+            f"## Packaging (`vercel build`, without Vercel credentials; {'PASS' if bundle['passed'] else 'FAIL'})",
             "",
             f"- Runtime `{bundle['runtime']}`, architecture `{bundle['architecture']}`, handler `{bundle['handler']}`.",
             f"- API function: {bundle['files']} files, **{bundle['uncompressed_mib']} MiB** uncompressed "
-            f"(documented Python limit {bundle['documented_limit_mib']} MB). Test files included: "
+            f"(documented Python limit {bundle['documented_limit_mb']} MB). Test files included: "
             f"{bundle['test_files_included']}.",
-            f"- Native libraries: {bundle['native_libraries']} ({bundle['native_linux_x86_64_tagged']} tagged "
-            f"x86_64-linux, {bundle['native_macos_tagged']} tagged macOS).",
+            f"- Native libraries: {bundle['native_libraries']}, by file header {bundle['native_platforms']} "
+            f"({bundle['native_linux_x86_64_tagged']} tagged x86_64-linux in the file name, "
+            f"{bundle['native_macos_tagged']} tagged macOS).",
             "- Largest: " + ", ".join(f"{x['package']} {x['mib']} MiB" for x in bundle["largest"][:6]) + ".",
             f"- Services: {', '.join(s['name'] + ' (' + str(s['framework']) + ')' for s in bundle['services'])}; "
-            f"crons registered: {len(bundle['crons'])}; web functions: {bundle['web_functions']}.",
+            f"crons registered: {len(bundle['crons'])} (job registry: {len(bundle['registered_jobs'])}); "
+            f"web functions: {bundle['web_functions']}.",
             "",
+            "| Check | Result | Detail |",
+            "|---|---|---|",
         ]
+        for item in bundle["checks"]:
+            detail = {k: v for k, v in item.items() if k not in ("check", "ok")}
+            lines.append(f"| {item['check']} | {'PASS' if item['ok'] else 'FAIL'} | `{json.dumps(detail)[:220]}` |")
+        lines.append("")
     for probe in sorted(results.glob("probe-*.json")):
         data = json.loads(probe.read_text())
         lines += [f"## Probes: {data['label']} ({'PASS' if data['passed'] else 'FAIL'})", ""]

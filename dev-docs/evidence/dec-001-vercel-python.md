@@ -165,6 +165,12 @@ Three independent reviews ran: one subagent on `dfadbce` and `c9618d4`, and two 
    - the production router;
    - Supabase's pooler;
    - genuine Stripe deliveries and retries;
-   - Vercel Cron;
+   - the job routes, called by hand with the cron secret (see the note below);
    - after-response dispatch under freezing.
+
+   *Corrected 2026-10-15:* this list first named Vercel Cron. Vercel Cron invokes production deployments only, so a preview cannot show it. Verifying cron delivery needs a production deployment, which is a separate authorization.
 2. Choose the topology (A or B above), and record it in an ADR when resolving DEC-001.
+
+## Correction (2026-10-15)
+
+The `bundle` step of the run recorded above measured the package but asserted nothing except that there was one API function. Row 2's figures were observed, not checked by the harness. Its count of macOS libraries came from file names, and many native libraries (abi3 builds and vendored libraries) carry no platform tag in their names, so that count could not see them. The "every one asserted by the harness" in the status line therefore did not hold for packaging. From 2026-10-15 the step fails the run on test files in the bundle, any native library whose file header is not Linux x86-64 (Mach-O counts as macOS), a bundle of 500 MB or more, crons that differ from the API's job registry, or a runtime other than `python3.12`. Packaging counts as asserted only after the proof is re-run with that harness.

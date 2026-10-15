@@ -9,6 +9,9 @@
 #
 # The proof tests the committed HEAD: after the export, every script, config,
 # and API file comes from the export, never from the working tree.
+#
+# Needs Docker Desktop: the pooler container reaches the local PostgreSQL
+# (published on 127.0.0.1) through host.docker.internal. See README.md for Linux.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -30,11 +33,14 @@ NETWORK=dec001-proof
 POOLER=dec001-pooler
 RUNTIME=dec001-runtime
 
-export VERCEL_TELEMETRY_DISABLED=1 NEXT_TELEMETRY_DISABLED=1
+export VERCEL_TELEMETRY_DISABLED=1 NEXT_TELEMETRY_DISABLED=1 NO_UPDATE_NOTIFIER=1
+# The CLI reads a token and project link from the environment whatever -Q says.
+unset VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID
 
 PROOF_DIR=""  # the exported copy of this folder, set after the export
 py() { uv run --project "$REPO/apps/api" --frozen --quiet python "$PROOF_DIR/proof.py" "$@"; }
 log() { printf '\n== %s\n' "$*"; }
+regex_escape() { printf '%s' "$1" | sed 's/[][\\.*^$+?(){}|]/\\&/g'; }
 env_value() { sed -n "s/^$1=//p" "$WORK/repo/.env.example"; }
 port_in_use() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
 wait_http() {
@@ -54,7 +60,8 @@ stop_dev() {
     DEV_PID=""
   fi
   # vercel dev's children (next dev, the Python server) run from the export.
-  pkill -f "$WORK/repo/" 2>/dev/null || true
+  # pkill matches a regular expression, so the path is escaped.
+  pkill -f "$(regex_escape "$WORK/repo/")" 2>/dev/null || true
 }
 cleanup() {
   stop_dev
@@ -140,7 +147,11 @@ stop_dev
 log "5. PgBouncer in transaction mode (stand-in for a transaction-mode pooler)"
 docker network create "$NETWORK" >/dev/null
 # PgBouncer's resolver (c-ares) does not resolve Docker Desktop's host name, so pass the address.
-HOST_GATEWAY="$(docker run --rm --entrypoint getent "$POOLER_IMAGE" hosts host.docker.internal | awk 'NR==1 {print $1}')"
+HOST_GATEWAY="$(docker run --rm --entrypoint getent "$POOLER_IMAGE" hosts host.docker.internal | awk 'NR==1 {print $1}' || true)"
+if [[ -z "$HOST_GATEWAY" ]]; then
+  echo "host.docker.internal does not resolve inside containers: this proof needs Docker Desktop (see README.md)" >&2
+  exit 2
+fi
 docker run -d --name "$POOLER" --network "$NETWORK" -p "127.0.0.1:$POOLER_PORT:5432" \
   -e DB_HOST="$HOST_GATEWAY" -e DB_PORT="$DB_PORT" -e DB_USER=postgres -e DB_PASSWORD=postgres \
   -e AUTH_TYPE=scram-sha-256 -e POOL_MODE=transaction -e DEFAULT_POOL_SIZE=4 -e MAX_CLIENT_CONN=500 \
@@ -159,7 +170,9 @@ py outage --base-url "http://127.0.0.1:$RUNTIME_PORT" --proof-json "$WORK/keys/p
   --env-file "$WORK/repo/.env" --pooler "$POOLER" --results "$RESULTS"
 docker logs "$RUNTIME" > "$RESULTS/runtime-container.log" 2>&1 || true
 docker rm -f "$RUNTIME" >/dev/null
-py ipc --results "$RESULTS"
+# Labeled requests sent to the packaged runtime: the probe's isolation step
+# sends 8 per user, its other checks 19, and the outage step 26.
+py ipc --results "$RESULTS" --min-requests "$(( 8 * USERS + 45 ))"
 
 log "7. Cold starts ($COLD_RUNS runs each)"
 py coldstart --runs "$COLD_RUNS" --env-file "$WORK/repo/.env" --database-url "$POOLED_URL" \
