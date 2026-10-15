@@ -61,13 +61,15 @@ class PgBillingRepository:
         row = self._one("SELECT stripe_customer_id FROM app.billing_customers WHERE user_id = %s", (user_id,))
         return row["stripe_customer_id"] if row else None
 
-    def insert_billing_customer(self, user_id: UUID, stripe_customer_id: str) -> str:
+    def insert_billing_customer(self, user_id: UUID, stripe_customer_id: str, linked_at: datetime) -> str:
+        # Recorded as if checked when linked, so a new customer joins the back of the
+        # reconciliation rotation instead of going ahead of every customer checked before.
         self._exec(
             """
-            INSERT INTO app.billing_customers (user_id, stripe_customer_id) VALUES (%s, %s)
+            INSERT INTO app.billing_customers (user_id, stripe_customer_id, reconciled_at) VALUES (%s, %s, %s)
             ON CONFLICT (user_id) DO NOTHING
             """,
-            (user_id, stripe_customer_id),
+            (user_id, stripe_customer_id, linked_at),
         )
         stored = self.get_billing_customer_id(user_id)
         if stored is None:  # pragma: no cover
@@ -77,8 +79,8 @@ class PgBillingRepository:
     def user_exists(self, user_id: UUID) -> bool:
         return self._one("SELECT 1 AS ok FROM app.users WHERE id = %s", (user_id,)) is not None
 
-    def link_customer(self, user_id: UUID, stripe_customer_id: str) -> None:
-        stored = self.insert_billing_customer(user_id, stripe_customer_id)
+    def link_customer(self, user_id: UUID, stripe_customer_id: str, linked_at: datetime) -> None:
+        stored = self.insert_billing_customer(user_id, stripe_customer_id, linked_at)
         if stored != stripe_customer_id:
             raise ConflictError("User is already linked to another billing customer.")
 

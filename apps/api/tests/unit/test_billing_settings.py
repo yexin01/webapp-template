@@ -49,3 +49,17 @@ def test_the_worker_pool_keeps_a_connection_beside_billing_synchronization() -> 
 def test_llm_concurrency_stays_well_below_the_server_threads() -> None:
     with pytest.raises((ConfigError, ValueError)):
         make_settings(llm_max_concurrent_checks=17)
+
+
+@pytest.mark.parametrize("value", [0, 17])
+def test_stripe_call_concurrency_stays_well_below_the_server_threads(value: int) -> None:
+    with pytest.raises(ConfigError, match="BILLING_MAX_CONCURRENT_STRIPE_CALLS"):
+        make_settings(billing_max_concurrent_stripe_calls=value)
+    assert make_settings().billing_max_concurrent_stripe_calls == 4
+
+
+@pytest.mark.parametrize("value", [0, 1_001])
+def test_portal_sessions_per_user_are_bounded(value: int) -> None:
+    with pytest.raises(ConfigError, match="PORTAL_SESSIONS_PER_USER_PER_HOUR"):
+        make_settings(portal_sessions_per_user_per_hour=value)
+    assert make_settings().portal_sessions_per_user_per_hour == 20

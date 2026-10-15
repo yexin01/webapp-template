@@ -132,6 +132,8 @@ class BillingService:
         analytics: Analytics,
         rate_limiter: RateLimiter,
         checkouts_per_hour: int,
+        portal_sessions_per_hour: int,
+        max_concurrent_stripe_calls: int,
         sync_slots: int = 1,
         sync_wait_seconds: float = 5.0,
         reconcile_time_budget_seconds: float = TIME_BUDGET_SECONDS,
@@ -145,6 +147,8 @@ class BillingService:
         self._analytics = analytics
         self._rate_limiter = rate_limiter
         self._checkouts_per_hour = checkouts_per_hour
+        self._portal_sessions_per_hour = portal_sessions_per_hour
+        self._stripe_calls = threading.BoundedSemaphore(max_concurrent_stripe_calls)
         self.sync_slots = sync_slots
         self.sync_wait_seconds = sync_wait_seconds
         self._sync_slots = _Slots(sync_slots, sync_wait_seconds)
@@ -189,19 +193,19 @@ class BillingService:
         if decide(subs, self._clock.now()).plan is Plan.PRO:
             raise ConflictError("You already have Pro. Manage your plan from the billing page.")
 
-        if customer_id is None:
-            created = provider.create_customer(ctx.user_id)
-            with self._tx.as_tenant(ctx) as t:
-                customer_id = t.repo.insert_billing_customer(ctx.user_id, created)
-
-        url = provider.create_checkout_session(
-            customer_id=customer_id,
-            price_id=price_id,
-            user_id=ctx.user_id,
-            success_url=self._urls.checkout_success,
-            cancel_url=self._urls.checkout_cancel,
-            idempotency_key=f"checkout-{ctx.user_id}-{plan_key.value}-{idempotency_key}",
-        )
+        with self._stripe_call_slot():
+            if customer_id is None:
+                created = provider.create_customer(ctx.user_id)
+                with self._tx.as_tenant(ctx) as t:
+                    customer_id = t.repo.insert_billing_customer(ctx.user_id, created, self._clock.now())
+            url = provider.create_checkout_session(
+                customer_id=customer_id,
+                price_id=price_id,
+                user_id=ctx.user_id,
+                success_url=self._urls.checkout_success,
+                cancel_url=self._urls.checkout_cancel,
+                idempotency_key=f"checkout-{ctx.user_id}-{plan_key.value}-{idempotency_key}",
+            )
         self._analytics.capture(ctx.user_id, "checkout_started", {"plan": plan_key.value})
         return url
 
@@ -212,9 +216,27 @@ class BillingService:
             customer_id = t.repo.get_billing_customer_id(ctx.user_id)
         if customer_id is None:
             raise ConflictError("There is no billing account to manage yet.")
-        url = provider.create_portal_session(customer_id=customer_id, return_url=self._urls.portal_return)
+        self._rate_limiter.hit(f"portal:{ctx.user_id}", self._portal_sessions_per_hour, 3600)
+        with self._stripe_call_slot():
+            url = provider.create_portal_session(customer_id=customer_id, return_url=self._urls.portal_return)
         self._analytics.capture(ctx.user_id, "billing_portal_opened", {})
         return url
+
+    @contextmanager
+    def _stripe_call_slot(self) -> Iterator[None]:
+        """Admit a user action's Stripe calls, or refuse at once with ``503``.
+
+        Each admitted action holds a request thread until Stripe answers (up to
+        three attempts at the client timeout), so only a few run per instance
+        and a slow Stripe cannot take the threads every other route needs.
+        Nothing waits for a slot: waiting would hold a thread too.
+        """
+        if not self._stripe_calls.acquire(blocking=False):
+            raise DependencyUnavailableError("Billing is busy. Try again shortly.")
+        try:
+            yield
+        finally:
+            self._stripe_calls.release()
 
     # -- Webhooks and synchronization ----------------------------------------
 
@@ -292,8 +314,7 @@ class BillingService:
             t.record(EntitlementChanged(user_id=user_id, plan=after))
         _log_anomalies(customer_id, stored, now)
 
-    @staticmethod
-    def _adopt_customer(repo: BillingRepository, provider: BillingProvider, customer_id: str) -> UUID | None:
+    def _adopt_customer(self, repo: BillingRepository, provider: BillingProvider, customer_id: str) -> UUID | None:
         """Link a customer we created whose local record was lost or not yet written.
 
         The user reference comes from metadata this server wrote on the
@@ -305,7 +326,7 @@ class BillingService:
             return None
         if repo.get_billing_customer_id(claimed) not in (None, customer_id):
             return None
-        repo.link_customer(claimed, customer_id)
+        repo.link_customer(claimed, customer_id, self._clock.now())
         return claimed
 
     def reconcile(self, *, user_id: UUID | None, apply: bool, page_size: int = 100) -> ReconciliationReport:
@@ -344,23 +365,25 @@ class BillingService:
         """Job ``reconcile-billing``: a bounded batch per run (ARCH-16).
 
         Customers with the most recently flagged webhook events take up to
-        half the batch; the rest are the customers checked least recently, so
-        successive runs cover every customer even while some flags cannot be
-        resolved automatically. A customer Stripe rejects still counts as
-        checked, so it moves to the back of the rotation. The run stops
-        starting new checks once its time budget is spent.
+        half the batch and half the time budget. The rest go to the rotation:
+        the linked customers checked least recently, where a new customer
+        starts at the back, as if checked when it was linked, and a flagged
+        customer the first half did not reach waits its turn like any other.
+        So successive runs check every linked customer, even while some flags
+        cannot be resolved automatically and new customers keep arriving. A
+        customer Stripe rejects still counts as checked, so it moves to the
+        back of the rotation. The run stops starting new checks once its time
+        budget is spent.
         """
         self._require_provider()
         report = ReconciliationReport(applied=apply)
         with self._tx.as_system() as t:
             flagged = t.repo.list_recently_flagged_customers(batch_size // 2)
             least_recent = t.repo.list_least_recently_reconciled(batch_size)
-        batch = list(dict.fromkeys([*flagged, *least_recent]))[:batch_size]
-        deadline = time.monotonic() + self._reconcile_time_budget
-        for customer_id in batch:
-            if time.monotonic() >= deadline:
-                break
-            self._reconcile_customer(customer_id, apply, report)
+        started = time.monotonic()
+        checked = self._reconcile_until(flagged, started + self._reconcile_time_budget / 2, apply, report)
+        rotation = [c for c in least_recent if c not in checked][: batch_size - len(checked)]
+        self._reconcile_until(rotation, started + self._reconcile_time_budget, apply, report)
         # The summary holds counts only; these name what an operator has to look at.
         for d in report.divergences:
             logger.warning(
@@ -381,6 +404,18 @@ class BillingService:
             "rejected": len(report.rejected_customers),
             "applied": apply,
         }
+
+    def _reconcile_until(
+        self, customers: Sequence[str], deadline: float, apply: bool, report: ReconciliationReport
+    ) -> set[str]:
+        """Check customers in order until ``deadline``. Returns those checked."""
+        checked: set[str] = set()
+        for customer_id in customers:
+            if time.monotonic() >= deadline:
+                break
+            self._reconcile_customer(customer_id, apply, report)
+            checked.add(customer_id)
+        return checked
 
     def _reconcile_customer(self, customer_id: str, apply: bool, report: ReconciliationReport) -> None:
         """Check one customer. A Stripe outage stops the run; a rejection for one customer does not."""

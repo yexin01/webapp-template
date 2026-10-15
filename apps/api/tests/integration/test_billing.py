@@ -13,14 +13,16 @@ import threading
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from app.kernel.errors import DependencyUnavailableError, InvalidRequestError
 from app.modules.billing.adapters.fakes import InMemoryBillingProvider
-from app.modules.billing.domain import PlanKey, SubscriptionSnapshot, SubscriptionStatus
-from tests.conftest import PRICE_MONTHLY, TEST_STRIPE_WEBHOOK_SECRET, Harness, superuser_query
+from app.modules.billing.adapters.stripe import to_snapshot
+from app.modules.billing.domain import Plan, PlanKey, SubscriptionSnapshot, SubscriptionStatus, decide
+from tests.conftest import PRICE_MONTHLY, PRICE_YEARLY, TEST_STRIPE_WEBHOOK_SECRET, Harness, superuser_query
 
 pytestmark = pytest.mark.db
 
@@ -34,7 +36,10 @@ def sign(payload: bytes, secret: str = TEST_STRIPE_WEBHOOK_SECRET, ts: int | Non
 
 
 def event_payload(
-    customer_id: str, event_type: str = "customer.subscription.updated", event_id: str | None = None
+    customer_id: str,
+    event_type: str = "customer.subscription.updated",
+    event_id: str | None = None,
+    obj: dict[str, Any] | None = None,
 ) -> bytes:
     return json.dumps(
         {
@@ -42,7 +47,7 @@ def event_payload(
             "object": "event",
             "type": event_type,
             "created": int(time.time()),
-            "data": {"object": {"id": "sub_x", "object": "subscription", "customer": customer_id}},
+            "data": {"object": obj or {"id": "sub_x", "object": "subscription", "customer": customer_id}},
         }
     ).encode()
 
@@ -109,6 +114,29 @@ def test_checkout_creates_customer_once_and_returns_url(harness: Harness) -> Non
     assert "checkout_started" in [e[1] for e in harness.analytics.events]
 
 
+def test_checkout_and_portal_send_the_plan_price_customer_and_configured_urls(harness: Harness) -> None:
+    """BILL-03, BILL-05, SEC-14: what Stripe is asked for comes from the plan and configuration only."""
+    headers = harness.login("user_a")
+    user_id = harness.client.get("/api/v1/me", headers=headers).json()["user_id"]
+    for plan in ("pro_monthly", "pro_yearly"):
+        idempotency = {"Idempotency-Key": f"key-{plan}"}
+        r = harness.client.post("/api/v1/billing/checkout", json={"plan": plan}, headers={**headers, **idempotency})
+        assert r.status_code == 200
+    customer = customer_of(harness, "user_a")
+    sent = {
+        "customer_id": customer,
+        "user_id": uuid.UUID(user_id),
+        "success_url": "http://localhost:3000/billing/success?session_id={CHECKOUT_SESSION_ID}",
+        "cancel_url": "http://localhost:3000/billing?checkout=canceled",
+    }
+    assert harness.billing.checkout_requests == [
+        {**sent, "price_id": PRICE_MONTHLY, "idempotency_key": f"checkout-{user_id}-pro_monthly-key-pro_monthly"},
+        {**sent, "price_id": PRICE_YEARLY, "idempotency_key": f"checkout-{user_id}-pro_yearly-key-pro_yearly"},
+    ]
+    assert harness.client.post("/api/v1/billing/portal", headers=headers).status_code == 200
+    assert harness.billing.portal_requests == [{"customer_id": customer, "return_url": "http://localhost:3000/billing"}]
+
+
 def test_checkout_rejects_unknown_plan_and_price_ids(harness: Harness) -> None:
     headers = {**harness.login("user_a"), "Idempotency-Key": uuid.uuid4().hex}
     for body in (
@@ -160,6 +188,142 @@ def test_portal_requires_existing_customer(harness: Harness) -> None:
     r = harness.client.post("/api/v1/billing/portal", headers=headers)
     assert r.status_code == 200
     assert r.json()["url"] == "http://localhost:3000/billing"
+
+
+def test_portal_rate_limited(make_harness: Any) -> None:
+    h = make_harness({"portal_sessions_per_user_per_hour": 2})
+    headers, other = h.login("user_a"), h.login("user_b")
+    assert [h.client.post("/api/v1/billing/portal", headers=other).status_code for _ in range(3)] == [409] * 3
+    for user in (headers, other):
+        assert start_checkout(h, user).status_code == 200
+    assert [h.client.post("/api/v1/billing/portal", headers=headers).status_code for _ in range(3)] == [200, 200, 429]
+    r = h.client.post("/api/v1/billing/portal", headers=headers)
+    assert int(r.headers["retry-after"]) >= 1
+    assert h.billing.calls.count("create_portal_session") == 2  # no Stripe call past the limit
+    # Each user has their own allowance, and a request refused for having no customer used none of it.
+    assert [h.client.post("/api/v1/billing/portal", headers=other).status_code for _ in range(2)] == [200, 200]
+
+
+def test_stripe_calls_from_checkout_and_the_portal_are_bounded_per_instance(make_harness: Any) -> None:
+    """While Stripe is slow, at most the bound hold request threads in Stripe calls; the rest get 503 at once."""
+    from fastapi.testclient import TestClient
+
+    from app.bootstrap import create_app
+
+    bound = 2
+    h = make_harness({"billing_max_concurrent_stripe_calls": bound})
+    headers, other = h.login("user_a"), h.login("user_b")
+    assert start_checkout(h, headers).status_code == 200
+    original = InMemoryBillingProvider.create_portal_session
+    entered, release, lock = threading.Semaphore(0), threading.Event(), threading.Lock()
+    inside = peak = 0
+
+    def slow_portal(self: InMemoryBillingProvider, *, customer_id: str, return_url: str) -> str:
+        nonlocal inside, peak
+        with lock:
+            inside += 1
+            peak = max(peak, inside)
+        entered.release()
+        try:
+            release.wait(10)  # Stripe answers only once the test lets it
+            return original(self, customer_id=customer_id, return_url=return_url)
+        finally:
+            with lock:
+                inside -= 1
+
+    h.billing.create_portal_session = slow_portal.__get__(h.billing)  # type: ignore[method-assign]
+    with TestClient(create_app(h.container), raise_server_exceptions=False) as client:  # one event loop
+        responses: dict[str, Any] = {}
+        threads: list[threading.Thread] = []
+
+        def send(name: str, path: str, request_headers: dict[str, str], **kw: Any) -> threading.Thread:
+            def run() -> None:
+                started = time.monotonic()
+                r = client.post(path, headers=request_headers, **kw)
+                responses[name] = (r, time.monotonic() - started)
+
+            thread = threading.Thread(target=run)
+            threads.append(thread)
+            thread.start()
+            return thread
+
+        try:
+            for i in range(bound):
+                send(f"held{i}", "/api/v1/billing/portal", headers)
+            for _ in range(bound):
+                assert entered.acquire(timeout=10)
+            excess = [send(f"portal{i}", "/api/v1/billing/portal", headers) for i in range(3)]
+            checkout_headers = {**other, "Idempotency-Key": uuid.uuid4().hex}
+            excess.append(send("checkout", "/api/v1/billing/checkout", checkout_headers, json={"plan": "pro_monthly"}))
+            deadline = time.monotonic() + 5
+            for t in excess:
+                t.join(max(0.0, deadline - time.monotonic()))
+            # Answered while every slot is still held: none of them waited for Stripe.
+            refused = [responses.get(name) for name in ("portal0", "portal1", "portal2", "checkout")]
+            assert [r[0].status_code if r is not None else None for r in refused] == [503] * 4
+            assert {r[0].json()["code"] for r in refused if r is not None} == {"DEPENDENCY_UNAVAILABLE"}
+            # Refused at once: waiting for a slot, even briefly, would hold a request thread too.
+            assert max(seconds for _, seconds in filter(None, refused)) < 0.5
+            assert peak == bound
+        finally:
+            release.set()
+            for t in threads:
+                t.join(10)
+        assert [responses[f"held{i}"][0].status_code for i in range(bound)] == [200] * bound
+        assert client.post("/api/v1/billing/portal", headers=headers).status_code == 200  # slots given back
+    # The refused checkout made no Stripe call: the only customer and session are user_a's.
+    assert (h.billing.calls.count("create_customer"), h.billing.calls.count("create_checkout_session")) == (1, 1)
+
+
+def test_a_failed_stripe_call_gives_its_slot_back(make_harness: Any) -> None:
+    """A Stripe outage never uses up the slots: once Stripe answers again, checkout and the portal work again."""
+    bound = 2
+    h = make_harness({"billing_max_concurrent_stripe_calls": bound})
+    headers = h.login("user_a")
+    assert start_checkout(h, headers).status_code == 200
+    h.billing.fail_with = lambda: DependencyUnavailableError("Billing is temporarily unavailable.")
+    portal = [h.client.post("/api/v1/billing/portal", headers=headers).status_code for _ in range(bound + 1)]
+    assert portal == [503] * (bound + 1)
+    assert h.billing.calls.count("create_portal_session") == bound + 1  # each one reached Stripe: no slot was kept
+    h.billing.fail_with = lambda: InvalidRequestError("The billing request was rejected.")
+    assert [start_checkout(h, headers).status_code for _ in range(bound + 1)] == [400] * (bound + 1)
+    h.billing.fail_with = None
+    assert h.client.post("/api/v1/billing/portal", headers=headers).status_code == 200
+    assert start_checkout(h, headers).status_code == 200
+
+
+def test_a_user_past_their_allowance_gets_429_without_taking_a_stripe_slot(make_harness: Any) -> None:
+    """The per-user limits are counted before a Stripe slot is taken, never while one is held, so a request
+    past its allowance is told when to retry even while every slot is busy."""
+    limits = {"checkouts_per_user_per_hour": 1, "portal_sessions_per_user_per_hour": 1}
+    h = make_harness({"billing_max_concurrent_stripe_calls": 1, **limits})
+    holder, user = h.login("user_a"), h.login("user_b")
+    for headers in (holder, user):
+        assert start_checkout(h, headers).status_code == 200  # each user's one checkout, which creates the customer
+    assert h.client.post("/api/v1/billing/portal", headers=user).status_code == 200  # user_b's one portal session
+    original = InMemoryBillingProvider.create_portal_session
+    entered, release = threading.Event(), threading.Event()
+
+    def held_portal(self: InMemoryBillingProvider, *, customer_id: str, return_url: str) -> str:
+        entered.set()
+        release.wait(10)  # Stripe answers only once the test lets it
+        return original(self, customer_id=customer_id, return_url=return_url)
+
+    h.billing.create_portal_session = held_portal.__get__(h.billing)  # type: ignore[method-assign]
+    held: list[int] = []
+    holding = threading.Thread(
+        target=lambda: held.append(h.client.post("/api/v1/billing/portal", headers=holder).status_code)
+    )
+    holding.start()
+    try:
+        assert entered.wait(10)  # user_a's portal session holds the only slot
+        for r in (start_checkout(h, user), h.client.post("/api/v1/billing/portal", headers=user)):
+            assert (r.status_code, r.json()["code"]) == (429, "RATE_LIMITED")
+            assert int(r.headers["retry-after"]) >= 1
+    finally:
+        release.set()
+        holding.join(10)
+    assert held == [200]
 
 
 # -- Entitlement and presentation ---------------------------------------------
@@ -269,8 +433,17 @@ def test_out_of_order_events_converge_on_current_stripe_state(harness: Harness) 
     """An older 'active' event arriving after cancellation must not resurrect Pro."""
     customer = make_pro(harness, "user_a")
     harness.billing.set_subscriptions(customer, [snapshot(customer, SubscriptionStatus.CANCELED)])
+    stale = {
+        "id": f"sub_{customer[4:]}",
+        "object": "subscription",
+        "customer": customer,
+        "status": "active",
+        "items": {"data": [{"price": {"id": PRICE_MONTHLY}, "current_period_end": int(FUTURE.timestamp())}]},
+    }
+    # Applied as it is, the late payload would grant Pro.
+    assert decide([to_snapshot(stale, harness.container.billing.catalog)], harness.clock.now()).plan is Plan.PRO
     newer = event_payload(customer, "customer.subscription.deleted")
-    older = event_payload(customer, "customer.subscription.updated")
+    older = event_payload(customer, "customer.subscription.updated", obj=stale)
     send_webhook(harness, newer)
     send_webhook(harness, older)  # delivered late; triggers a re-read, not a blind apply
     assert harness.client.get("/api/v1/billing/status", headers=harness.login("user_a")).json()["plan"] == "free"
@@ -394,6 +567,10 @@ def test_webhook_adopts_a_customer_whose_local_link_was_lost(harness: Harness) -
     assert send_webhook(harness, event_payload("cus_lost")).json()["status"] == "processed"
     assert customer_of(harness, "user_a") == "cus_lost"
     assert harness.client.get("/api/v1/billing/status", headers=headers).json()["plan"] == "pro"
+    # Linked now, so it joins the back of the reconciliation rotation, not the front.
+    assert superuser_query(
+        harness.database_url, "SELECT reconciled_at FROM app.billing_customers WHERE stripe_customer_id = 'cus_lost'"
+    ) == [(harness.clock.now(),)]
 
 
 def test_webhook_never_adopts_a_customer_for_a_user_linked_elsewhere(harness: Harness) -> None:
@@ -513,8 +690,8 @@ def test_reconcile_job_checks_a_bounded_batch_least_recently_checked_first(harne
 
     harness.billing.list_customer_subscriptions = recording.__get__(harness.billing)  # type: ignore[method-assign]
     for _ in range(2):
+        harness.clock.advance(seconds=1)  # each run comes after the links and checks before it
         assert service.reconcile_job(apply=False, batch_size=2)["customers"] == 2
-        harness.clock.advance(seconds=1)
     # Two runs of two cover all three customers: none waits behind the others.
     assert sorted(set(checked)) == sorted(customers)
 
@@ -574,8 +751,8 @@ def test_unresolvable_flags_never_stop_the_job_from_covering_every_customer(harn
     harness.billing.list_customer_subscriptions = recording.__get__(harness.billing)  # type: ignore[method-assign]
     service = harness.container.billing.service
     for _ in range(2):
+        harness.clock.advance(seconds=1)  # each run comes after the links and checks before it
         service.reconcile_job(apply=True, batch_size=2)
-        harness.clock.advance(seconds=1)
     assert set(customers) <= set(checked)
 
 
@@ -612,8 +789,8 @@ def test_customers_stripe_rejects_move_to_the_back_of_the_rotation(harness: Harn
     checked = _record_checks(harness)
     summaries = []
     for _ in range(2):
+        harness.clock.advance(seconds=1)  # each run comes after the links and checks before it
         summaries.append(service.reconcile_job(apply=apply, batch_size=2))
-        harness.clock.advance(seconds=1)
     assert summaries[0]["rejected"] == 2  # nothing left to read by ID: Stripe rejects the customer
     assert set(checked) == set(customers)  # the healthy customer is reached, not starved by the rejected ones
 
@@ -623,8 +800,8 @@ def test_a_batch_of_one_is_not_taken_by_an_unresolvable_flag(harness: Harness) -
     assert send_webhook(harness, event_payload("cus_orphan0")).json()["status"] == "needs_reconciliation"
     checked = _record_checks(harness)
     for _ in range(2):
+        harness.clock.advance(seconds=1)  # each run comes after the links and checks before it
         harness.container.billing.service.reconcile_job(apply=True, batch_size=1)
-        harness.clock.advance(seconds=1)
     assert set(customers) <= set(checked)
 
 
@@ -634,6 +811,118 @@ def test_reconcile_job_stops_starting_checks_when_its_time_budget_is_spent(harne
     service = harness.container.billing.service
     service._reconcile_time_budget = 0.0
     assert service.reconcile_job(apply=False, batch_size=10)["customers"] == 0
+
+
+def test_new_customers_join_the_back_of_the_rotation(harness: Harness) -> None:
+    """Customers created every day never keep those checked earlier from being checked again."""
+    old = [make_pro(harness, f"user_old{i}") for i in range(2)]
+    service = harness.container.billing.service
+    harness.clock.advance(days=1)
+    service.reconcile_job(apply=False, batch_size=2)
+    checked = _record_checks(harness)
+    for day in range(3):
+        harness.clock.advance(days=1)
+        for i in range(2):  # each day, as many users start a checkout as one run checks
+            assert start_checkout(harness, harness.login(f"user_new{day}_{i}")).status_code == 200
+        service.reconcile_job(apply=False, batch_size=2)
+    assert set(old) <= set(checked)
+
+
+def _slow_stripe(h: Harness, monkeypatch: pytest.MonkeyPatch, seconds: float = 0.2) -> list[str]:
+    """Each Stripe read takes ``seconds`` on the job's clock. Returns the customers whose subscriptions are read."""
+    import app.modules.billing.service as billing_service
+
+    elapsed = [0.0]
+    monkeypatch.setattr(billing_service, "time", SimpleNamespace(monotonic=lambda: elapsed[0]))
+    checked = _record_checks(h)
+    recorded_list = h.billing.list_customer_subscriptions
+    original_read = InMemoryBillingProvider.get_customer_app_user_id
+
+    def slow_list(customer_id: str) -> list[SubscriptionSnapshot]:
+        elapsed[0] += seconds
+        return recorded_list(customer_id)
+
+    def slow_read(self: InMemoryBillingProvider, customer_id: str) -> uuid.UUID | None:
+        elapsed[0] += seconds
+        return original_read(self, customer_id)
+
+    h.billing.list_customer_subscriptions = slow_list  # type: ignore[method-assign]
+    h.billing.get_customer_app_user_id = slow_read.__get__(h.billing)  # type: ignore[method-assign]
+    return checked
+
+
+def _flag(h: Harness, customer: str) -> None:
+    """Flag a delivery for a linked customer: Stripe rejects its re-read once."""
+    h.billing.fail_with = lambda: InvalidRequestError("The billing request was rejected.")
+    assert send_webhook(h, event_payload(customer)).json()["status"] == "needs_reconciliation"
+    h.billing.fail_with = None
+
+
+def test_flagged_customers_get_at_most_half_of_a_runs_time(harness: Harness, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unresolvable flags that are slow to check never take the whole time budget from the rotation."""
+    customers = [make_pro(harness, f"user_{i}") for i in range(2)]
+    for n in range(3):  # flagged customers that no user can be linked to: each costs a Stripe read, every run
+        assert send_webhook(harness, event_payload(f"cus_orphan{n}")).json()["status"] == "needs_reconciliation"
+    checked = _slow_stripe(harness, monkeypatch)
+    service = harness.container.billing.service
+    service._reconcile_time_budget = 0.3  # one check and a half
+    for _ in range(2):
+        harness.clock.advance(seconds=1)
+        service.reconcile_job(apply=True, batch_size=4)
+    assert set(customers) <= set(checked)
+
+
+@pytest.mark.parametrize("apply", [True, False])
+def test_flagged_customers_the_flagged_half_does_not_reach_wait_their_turn_in_the_rotation(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch, apply: bool
+) -> None:
+    """A newer flag that uses up the flagged half never keeps a customer flagged earlier from being checked."""
+    older = make_pro(harness, "user_older")
+    _flag(harness, older)
+    superuser_query(
+        harness.database_url,
+        "UPDATE app.billing_events SET received_at = received_at - interval '1 hour' WHERE stripe_customer_id = %s",
+        (older,),
+    )
+    if apply:  # no user can be linked to the newer flag: a Stripe read every run, and the flag stays
+        assert send_webhook(harness, event_payload("cus_orphan0")).json()["status"] == "needs_reconciliation"
+    else:  # a dry run resolves no flag: the customer flagged later heads every run
+        _flag(harness, make_pro(harness, "user_newer"))
+    healthy = [make_pro(harness, f"user_{i}") for i in range(2)]
+    checked = _slow_stripe(harness, monkeypatch)
+    service = harness.container.billing.service
+    service._reconcile_time_budget = 0.3  # the newer flag's check uses up the flagged half; one rotation check follows
+    for _ in range(3):
+        harness.clock.advance(seconds=1)
+        assert service.reconcile_job(apply=apply, batch_size=4)["customers"] == 2
+    # One rotation check per run: three runs reach each of the three, the older flagged customer among them.
+    assert set(healthy) <= set(checked)
+    assert older in checked, "a flagged customer the flagged half did not reach was left out of the rotation"
+
+
+def test_a_run_checks_each_customer_at_most_once(harness: Harness) -> None:
+    flagged = make_pro(harness, "user_flagged")  # linked first: at the front of the rotation too
+    harness.clock.advance(seconds=1)
+    other = make_pro(harness, "user_other")
+    _flag(harness, flagged)
+    checked = _record_checks(harness)
+    harness.clock.advance(seconds=1)
+    assert harness.container.billing.service.reconcile_job(apply=False, batch_size=2)["customers"] == 2
+    assert checked == [flagged, other]  # the flagged customer is not checked again in the rotation
+
+
+def test_a_run_with_flagged_customers_stays_within_its_batch(harness: Harness) -> None:
+    others = [make_pro(harness, f"user_{i}") for i in range(3)]
+    harness.clock.advance(seconds=1)
+    flagged = make_pro(harness, "user_flagged")  # linked last: at the back of the rotation
+    _flag(harness, flagged)
+    checked = _record_checks(harness)
+    harness.clock.advance(seconds=1)
+    assert harness.container.billing.service.reconcile_job(apply=False, batch_size=2)["customers"] == 2
+    # The flagged customer's check counts toward the batch: one rotation customer follows, not two.
+    assert len(checked) == 2
+    assert checked[0] == flagged
+    assert checked[1] in others
 
 
 def test_redelivered_flagged_event_during_reconciliation_does_not_deadlock(harness: Harness) -> None:
@@ -801,3 +1090,62 @@ def test_a_webhook_burst_waits_in_the_event_loop_not_on_threads(make_harness: An
             t.join(30)
     assert codes == [200] * 6  # the burst was absorbed, not refused
     assert peak <= service.sync_slots  # the others waited without a thread
+
+
+def test_webhook_admission_verifies_first_and_refuses_after_the_wait(make_harness: Any) -> None:
+    """With every synchronization slot taken, a forged delivery gets 400 at once, never queueing for a
+    slot, and a valid one waits DATABASE_CONNECT_TIMEOUT_SECONDS for a slot, then gets 503 (BILL-10)."""
+    from fastapi.testclient import TestClient
+
+    from app.bootstrap import create_app
+
+    h = make_harness({"database_connect_timeout_seconds": 1})
+    service = h.container.billing.service
+    # One customer per holder: deliveries for one customer would queue on its lock instead.
+    *held_customers, spare = [make_pro(h, f"user_{i}") for i in range(service.sync_slots + 1)]
+    original = InMemoryBillingProvider.list_customer_subscriptions
+    entered, release = threading.Semaphore(0), threading.Event()
+
+    def held_read(self: InMemoryBillingProvider, customer_id: str) -> list[SubscriptionSnapshot]:
+        entered.release()
+        release.wait(10)  # Stripe answers only once the test lets it
+        return original(self, customer_id)
+
+    h.billing.list_customer_subscriptions = held_read.__get__(h.billing)  # type: ignore[method-assign]
+    with TestClient(create_app(h.container), raise_server_exceptions=False) as client:  # one event loop
+        responses: dict[str, Any] = {}
+        threads: list[threading.Thread] = []
+
+        def deliver(name: str, customer: str, secret: str = TEST_STRIPE_WEBHOOK_SECRET) -> threading.Thread:
+            payload = event_payload(customer)
+            headers = {"Stripe-Signature": sign(payload, secret=secret), "Content-Type": "application/json"}
+
+            def run() -> None:
+                started = time.monotonic()
+                r = client.post("/api/v1/webhooks/stripe", content=payload, headers=headers)
+                responses[name] = (r, time.monotonic() - started)
+
+            thread = threading.Thread(target=run)
+            threads.append(thread)
+            thread.start()
+            return thread
+
+        try:
+            for i, customer in enumerate(held_customers):
+                deliver(f"held{i}", customer)
+            for _ in held_customers:
+                assert entered.acquire(timeout=10)
+            deliver("forged", spare, secret="whsec_attacker_secret_00000000000").join(5)
+            forged, forged_seconds = responses["forged"]
+            assert (forged.status_code, forged.json()["code"]) == (400, "WEBHOOK_SIGNATURE_INVALID")
+            assert forged_seconds < service.sync_wait_seconds / 2
+            deliver("waiting", spare).join(5)
+            assert "waiting" in responses, "a delivery waited for a slot without a bound"
+            waiting, waited_seconds = responses["waiting"]
+            assert (waiting.status_code, waiting.json()["code"]) == (503, "DEPENDENCY_UNAVAILABLE")
+            assert waited_seconds >= service.sync_wait_seconds * 0.9
+        finally:
+            release.set()
+            for t in threads:
+                t.join(10)
+    assert [responses[f"held{i}"][0].status_code for i in range(len(held_customers))] == [200] * len(held_customers)

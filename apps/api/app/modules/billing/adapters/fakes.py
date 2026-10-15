@@ -20,6 +20,9 @@ class InMemoryBillingProvider:
         self._prices: dict[str, PriceDescription] = {}
         self._deleted_customers: set[str] = set()
         self.calls: list[str] = []
+        # The arguments of each session created, so tests can check what Stripe would be asked for.
+        self.checkout_requests: list[dict[str, object]] = []
+        self.portal_requests: list[dict[str, object]] = []
         self.fail_with: Callable[[], Exception] | None = None
 
     def _maybe_fail(self, call: str) -> None:
@@ -46,10 +49,23 @@ class InMemoryBillingProvider:
         idempotency_key: str,
     ) -> str:
         self._maybe_fail("create_checkout_session")
+        with self._lock:
+            self.checkout_requests.append(
+                {
+                    "customer_id": customer_id,
+                    "price_id": price_id,
+                    "user_id": user_id,
+                    "success_url": success_url,
+                    "cancel_url": cancel_url,
+                    "idempotency_key": idempotency_key,
+                }
+            )
         return f"{self._base}/billing/success?session_id=cs_mock"
 
     def create_portal_session(self, *, customer_id: str, return_url: str) -> str:
         self._maybe_fail("create_portal_session")
+        with self._lock:
+            self.portal_requests.append({"customer_id": customer_id, "return_url": return_url})
         return return_url
 
     def list_customer_subscriptions(self, customer_id: str) -> list[SubscriptionSnapshot]:
