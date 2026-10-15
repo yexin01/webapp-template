@@ -16,6 +16,7 @@ class DiagnosticsSettings(BaseModel):
     # Clerk user IDs allowed to use diagnostics. Empty: only when APP_ENV=local,
     # where any signed-in user (the developer) may use them.
     diagnostics_operator_ids: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    # Also caps how many of a non-operator's refused attempts are audited each minute.
     diagnostics_runs_per_user_per_minute: int = Field(default=20, ge=1, le=600)
     diagnostics_runs_global_per_day: int = Field(default=1_000, ge=1, le=100_000)
 

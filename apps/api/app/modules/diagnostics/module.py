@@ -40,6 +40,7 @@ def build_diagnostics(
         ),
         probes=probes,
         rate_limiter=kernel.rate_limiter,
+        transactions=kernel.store,
         runs_per_user_per_minute=settings.diagnostics_runs_per_user_per_minute,
         runs_global_per_day=settings.diagnostics_runs_global_per_day,
     )

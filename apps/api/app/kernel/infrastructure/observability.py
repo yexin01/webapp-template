@@ -10,6 +10,7 @@ import json
 import logging
 import sys
 import threading
+import time
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
@@ -106,8 +107,11 @@ def scrub_event(event: Any, _hint: Any) -> Any:
     if isinstance(event.get("message"), str):
         event["message"] = redact_text(event["message"])
     logentry = event.get("logentry")
-    if isinstance(logentry, dict) and isinstance(logentry.get("message"), str):
-        logentry["message"] = redact_text(logentry["message"])
+    if isinstance(logentry, dict):
+        # ``formatted`` is the log message with the call's arguments already filled in.
+        for key in ("message", "formatted"):
+            if isinstance(logentry.get(key), str):
+                logentry[key] = redact_text(logentry[key])
         logentry.pop("params", None)
     return event
 
@@ -249,12 +253,24 @@ class PostHogAnalytics:
             logger.warning("analytics_capture_failed")
 
     def flush(self) -> bool:
+        """True only if PostHog accepted everything queued, within the flush timeout.
+
+        The client's flush returns quietly when its timeout runs out with events
+        still unsent, and a slow host reports failure (``on_error``) only after
+        its retries, so a timed-out flush confirms nothing. The queue is shared:
+        events other requests keep queueing can stop it from draining in time,
+        which also returns False, while events queued once it drained do not count.
+        """
         with self._lock:
             before = self._failures
+        deadline = time.monotonic() + self._flush_timeout
         try:
             self._client.flush(timeout_seconds=self._flush_timeout)
         except Exception:  # noqa: BLE001
             logger.warning("analytics_flush_failed")
+            return False
+        if self._client.queue.unfinished_tasks and time.monotonic() >= deadline:
+            logger.warning("analytics_flush_unconfirmed", extra={"flush_timeout_seconds": self._flush_timeout})
             return False
         with self._lock:
             return self._failures == before

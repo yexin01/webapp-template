@@ -6,17 +6,15 @@ a hosted project.
 
 from __future__ import annotations
 
-from urllib.parse import urlparse
-
 from app.kernel.diagnostics import IntegrationInfo, IntegrationKey, IntegrationMode
 from app.kernel.infrastructure.config import AppEnv, CoreSettings
-
-_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", ""})
+from app.kernel.infrastructure.migrations import is_local_database
 
 
 def describe_database(s: CoreSettings) -> IntegrationInfo:
     db_url = s.database_url.get_secret_value() if s.database_url else ""
-    local = (urlparse(db_url).hostname or "") in _LOOPBACK_HOSTS
+    # Where libpq connects: key/value DSNs, host parameters, and PG* variables included.
+    local = is_local_database(db_url)
     if local:
         mode = IntegrationMode.LOCAL
     else:

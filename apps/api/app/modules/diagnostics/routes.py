@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from app.kernel.diagnostics import CheckResult, IntegrationInfo, IntegrationKey, IntegrationMode, Outcome
 from app.kernel.http.auth import AuthDeps
 from app.kernel.http.schemas import errors
+from app.kernel.request_context import request_id_var
 from app.kernel.tenancy import TenantContext
 from app.modules.diagnostics.service import DiagnosticsService
 
@@ -74,6 +75,6 @@ def build_router(diagnostics: DiagnosticsService, environment: Environment, auth
 
     @router.post("/diagnostics/integrations/{key}/check", response_model=IntegrationCheck, responses=responses)
     def run_check(key: IntegrationKey, ctx: Personal) -> IntegrationCheck:
-        return IntegrationCheck.from_result(diagnostics.run(ctx, key))
+        return IntegrationCheck.from_result(diagnostics.run(ctx, key, request_id_var.get()))
 
     return router

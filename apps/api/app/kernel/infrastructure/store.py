@@ -37,18 +37,39 @@ class PgKernelStore:
         self._one("SELECT 1 AS ok")
 
     def describe_connection(self) -> ConnectionDescription:
+        # The catalogs read here are readable by every role, including app_api.
         row = self._one(
-            "SELECT current_user AS role, current_setting('server_version') AS server_version, "
-            "current_setting('row_security') = 'on' AS row_security, "
-            "coalesce(current_setting('app.user_id', true), '') <> '' AS tenant_context_set"
+            """
+            SELECT current_user AS role, current_setting('server_version') AS server_version,
+              current_setting('row_security') = 'on' AS row_security,
+              coalesce(current_setting('app.user_id', true), '') <> '' AS tenant_context_set,
+              r.rolsuper AS superuser, r.rolbypassrls AS bypass_rls,
+              ARRAY(
+                SELECT c.relname::text FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'app' AND c.relkind IN ('r', 'p')
+                  AND NOT (c.relrowsecurity AND c.relforcerowsecurity)
+                ORDER BY 1
+              ) AS unprotected_tables,
+              ARRAY(
+                SELECT c.relname::text FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'app' AND c.relkind IN ('r', 'p')
+                  AND pg_has_role(current_user, c.relowner, 'USAGE')
+                ORDER BY 1
+              ) AS owned_tables
+            FROM pg_roles r WHERE r.rolname = current_user
+            """
         )
-        if row is None:  # pragma: no cover - a scalar SELECT always returns a row
+        if row is None:  # pragma: no cover - the current role is always in pg_roles
             raise RuntimeError("connection description unavailable")
         return ConnectionDescription(
             role=row["role"],
             server_version=row["server_version"].split(" ")[0],
             row_security=row["row_security"],
             tenant_context_set=row["tenant_context_set"],
+            superuser=row["superuser"],
+            bypass_rls=row["bypass_rls"],
+            unprotected_tables=tuple(row["unprotected_tables"]),
+            owned_tables=tuple(row["owned_tables"]),
         )
 
     # -- Rate limits ------------------------------------------------------------

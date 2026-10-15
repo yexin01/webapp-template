@@ -32,12 +32,19 @@ class AuditEntry:
 
 @dataclass(frozen=True, slots=True)
 class ConnectionDescription:
-    """What the database reports about the current transaction."""
+    """What the database reports about the current transaction, and whether row-level security binds it (DB-06)."""
 
     role: str
     server_version: str
     row_security: bool
     tenant_context_set: bool
+    # Either attribute makes PostgreSQL skip row-level security, whatever ``row_security`` says.
+    superuser: bool
+    bypass_rls: bool
+    # Tables in schema ``app`` whose row-level security is not both enabled and forced.
+    unprotected_tables: tuple[str, ...]
+    # Tables in schema ``app`` the role owns (or has its owner's privileges on).
+    owned_tables: tuple[str, ...]
 
 
 # ---------------------------------------------------------------------------

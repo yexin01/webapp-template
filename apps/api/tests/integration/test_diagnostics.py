@@ -4,18 +4,24 @@ from __future__ import annotations
 
 import base64
 import json
-from collections.abc import Callable
+import uuid
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from typing import Any
 
+import psycopg
 import pytest
+from psycopg import sql
 
 from app.kernel.infrastructure.config import AppEnv
+from app.kernel.infrastructure.store import PgKernelStore
+from app.kernel.ports import ConnectionDescription
 from app.kernel.tenancy import Role
 from app.modules.billing.ports import PriceDescription
 from app.modules.identity.domain import ExternalMembership
 from app.modules.llm.adapters import MockLLMProvider
 from app.settings import Settings
-from tests.conftest import PRICE_MONTHLY, PRICE_YEARLY, Harness
+from tests.conftest import PRICE_MONTHLY, PRICE_YEARLY, Harness, superuser_query
 
 pytestmark = pytest.mark.db
 
@@ -150,6 +156,90 @@ def test_database_check_runs_as_least_privileged_role_with_rls(operator_harness:
     assert "row-level security" in body["summary"]
 
 
+def describe_as(url: str, role: str | None) -> ConnectionDescription:
+    with psycopg.connect(url) as conn, conn.transaction():
+        if role is not None:
+            conn.execute(sql.SQL("SET LOCAL ROLE {}").format(sql.Identifier(role)))
+        return PgKernelStore(conn).describe_connection()
+
+
+def test_connection_description_reads_role_attributes_and_table_protection(db: str) -> None:
+    """DB-06 as the database probe sees it, read with the runtime role's own privileges."""
+    api = describe_as(db, "app_api")
+    assert (api.role, api.superuser, api.bypass_rls, api.unprotected_tables, api.owned_tables) == (
+        "app_api",
+        False,
+        False,
+        (),
+        (),
+    )
+    # The test database's administrator owns the app tables. Its attributes depend on how the
+    # server was set up (CREATE ROLE ... SUPERUSER leaves out BYPASSRLS), so pg_roles is the reference.
+    admin = describe_as(db, None)
+    [attributes] = superuser_query(db, "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user")
+    assert (admin.superuser, admin.bypass_rls) == attributes
+    assert {"projects", "audit_log", "outbox"} <= set(admin.owned_tables)
+
+
+@contextmanager
+def scratch_role(url: str, attributes: str) -> Iterator[str]:
+    """A uniquely named role that owns nothing and is granted nothing.
+
+    Roles belong to the whole server, which other test sessions share, so app_api itself is never altered.
+    """
+    role = f"app_test_role_{uuid.uuid4().hex[:10]}"
+    superuser_query(url, f"CREATE ROLE {role} NOLOGIN NOINHERIT {attributes}")
+    try:
+        yield role
+    finally:
+        superuser_query(url, f"DROP ROLE {role}")
+
+
+def test_connection_description_tells_bypassrls_from_superuser(db: str) -> None:
+    """A role need not be a superuser to bypass row-level security, so each attribute is read on its own."""
+    with scratch_role(db, "NOSUPERUSER BYPASSRLS") as role:
+        described = describe_as(db, role)
+    assert (described.role, described.superuser, described.bypass_rls) == (role, False, True)
+
+
+SCRATCH_TABLE = "diagnostics_scratch"
+
+
+@contextmanager
+def scratch_table(url: str, *changes: str) -> Iterator[None]:
+    """A throwaway table in schema app of this test database; the real tables and their grants stay untouched."""
+    superuser_query(url, f"CREATE TABLE app.{SCRATCH_TABLE} (id integer)")
+    try:
+        for change in changes:
+            superuser_query(url, f"ALTER TABLE app.{SCRATCH_TABLE} {change}")
+        yield
+    finally:
+        superuser_query(url, f"DROP TABLE app.{SCRATCH_TABLE}")
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        (),
+        ("ENABLE ROW LEVEL SECURITY",),  # not forced: its owner is exempt
+        ("FORCE ROW LEVEL SECURITY",),  # forced, but not enabled
+    ],
+)
+def test_database_check_fails_for_a_table_without_enforced_rls(operator_harness: Harness, changes: tuple[str]) -> None:
+    with scratch_table(operator_harness.database_url, *changes):
+        body = check(operator_harness, "database")
+    assert (body["outcome"], body["error_code"]) == ("failed", "unsafe_session")
+    assert f"not enabled and forced on {SCRATCH_TABLE}" in body["summary"]
+
+
+def test_database_check_fails_when_the_role_owns_a_table(operator_harness: Harness) -> None:
+    changes = ("ENABLE ROW LEVEL SECURITY", "FORCE ROW LEVEL SECURITY", "OWNER TO app_api")
+    with scratch_table(operator_harness.database_url, *changes):
+        body = check(operator_harness, "database")
+    assert (body["outcome"], body["error_code"]) == ("failed", "unsafe_session")
+    assert f"app_api owns {SCRATCH_TABLE}" in body["summary"]
+
+
 def test_identity_check_reads_memberships_from_directory(sandbox: Callable[..., Harness]) -> None:
     h = sandbox()
     h.directory.set("user_a", [ExternalMembership("org_1", Role.ADMIN), ExternalMembership("org_2", Role.MEMBER)])
@@ -218,6 +308,11 @@ def test_analytics_check_sends_allowlisted_event_and_detects_export_failure(
     body = check(h, "analytics")
     assert body["outcome"] == "failed"
     assert body["error_code"] == "export_failed"
+    # The check cannot tell a failed export from a queue that did not drain, so it names both.
+    assert body["summary"] == (
+        "Could not confirm that PostHog accepted the test event: an export failed, "
+        "or this API instance's analytics queue did not drain within the flush timeout."
+    )
 
 
 def test_error_reporting_check_returns_event_reference(sandbox: Callable[..., Harness]) -> None:
@@ -230,6 +325,61 @@ def test_error_reporting_check_returns_event_reference(sandbox: Callable[..., Ha
 
     h2 = sandbox(error_reporter=FakeErrorReporter(event_id=None))
     assert check(h2, "error_reporting")["outcome"] == "failed"
+
+
+def audit_rows(h: Harness) -> list[tuple[Any, ...]]:
+    return superuser_query(
+        h.database_url,
+        "SELECT u.clerk_user_id, a.org_id, a.action, a.target_type, a.target_id, a.outcome, a.request_id "
+        "FROM app.audit_log a LEFT JOIN app.users u ON u.id = a.actor_user_id ORDER BY a.id",
+    )
+
+
+def test_every_run_and_every_non_operator_attempt_is_audited(sandbox: Callable[..., Harness]) -> None:
+    """ADM-01: operator tooling records the actor, action, target, outcome, and request ID of each run."""
+    h = sandbox(
+        {"diagnostics_operator_ids": "user_ops"}, llm_provider=MockLLMProvider(ok=False, error_code="auth_failed")
+    )
+    operator, outsider = h.login("user_ops"), h.login("user_a")
+
+    def run(key: str, headers: dict[str, str], request_id: str) -> int:
+        return h.client.post(f"{BASE}/{key}/check", headers={**headers, "X-Request-ID": request_id}).status_code
+
+    assert run("database", operator, "req-diag-0001") == 200  # passed
+    assert run("llm", operator, "req-diag-0002") == 200  # the provider rejected the key: failed
+    assert run("database", outsider, "req-diag-0003") == 404  # still indistinguishable from a missing route
+    assert h.client.get(BASE, headers=outsider).status_code == 404  # reading the report runs nothing
+    assert audit_rows(h) == [
+        ("user_ops", None, "diagnostics:run", "integration", "database", "succeeded", "req-diag-0001"),
+        ("user_ops", None, "diagnostics:run", "integration", "llm", "failed", "req-diag-0002"),
+        ("user_a", None, "diagnostics:run", "integration", "database", "denied", "req-diag-0003"),
+    ]
+
+
+def test_refused_attempts_are_audited_only_up_to_the_per_user_limit(make_harness: Callable[..., Harness]) -> None:
+    """Anyone signed in can be refused, so refusals must not grow the kept-forever audit log without bound."""
+    h = make_harness(
+        {
+            "diagnostics_operator_ids": "user_ops",
+            "diagnostics_runs_per_user_per_minute": 2,
+            "diagnostics_runs_global_per_day": 1,
+        }
+    )
+    outsider = h.login("user_a")
+
+    def attempts(n: int) -> list[int]:
+        return [h.client.post(f"{BASE}/database/check", headers=outsider).status_code for _ in range(n)]
+
+    def denied() -> int:
+        return sum(1 for row in audit_rows(h) if row[5] == "denied")
+
+    assert attempts(3) == [404, 404, 404]  # past the limit too: a 429 would reveal the route
+    assert denied() == 2
+    h.clock.advance(minutes=1)
+    assert attempts(1) == [404]
+    assert denied() == 3
+    # Refusals spend neither an operator's limit nor the global budget.
+    assert h.client.post(f"{BASE}/database/check", headers=h.login("user_ops")).status_code == 200
 
 
 def test_checks_are_rate_limited_per_user(make_harness: Callable[..., Harness]) -> None:

@@ -5,18 +5,26 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import time
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
 import pytest
+import sentry_sdk
+from sentry_sdk.envelope import Envelope
+from sentry_sdk.integrations.logging import LoggingIntegration
+from sentry_sdk.transport import Transport
 
 from app.kernel.errors import WebhookSignatureError
-from app.kernel.infrastructure.observability import scrub_event
+from app.kernel.infrastructure.observability import scrub_event, sentry_options
 from app.kernel.infrastructure.redaction import REDACTED, redact, redact_text
 from app.modules.billing.adapters.stripe import StripeWebhookVerifier, to_snapshot
 from app.modules.billing.domain import PlanKey, PriceCatalog, SubscriptionStatus
+from app.modules.llm import adapters as llm_adapters
 from app.modules.llm.adapters import AnthropicProvider, OpenAIProvider
+from tests.conftest import make_settings
 
 SECRET = "whsec_test_only_not_a_real_secret_000000"
 CATALOG = PriceCatalog({PlanKey.PRO_MONTHLY: "price_m", PlanKey.PRO_YEARLY: "price_y"})
@@ -168,6 +176,9 @@ class TestLLMProviders:
             (lambda: httpx.Response(503), 1, "unavailable"),
             (lambda: httpx.Response(500), 1, "unavailable"),
             (lambda: httpx.Response(404), 1, "invalid_request"),
+            # Retry-After takes ASCII digits only: other digits are no guidance, never an error.
+            (lambda: httpx.Response(429, headers=[(b"retry-after", b"\xb2")]), 1, "rate_limited"),
+            (lambda: httpx.Response(503, headers=[(b"retry-after", "\u0663".encode())]), 1, "unavailable"),
         ],
     )
     def test_retries_only_with_retry_guidance(self, response: Any, calls: int, error: str) -> None:
@@ -182,7 +193,7 @@ class TestLLMProviders:
         assert (seen, result.error_code) == (calls, error)
 
     def test_retries_fit_inside_the_checks_own_timeout(self) -> None:
-        """LLM-03: the whole check, retries included, is bounded by LLM_TIMEOUT_SECONDS."""
+        """LLM-03: a retry whose wait cannot fit in LLM_TIMEOUT_SECONDS is not made."""
         timeouts: list[float] = []
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -192,6 +203,31 @@ class TestLLMProviders:
         result = self.make(OpenAIProvider, handler, timeout=1.0).check()
         assert (len(timeouts), result.error_code) == (1, "rate_limited")  # a 2 s wait cannot fit in 1 s
         assert all(t <= 1.0 for t in timeouts)
+
+    def test_a_retry_gets_only_what_is_left_of_the_timeout(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """LLM-03: attempts share LLM_TIMEOUT_SECONDS, so a late retry cannot run a full timeout past it."""
+        now = [1_000.0]
+        monkeypatch.setattr(llm_adapters, "time", SimpleNamespace(monotonic=lambda: now[0]))
+        timeouts: list[dict[str, float]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            timeouts.append(request.extensions["timeout"])
+            if len(timeouts) == 1:
+                now[0] += 25.0  # the first attempt used 25 s of the 30 s budget
+                return httpx.Response(503, headers={"retry-after": "1"})
+            return httpx.Response(200)
+
+        def sleep(seconds: float) -> None:
+            now[0] += seconds
+
+        provider = OpenAIProvider(
+            api_key="sk-test-key-not-real-000", model="model-x", timeout_seconds=30.0, sleep=sleep
+        )
+        provider._client = httpx.Client(base_url="https://llm.invalid", transport=httpx.MockTransport(handler))
+        assert provider.check().ok
+        left = 30.0 - 25.0 - 1.0
+        assert [t["read"] for t in timeouts] == [pytest.approx(30.0), pytest.approx(left)]
+        assert all(timeouts[1][phase] == pytest.approx(left) for phase in ("connect", "write", "pool"))
 
     def test_the_response_body_is_never_read(self) -> None:
         """A slow or endless body cannot hold the check: only the status and headers matter."""
@@ -227,6 +263,15 @@ class TestLLMProviders:
 
         assert self.make(AnthropicProvider, handler).check().error_code == "timeout"
         assert seen == 1
+
+
+class _EventCapture(Transport):
+    def __init__(self) -> None:
+        super().__init__()
+        self.events: list[dict[str, Any]] = []
+
+    def capture_envelope(self, envelope: Envelope) -> None:
+        self.events += [item.payload.json for item in envelope.items if item.type == "event"]
 
 
 CANARIES = [
@@ -270,10 +315,37 @@ class TestRedaction:
                 ]
             },
             "extra": {"api_key": CANARIES[0]},
+            # From a log record: the template, the text with its arguments filled in, and the arguments.
+            "logentry": {
+                "message": f"upload failed for %s ({CANARIES[2]})",
+                "formatted": f"upload failed for {CANARIES[4]} ({CANARIES[2]})",
+                "params": [CANARIES[4]],
+            },
         }
         scrubbed = json.dumps(scrub_event(sentry_event, None))
         for canary in CANARIES:
             assert canary not in scrubbed
+
+    def test_logged_error_reaches_sentry_scrubbed(self) -> None:
+        """OBS-02: an ERROR log becomes an event whose filled-in message carries the log's arguments."""
+        transport = _EventCapture()
+        options = sentry_options(
+            make_settings(error_reporting_mode="sandbox", sentry_dsn="https://public@o0.ingest.example/0")
+        )
+        # Only the logging integration, so no other library stays patched for the rest of the run.
+        sentry_sdk.init(**options, transport=transport, default_integrations=False, integrations=[LoggingIntegration()])
+        try:
+            logging.getLogger("tests.library").error("upload failed for %s with key %s", CANARIES[4], CANARIES[0])
+            sentry_sdk.flush(timeout=2)
+        finally:
+            sentry_sdk.get_client().close()
+            sentry_sdk.get_global_scope().set_client(None)
+        [event] = transport.events
+        assert event["logentry"] == {
+            "message": "upload failed for %s with key %s",
+            "formatted": f"upload failed for {REDACTED} with key {REDACTED}",
+        }
+        assert not [canary for canary in CANARIES if canary in json.dumps(event)]
 
     def test_sentry_event_carries_the_request_id(self) -> None:
         """OBS-05: an operator can go from a response's X-Request-ID to the error event."""

@@ -42,7 +42,8 @@ def _retry_delay(response: httpx.Response) -> float | None:
     if response.status_code not in (429, 503):
         return None
     retry_after = response.headers.get("retry-after", "")
-    if not retry_after.isdigit() or float(retry_after) > _MAX_BACKOFF_SECONDS:
+    # Delay-seconds are ASCII digits; ``isdigit`` alone also accepts superscripts that ``float`` rejects.
+    if not (retry_after.isascii() and retry_after.isdigit()) or float(retry_after) > _MAX_BACKOFF_SECONDS:
         return None
     return float(retry_after)
 

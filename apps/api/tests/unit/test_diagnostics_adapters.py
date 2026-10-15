@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import threading
 import time
 import uuid
 from typing import Any
@@ -12,10 +14,11 @@ from sentry_sdk.envelope import Envelope
 from sentry_sdk.transport import Transport
 
 from app.kernel.errors import DependencyUnavailableError, InvalidRequestError
+from app.kernel.infrastructure import observability
 from app.kernel.infrastructure.observability import PostHogAnalytics, SentryErrorReporter, scrub_event
 from app.modules.billing.adapters.stripe import StripeBillingProvider
 from app.modules.billing.domain import PlanKey, PriceCatalog
-from tests.stub_server import stub_server
+from tests.stub_server import Recorded, stub_server
 
 CATALOG = PriceCatalog({PlanKey.PRO_MONTHLY: "price_m", PlanKey.PRO_YEARLY: "price_y"})
 FAKE_KEY = "sk_test_" + "0" * 24
@@ -98,6 +101,45 @@ class TestPostHogFlush:
             assert analytics.flush() is False
             assert time.monotonic() - started < 15
             analytics.shutdown()
+
+    def test_unanswered_export_is_not_reported_as_accepted(self, caplog: pytest.LogCaptureFixture) -> None:
+        """A flush that runs out of time while PostHog has not answered confirms nothing."""
+        arrived, answer = threading.Event(), threading.Event()
+
+        def stalled(_request: Recorded) -> tuple[int, Any]:
+            arrived.set()
+            answer.wait(10)
+            return 200, {"status": 1}
+
+        with stub_server(stalled) as stub:
+            analytics = PostHogAnalytics(api_key="phc_test_only", host=stub.url, flush_timeout_seconds=0.5)
+            analytics.capture(uuid.uuid4(), "integration_test_sent", {"source": "api"})
+            try:
+                with caplog.at_level(logging.WARNING, logger=observability.__name__):
+                    assert analytics.flush() is False
+            finally:
+                answer.set()
+                analytics.shutdown()
+        assert arrived.is_set()  # the stub was reached: PostHog just had not answered yet
+        assert "analytics_flush_unconfirmed" in [r.getMessage() for r in caplog.records]
+
+    def test_events_queued_after_a_confirmed_flush_do_not_fail_it(self) -> None:
+        """Another request's event, captured once the flush has drained, is not this flush's work."""
+        with stub_server(lambda req: (200, {"status": 1})) as stub:
+            analytics = PostHogAnalytics(api_key="phc_test_only", host=stub.url, flush_timeout_seconds=5)
+            analytics.capture(uuid.uuid4(), "integration_test_sent", {"source": "api"})
+            drain = analytics._client.flush
+
+            def drain_then_capture(timeout_seconds: float) -> None:
+                drain(timeout_seconds=timeout_seconds)
+                analytics.capture(uuid.uuid4(), "project_created", {"context": "personal"})
+
+            analytics._client.flush = drain_then_capture
+            try:
+                assert analytics.flush() is True
+            finally:
+                del analytics._client.flush
+                analytics.shutdown()
 
     def test_non_allowlisted_event_is_never_sent(self) -> None:
         with stub_server(lambda req: (200, {"status": 1})) as stub:
