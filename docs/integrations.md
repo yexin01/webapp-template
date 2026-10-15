@@ -63,15 +63,25 @@ After filling in `.env` and running `pnpm dev`, sign in and open `/integrations`
    - Endpoint: `https://<your-api-host>/api/v1/webhooks/clerk`.
    - Events: `organizationMembership.created`, `organizationMembership.updated`, `organizationMembership.deleted`, `organization.deleted`, `user.deleted`.
    - Copy the signing secret (`whsec_…`) to `CLERK_WEBHOOK_SIGNING_SECRET`.
-   - Locally, Clerk needs a public URL (a tunnel) to reach your machine. Without webhooks, memberships are re-verified with Clerk once they are older than `MEMBERSHIP_MAX_STALENESS_SECONDS` (default 300 s; owner confirmation pending, DEC-009).
-6. Optional: set `CLERK_JWT_KEY` to the instance's PEM public key for networkless token verification. Otherwise keys are fetched from the instance JWKS and cached.
+   - Locally, Clerk needs a public URL (a tunnel) to reach your machine. Without webhooks, memberships are re-verified with Clerk once they are older than `MEMBERSHIP_MAX_STALENESS_SECONDS`: 300 s, the bound approved for TEN-07 (DEC-009, ADR-0002). It can be set lower, not higher.
+6. Optional: set `CLERK_JWT_KEY` to the instance's PEM public key for networkless token verification. Otherwise keys are fetched from the instance JWKS (`<issuer>/.well-known/jwks.json`) and cached for up to an hour. A token with an unknown key ID refreshes the cached set, at most once every 5 s per instance.
+
+**Sessions.** A session with status `pending` (the `sts` claim: a required step, such as choosing an organization, is unfinished) is treated as signed out (`401`), as Clerk's SDKs do by default.
+
+**Organization requests.** Access is decided by the membership mirror, never by organization claims in the session token (TEN-07). When the mirror has no membership for the requested organization:
+
+- If it is the session's active organization (`o.id` in Clerk's v2 session token, `org_id` in v1), the API re-reads the user's memberships from Clerk at once. So an organization the user has just created or switched to with `<OrganizationSwitcher>` works on the first request. The claim only triggers the re-read: access still requires Clerk to list the membership.
+- Otherwise the miss is answered from the mirror (`404`) if the user's memberships were read successfully in the last 30 s. Beyond that, at most one such miss per user per 5-s window, across instances, calls Clerk; concurrent misses in the same window get `404`. A failed read (a Clerk outage, `503`) does not start the 30-s period, so the next miss a few seconds later asks Clerk again. An organization that is not the session's active one (for example, opened from a link right after the user joined it) can therefore return `404` for up to 30 s, or until its membership webhook arrives.
+- A session token can keep naming an organization the user was just removed from until Clerk refreshes the token (session tokens last 60 s by default). Each such request is one Clerk call, and is still denied.
+
+Membership read times and the staleness bound use each API instance's own clock. Clock skew between instances shifts the bound by the skew, so keep instance clocks synchronized (managed platforms do this).
 
 Sign-in and sign-up pages live at `/sign-in` and `/sign-up`.
 
 ## Stripe
 
 1. Use a **sandbox** or test mode account.
-2. Create a **Pro** product with two recurring prices: monthly and yearly. Put the price IDs in `STRIPE_PRICE_PRO_MONTHLY` and `STRIPE_PRICE_PRO_YEARLY`. Only these two prices are purchasable, and subscriptions to any other price never grant Pro.
+2. Create a **Pro** product with two recurring prices: monthly and yearly. Put the price IDs in `STRIPE_PRICE_PRO_MONTHLY` and `STRIPE_PRICE_PRO_YEARLY`. Only these two prices are purchasable, and subscriptions to any other price never grant Pro. Stripe prices cannot be edited, so changing a price means a new price ID: before you replace one of these, add the old ID to `STRIPE_PRICE_PRO_MONTHLY_RETAINED` or `STRIPE_PRICE_PRO_YEARLY_RETAINED` (comma-separated), or existing subscribers on it lose Pro at their next synchronization.
 3. Put the test secret key in `STRIPE_SECRET_KEY` (`sk_test_…`, or a restricted `rk_test_…` key). A restricted key needs write access to Customers, Checkout Sessions, and Customer Portal sessions, and read access to Subscriptions and Prices (Prices is used by the Integrations page check).
 4. Configure the **Customer Portal** (Settings → Billing → Customer portal), following ADR-0001 / DEC-010:
    - Allow updating payment methods and viewing invoices.

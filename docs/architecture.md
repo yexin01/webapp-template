@@ -138,11 +138,11 @@ sequenceDiagram
   participant DB as PostgreSQL (app_api)
   B->>M: GET + Bearer token
   M->>M: request ID, body limit, CORS
-  M->>S: begin request transaction (lazy)
-  S->>A: verify token (Clerk keys, no network with PEM)
+  M->>A: verify token (cached Clerk keys; no network with PEM)
+  A->>S: admitted: begin request transaction (lazy)
   A->>DB: BEGIN, set role + context, find user
   A->>DB: read my membership (same transaction)
-  alt membership missing or older than 300 s
+  alt membership older than 300 s, or missing and not answered from the mirror
     A->>S: release() before calling Clerk
     A->>A: refresh memberships from Clerk (worker pool)
   end
@@ -174,11 +174,12 @@ Errors anywhere map to RFC 9457 problem details with a stable `code` and the req
 - every block in the request joins it;
 - the context is re-applied only when it changes;
 - a block that raises rolls the request back. The earlier blocks' work is gone, so a later block is refused, and a handler that catches the error and returns anyway gets a 500, never a success for work that was rolled back. Let errors from a block propagate;
-- a statement error caught *inside* a block (PostgreSQL would turn the `COMMIT` into a silent `ROLLBACK`) fails the block instead. This holds for every transaction, scoped or not. To try a statement and carry on after it fails, wrap it in a savepoint (`conn.transaction()`);
-- it commits after the handler returns, **before** the response is sent, so a failed commit is a 503, never a false 201. The commit is shielded from cancellation, so a client that disconnects cannot leave the transaction open;
+- a block whose transaction can no longer commit fails instead of ending as a success. This holds for every transaction, scoped or not, and covers two cases. A statement error caught *inside* the block: PostgreSQL would turn the `COMMIT` into a silent `ROLLBACK`, so the block raises an error (a 500). A lost connection caught inside the block (the server ended the session, a pooler restarted, a deadline closed it): psycopg would leave the block without a `COMMIT` and without an error, so the block raises a 503 and nothing is committed. The commit checks this again. To try a statement and carry on after it fails, wrap it in a savepoint (`conn.transaction()`); this recovers from a statement error, never from a lost connection;
+- it commits after the handler returns, **before** the response is sent, so a failed commit is a 503, never a false 201. It also commits when the handler raises a domain error (a 4xx, or a 503 the service chose), so an expected outcome keeps its writes, such as the audit entry of a denied action (NT-07). Any other exception (a bug, a cancelled request) rolls it back, so a 500 never comes with committed writes or outbox events. The commit or rollback is shielded from cancellation, so a client that disconnects cannot leave the transaction open;
 - `Transactions.release()` commits early and **ends** the scope: the rest of the request runs as ordinary short transactions. The identity resolver calls it before contacting Clerk. Calling it inside a block is refused, because the block still uses the connection.
-- **Admission and commit threads.** A scoped request holds its connection across several threadpool hops. To keep connection holders from starving behind threads that wait for a connection:
-  - at most `DATABASE_POOL_MAX_SIZE` scoped requests are admitted at once, and the rest wait asynchronously, holding no thread. `release()` gives the place back, so a request waiting on Clerk never holds up other requests;
+- **Admission and threads.** A scoped request holds its connection across several threadpool hops and needs a thread for each. Each process runs blocking work on `REQUEST_THREADS` (40) threads, set explicitly at startup. To keep connection holders from starving behind threads that wait for a connection:
+  - at most `DATABASE_POOL_MAX_SIZE` scoped requests are admitted at once (one gate per event loop; an ASGI server runs one per process), and the rest wait asynchronously, holding no thread. The token is verified before admission, so a bad token never takes a place. `release()` gives the place back, so a request waiting on Clerk for memberships never holds up other requests;
+  - admission covers scoped requests only. Everything else that uses the API pool (unscoped routes such as checkout, the portal, LLM, and diagnostics, and every block after `release()`) waits for a connection on a pool thread instead. At most `REQUEST_THREADS − DATABASE_POOL_MAX_SIZE` threads may wait at once; past that, the call fails at once with a 503 and holds no thread. So threads waiting for API connections plus admitted scoped requests never exceed `REQUEST_THREADS`, and a scoped holder always finds a thread for its next hop once running work finishes. Running work includes slow external calls, which hold threads too, so those calls must stay bounded by their own timeouts and concurrency limits;
   - the commit runs on its own thread limiter;
   - nested blocks inside a request transaction are refused.
 
@@ -204,8 +205,8 @@ flowchart LR
 
 - **Exactly-once recording.** An event row exists if and only if its transaction committed.
 - **At-least-once handling.** Handlers run after commit, and a retry re-runs every handler for that event. Make handlers idempotent: key side effects by `event.id`, or make them naturally idempotent.
-- **Concurrency.** Events are leased with `FOR UPDATE SKIP LOCKED`, so after-response dispatch in many instances and the job can drain together. Each event is leased just before its handlers run, one at a time, so a lease covers exactly one event. A lease that is never completed (the process died, or the platform stopped the function) expires and the event is retried. Completion is fenced to the lease: a worker whose lease expired cannot overwrite the outcome recorded by the worker that re-leased the event.
-- **Failures.** Retries use exponential backoff (2^attempt seconds, capped at an hour). After `OUTBOX_MAX_ATTEMPTS` the event is marked `dead` and kept for inspection. So is an event whose lease expires on its last attempt, which bounds a handler that crashes the process or outlives the function.
+- **Concurrency.** Events are leased with `FOR UPDATE SKIP LOCKED`, so after-response dispatch in many instances and the job can drain together. Each event is leased just before its handlers run, one at a time, so a lease covers exactly one event; its outcome is committed as soon as its handlers finish. A lease (`OUTBOX_LEASE_SECONDS`, default 900 s) lasts longer than any function may run, so it expires only when its worker is gone: the process died, or the platform stopped the function. Completion is fenced to the lease: a worker whose lease expired records nothing, and is counted as `superseded`.
+- **Failures.** Retries use exponential backoff (2^attempt seconds, capped at an hour). After `OUTBOX_MAX_ATTEMPTS` the event is marked `dead` and kept for inspection. Every drain, after-response dispatch included, first records each expired lease the same way, as a failed attempt: a retry after backoff, or `dead` after the last attempt. Only pending events with attempts left are leased, so no event runs more than `OUTBOX_MAX_ATTEMPTS` times, and an event that crashes its worker goes behind the events already due instead of blocking them. If `OUTBOX_MAX_ATTEMPTS` is lowered, the `drain-outbox` job marks pending events that already used up the new limit as `dead`.
 - **Retention.** `prune-expired` deletes processed events after `OUTBOX_RETENTION_DAYS` (default 7), because payloads hold internal user IDs.
 - **Ordering.** Not guaranteed across events. Handlers must not assume an order.
 - **Payloads.** Internal IDs and small facts only: no personal data beyond IDs, no secrets.
@@ -260,7 +261,7 @@ Each module declares its environment variables and validation in `settings.py`. 
 ## Scaling and performance
 
 - **Stateless API instances.** No module-level mutable state beyond lazily opened, thread-safe pools and SDK clients (ARCH-09). Fluid Compute may serve concurrent requests in one instance.
-- **Connections.** Each instance opens at most `DATABASE_POOL_MAX_SIZE + DATABASE_WORKER_POOL_MAX_SIZE` connections. With Supabase, use the transaction pooler: prepared statements are disabled for it, and client connections multiplex onto few server connections. Size the pools from your instance concurrency and the pooler's limits.
+- **Connections.** Each instance opens at most `DATABASE_POOL_MAX_SIZE + DATABASE_WORKER_POOL_MAX_SIZE` connections. With Supabase, use the transaction pooler: prepared statements are disabled for it, and client connections multiplex onto few server connections. Size the pools from your instance concurrency and the pooler's limits. `DATABASE_POOL_MAX_SIZE` is capped at 30, well below the 40 request threads, so admitted requests and threads waiting for a connection always fit.
 - **Round trips over raw speed.** Keep setup to one statement, prefer request scope for database-only routes, and stay within the query-count budget. Keyset pagination keeps list cost flat at any depth.
 - **Shared counters** (rate limits, LLM budget) live in PostgreSQL (DEC-011). Move them to a dedicated store only with an ADR, after measurement.
 - **Asynchronous work** goes through the outbox. It scales with `SKIP LOCKED` workers; if volume outgrows PostgreSQL, the dispatcher is the seam where a queue can replace it.

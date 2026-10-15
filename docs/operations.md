@@ -39,6 +39,8 @@ Deploying, promoting, or changing hosting and Git settings are remote actions. T
 - Migrations live in `supabase/migrations/`.
 - They are ordered, checksummed, and immutable once applied. The runner refuses edited migrations.
 - Run them with `pnpm db:migrate`. For a non-local database, add `--allow-remote` and use a direct connection, and only with authorization.
+- A migration statement that waits more than 5 s for a table lock (held by running traffic) fails, and its migration is rolled back, instead of making every later query on that table queue behind it. Re-run when traffic is lower. A second concurrent run still waits for the first one to finish.
+- `pnpm db:seed --yes` and `pnpm db:reset --yes` refuse to run unless `APP_ENV` is set to `local` or `test` (an unset `APP_ENV` does not count) and every database host is local: `localhost`, a loopback address, or a Unix socket in `/tmp`, `/private/tmp`, `/var/run/postgresql`, or `/run/postgresql`. A socket elsewhere, such as the Cloud SQL Auth Proxy's `/cloudsql/...`, may lead to a remote database. A tunnel to a remote database on a local port still looks local, so never run them with such a tunnel open.
 - Use **expand → deploy → contract** for changes that the previous release must survive: add new columns or tables first, deploy code that uses them, and remove old structures in a later release.
 - A destructive change (drop, rename, type narrowing, or data rewrite) requires:
   - review;
@@ -59,8 +61,8 @@ Deploying, promoting, or changing hosting and Git settings are remote actions. T
 
 | Provider down | Behavior |
 |---|---|
-| Clerk | New sign-ins fail. Requests with valid tokens continue while the cached key set is valid (up to an hour; indefinitely with `CLERK_JWT_KEY`), then fail closed (`503`). Stale organization memberships cannot be re-verified, so organization requests fail closed (`503`). A request waiting on Clerk never holds up other requests. |
-| Stripe | Checkout and portal return `503`. Existing entitlements (from synchronized records) are unaffected. Stripe retries webhooks; run reconciliation afterwards. Webhook synchronization runs in at most `DATABASE_WORKER_POOL_MAX_SIZE - 1` slots per instance; a delivery that finds no free slot gets `503` and Stripe retries it, so a burst never takes the database connections that readiness and rate limits need. |
+| Clerk | New sign-ins fail. Requests with valid tokens continue while the cached key set is valid (up to an hour; indefinitely with `CLERK_JWT_KEY`), then fail closed (`503`). A request whose key is cached never waits on Clerk: the refresh ahead of expiry runs in the background. Key set refreshes are attempted at most once every 5 s per instance, with a 3 s timeout, and a token with an unknown key ID waits at most that long for a refresh another request started. While the key set cannot be read, such a token gets `503`, not `401`, since its key may have just been rotated in. Stale organization memberships cannot be re-verified, so organization requests fail closed (`503`). A membership read first ends the request's database transaction, so it holds no connection or admission place. After a failed membership read, reads fail fast for 5 s instead of each waiting out the 5 s timeout. |
+| Stripe | Checkout and portal return `503`. Existing entitlements (from synchronized records) are unaffected. Stripe retries webhooks; run reconciliation afterwards. Webhook synchronization runs in at most `DATABASE_WORKER_POOL_MAX_SIZE - 1` slots per instance (the setting must be at least 2). A delivery that finds no free slot queues in the event loop, holding no server thread, for up to `DATABASE_CONNECT_TIMEOUT_SECONDS`; after that it gets `503` and Stripe retries it. So a burst never takes the database connections that readiness and rate limits need, nor the threads that every other route needs. |
 | Database | Readiness fails. Data requests return `503`. No partial writes. A database or pooler that stops responding fails each call after the round-trip deadline: `DATABASE_STATEMENT_TIMEOUT_MS` plus `DATABASE_CONNECT_TIMEOUT_SECONDS` (15 s by default). After a pooler restart or failover, connections that died while idle are replaced on first use, without failing the request. |
 | PostHog / Sentry | No user-visible impact. Exports fail silently and are logged. |
 | LLM provider | Only the connectivity check reports failure. |
@@ -81,9 +83,9 @@ Deploying, promoting, or changing hosting and Git settings are remote actions. T
 | Field | Meaning | What to do |
 |---|---|---|
 | `divergences`, kind `differs` or `missing_locally` | Stripe and the local record disagree | `--apply` stores Stripe's state |
-| `divergences`, kind `missing_remotely` | A local subscription that Stripe does not list for that customer | Never applied automatically. It usually means the keys belong to a different Stripe account (for example, a new sandbox). Investigate before changing data |
+| `divergences`, kind `missing_remotely` | A local subscription that is already final (`canceled`, `incomplete_expired`) and that Stripe no longer lists for that customer | Never applied automatically. Subscriptions that are not yet final are read from Stripe by ID instead (for example, after the customer was deleted in Stripe, which cancels them), and their state is applied |
 | `unlinked_customers` | Flagged Stripe customers that no user could be linked to | `--apply` links a customer whose Stripe metadata names an existing user; others need investigation in Stripe |
-| `rejected_customers` | Stripe rejected the request for that customer (for example, it was deleted) | Investigate in Stripe |
+| `rejected_customers` | Stripe rejected the request for that customer. Usually the customer was deleted in Stripe after its stored subscriptions had all ended: nothing to do, and it is reported each time the rotation reaches it. If *every* customer is rejected, the keys belong to a different Stripe account (for example, a new sandbox) | Nothing is changed and existing entitlements stay as they are. If many customers are rejected, check the keys first; otherwise confirm in Stripe that the customer is deleted |
 | more than one Pro subscription for one user | Logged as `billing_multiple_entitling_subscriptions` | Cancel and refund the duplicate in Stripe |
 
 ## Secret rotation
@@ -125,13 +127,25 @@ Vulnerability reports from outside the team follow [SECURITY.md](../SECURITY.md)
 5. **Evidence.** Record the method, dates, plan, timings, and results in `dev-docs/evidence/`, labeled `sandbox`.
 6. **Repeat** after major schema changes, and on a schedule you choose.
 
-**Local restore drill.** `pnpm db:restore-drill` dumps the local Docker database and restores it into a scratch database. It then verifies:
+**Local restore drill.** `pnpm db:restore-drill` dumps the local Docker database with `pg_dump` and restores it into a fresh PostgreSQL server: a throwaway container from the same image, with no network, that has never run a migration. The container is removed afterwards. It then verifies:
 
 - per-table row counts and content checksums;
 - row-level-security flags;
+- object owners, privileges, and policies in the `app` schema;
+- the attributes and memberships of the `app_api` and `app_worker` roles;
 - the migration ledger.
 
-It proves that the dump format and the restore procedure work for this schema. It says nothing about a hosted provider's backups or recovery objectives.
+A database dump does not contain roles, which belong to the whole server. A logical restore into a new server therefore needs two things:
+
+- **Create the roles first.** Run the role block at the top of `supabase/migrations/20261014000001_core_schema.sql`. The drill does exactly this. Without it, `pg_restore` fails with `role "app_worker" does not exist`.
+- **Keep the owners.** Do not pass `--no-owner`. `app.lock_my_membership` is a `SECURITY DEFINER` function that must stay owned by `app_worker`. With `--no-owner`, the role that runs the restore owns it instead, and the drill fails.
+
+The drill proves that the dump format and this restore procedure work for this schema on a local server that you control as a superuser. It does not prove:
+
+- a restore through a hosted provider's backup or point-in-time recovery, or into a server where you are not a superuser (such as a new Supabase project, where provider-managed roles already exist);
+- anything about recovery objectives.
+
+Those belong to the hosted restore test above.
 
 ## Data retention and deletion
 
@@ -139,7 +153,7 @@ It proves that the dump format and the restore procedure work for this schema. I
 
 Current behavior:
 
-- `user.deleted` from Clerk revokes all of the user's organization memberships. Application data and billing records are retained.
+- `user.deleted` from Clerk revokes all of the user's organization memberships, and no membership read taken earlier can restore them. Application data and billing records are retained.
 - Webhook ledgers store event IDs and types only, not payloads.
 - Telemetry retention follows each provider's project settings.
 
@@ -151,20 +165,20 @@ Jobs are registered in code ([architecture](architecture.md#jobs)). Run them in 
   - `cd apps/api && uv run python -m app.cli job` lists jobs;
   - `uv run python -m app.cli job <name>` runs one.
 - **HTTP, which Vercel Cron uses:** `GET /api/v1/jobs/<name>` with `Authorization: Bearer <CRON_SECRET>`.
-  - Without `CRON_SECRET`, the endpoint returns 404.
+  - Without `CRON_SECRET`, the endpoint returns 404. In production the API then logs a `jobs_endpoint_disabled` warning at startup, because nothing else runs the jobs.
   - A wrong or missing secret returns 401.
   - Rotate the secret like any other (see [Secret rotation](#secret-rotation)).
 
 | Job | Default schedule (UTC) | What it does |
 |---|---|---|
-| `drain-outbox` | 02:15 daily | Dispatches outbox events left after requests (failed or not yet dispatched), until none is due or 60 s have passed. Dead-letters events whose lease expired on their last attempt |
+| `drain-outbox` | 02:15 daily | First records expired leases (the worker died) as failed attempts: a retry after backoff, or `dead` on the last attempt. Then dispatches outbox events left after requests (failed or not yet dispatched), until none is due or 60 s have passed. An event whose worker keeps dying therefore uses one attempt per drain and goes behind the events already due, so it never blocks them |
 | `prune-expired` | 05:00 daily | Deletes expired rate-limit windows, and processed outbox events older than `OUTBOX_RETENTION_DAYS`, in batches of 1,000 for up to 60 s; the next run continues |
-| `reconcile-billing` | 04:00 daily | Compares a batch of `BILLING_RECONCILE_BATCH_SIZE` customers with Stripe: up to half are customers with recently flagged (`needs_reconciliation`) webhook events, the rest the least recently checked, so every customer is checked in turn. It applies Stripe's state only when `BILLING_RECONCILE_APPLY=true` |
+| `reconcile-billing` | 04:00 daily | Compares a batch of `BILLING_RECONCILE_BATCH_SIZE` customers with Stripe: up to half are customers with recently flagged (`needs_reconciliation`) webhook events, the rest the least recently checked, so every customer is checked in turn. A customer Stripe rejects (for example, deleted in Stripe) is reported as `rejected` and still moves to the back of the rotation. A run stops starting new checks after 60 s. It applies Stripe's state only when `BILLING_RECONCILE_APPLY=true` |
 | `reconcile-memberships` | 03:30 daily | Re-verifies the stalest organization-membership mirrors against Clerk (`MEMBERSHIP_RECONCILE_BATCH_SIZE` per run) |
 
 `apps/api/vercel.json` holds the schedules, and a test fails if it drifts from the registry. Schedules are daily so the configuration deploys on any Vercel plan. If your plan allows it, run `drain-outbox` every few minutes. With Vercel Services (one project), crons must be in the root `vercel.json`: the DEC-001 proof found that a service's own `vercel.json` crons are not registered.
 
-**Not verified until DEC-001:** Vercel Cron delivery, plan limits, and whether after-response dispatch completes before the function is frozen. If it does not complete, `drain-outbox` delivers the events at its next run.
+**Not verified until DEC-001:** Vercel Cron delivery, plan limits, and whether after-response dispatch completes before the function is frozen. If it does not complete, `drain-outbox` delivers the events at its next run. Vercel Cron invokes **production** deployments only, never previews. Verifying cron delivery therefore needs a production deployment, which is a separately authorized remote action. On a preview, call the job routes yourself with `Authorization: Bearer <CRON_SECRET>`; that checks the routes, not the scheduler.
 
 ## Outbox
 
@@ -176,10 +190,13 @@ Jobs are registered in code ([architecture](architecture.md#jobs)). Run them in 
   ```
 - **Replay a dead event** after fixing its handler: `UPDATE app.outbox SET status = 'pending', attempts = 0, available_at = now() WHERE id = '<id>';` Handlers are idempotent, so a replay is safe.
 - **Retention:** processed events are deleted after `OUTBOX_RETENTION_DAYS`. Dead events are kept until you replay or delete them.
+- **Leases:** `OUTBOX_LEASE_SECONDS` (default 900) must stay longer than the longest a function may run (Vercel: 300 s by default, up to 800 s). If you raise the function duration past it, raise the lease too, or a slow handler can lose its lease and run twice at once.
 
 ## Connection pools
 
 Each API process opens up to `DATABASE_POOL_MAX_SIZE` request connections (`app_api`) and `DATABASE_WORKER_POOL_MAX_SIZE` system connections (`app_worker`). Size them so that the maximum number of concurrent instances × (both pool sizes) fits your database pooler's client limit. With Supabase, use the transaction pooler connection string.
+
+Each process runs blocking work on 40 threads. At most 40 − `DATABASE_POOL_MAX_SIZE` of them may wait for a request connection outside a request-scoped transaction; past that, requests get a 503 at once (logged as `database_waiters_exhausted`). Keep `DATABASE_POOL_MAX_SIZE` well below 40 ([architecture](architecture.md#data-access)).
 
 ## Integration diagnostics
 

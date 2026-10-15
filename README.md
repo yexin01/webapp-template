@@ -88,18 +88,20 @@ Diagnostics are open to any signed-in user only when `APP_ENV=local` and `DIAGNO
 | `pnpm test` | API tests (needs `pnpm db:up`) and web unit tests |
 | `pnpm test:e2e` | Playwright tests. Account-free checks run by default; set `E2E_SANDBOX=1` for browser and signed-in flows |
 | `pnpm lint` / `pnpm typecheck` | ESLint + Ruff + import contracts / tsc + mypy (strict) |
+| `pnpm format` | Format the web app (Prettier) and the API and perf code (Ruff) |
 | `pnpm build` | Production build of the web app |
 | `pnpm contracts` | Regenerate the OpenAPI document and TypeScript API types |
 | `pnpm contracts:check` | Fail if generated contracts are stale |
 | `pnpm check:bundle-secrets` | Fail if server-only values appear in the browser bundle (after `pnpm build`) |
 | `pnpm security:audit` | Dependency vulnerability audit (pnpm + pip-audit) |
+| `pnpm security:licenses` | Fail if a production dependency's license is not on the allowlist in `scripts/check-licenses.mjs` |
 | `pnpm db:migrate` | Apply pending migrations (local databases only unless `--allow-remote`) |
-| `pnpm db:seed` | Load deterministic synthetic data (local only) |
-| `pnpm db:reset --yes` | Drop, migrate, and seed the **local** database. Refuses to run without `--yes` (pass it after the script name, not after `--`) |
+| `pnpm db:seed --yes` | Load deterministic synthetic data into the **local** database. Refuses to run without `--yes` |
+| `pnpm db:reset --yes` | Drop, migrate, and seed the **local** database. Refuses to run without `--yes` (pass it after the script name, not after `--`). Both commands also need `APP_ENV=local` or `test` set explicitly (`.env` from `.env.example` sets it), and a local host or a Unix socket in a standard local directory |
 | `pnpm db:restore-drill` | Dump the local database, restore it into a scratch database, and verify it |
-| `pnpm test:init-template` | Check that `init-template` leaves no original identifiers (runs on temporary copies) |
+| `pnpm test:init-template` | Check that `init-template` leaves no original identifiers (runs on temporary copies of the tracked files; `git add` new files to include them) |
 | `pnpm new:module <name>` | Scaffold a tenant-scoped feature module end to end ([docs/architecture.md](docs/architecture.md#adding-a-feature)) |
-| `pnpm test:new-module` | Check that a freshly generated module passes every gate (runs on a temporary copy) |
+| `pnpm test:new-module` | Check that freshly generated modules pass every gate (runs on a temporary copy of the tracked files; `git add` new files to include them) |
 | `pnpm check:placeholders` | Fail if `SECURITY.md` or `CODE_OF_CONDUCT.md` still has a contact placeholder after the project was renamed |
 | `pnpm perf:server` / `pnpm perf:run` | Local performance server and k6 scenarios ([perf/README.md](perf/README.md)) |
 | `pnpm billing:reconcile` | Compare billing records with Stripe (dry run; add `--apply`) |

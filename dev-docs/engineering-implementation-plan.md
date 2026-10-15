@@ -1268,7 +1268,7 @@ Broad implementation does not begin while a decision that blocks it remains open
 | P4 | Billing: checkout, webhooks, synchronization, entitlements, reconciliation, paywall API | DEC-010 resolved; DEC-002 for organization scope | BILL requirements; §9.10 tests; sandbox evidence (DEC-006) | Implemented, including the DEC-002 (b) organization truth table; tests PASS (mocked Stripe API); sandbox NOT VERIFIED |
 | P5 | LLM port and adapter, observability, rate limiting | DEC-011 resolved; LLM provider selected (DEC-006) | LLM, OBS, SEC-09 requirements | Implemented; tests PASS (mocked); providers NOT VERIFIED |
 | P6 | Frontend flows, paywall, error and loading states, accessibility | P3 to P5 APIs available | FE requirements; end-to-end and accessibility evidence | Implemented; unit and account-free e2e PASS; browser and accessibility e2e NOT VERIFIED (needs Clerk sandbox) |
-| P7 | Resilience, security hardening, performance baseline and stress; propose targets | Authorized performance environment | Resilience and security evidence; performance reports; DEC-003 target proposal | Resilience and security tests done locally. Performance harness (`perf/`) covers PERF-01 to PERF-07, all recorded locally. Preview runs need the DEC-001 environment. Targets are adopter-owned (ADR-0002) |
+| P7 | Resilience, security hardening, performance baseline and stress; propose targets | Authorized performance environment | Resilience and security evidence; performance reports; DEC-003 target proposal | Resilience and security tests done locally. Performance harness (`perf/`) covers PERF-01 to PERF-07, all recorded locally; PERF-03, PERF-04, and PERF-06 must be re-recorded with the harness corrected on 2026-10-15. Preview runs need the DEC-001 environment. Targets are adopter-owned (ADR-0002) |
 | P8 | Operations documentation, backup and restore, deletion and export, integration classification, handoff | DEC-003, DEC-004, DEC-005, DEC-006 resolved, or explicitly accepted by the owner | Gates D and E; handoff report (§22) | Operations docs, data inventory, and adopter checklists done (DEC-003 to DEC-005 adopter-owned); local restore drill PASS; integrations diagnostics page built. Integration classification pending DEC-006 |
 
 ---
@@ -1395,7 +1395,7 @@ Status as of 2026-10-14. Evidence: [`dev-docs/evidence/2026-10-14-local-verifica
 | SEC-11 | Vulnerability reporting | SECURITY.md with an adopter placeholder enforced by `check:placeholders` | A | — | PASS (ADR-0002) |
 | SEC-12 | Required review of migrations and workflows | CODEOWNERS and branch protection | A | Remote settings not authorized | NOT VERIFIED |
 | TEST-01 to TEST-05 | Test discipline | Review; deterministic clocks; labeled evidence | B | — | PASS |
-| PERF-01 to PERF-07 | Performance scenarios | Reports per §15.2 | D | Preview environment (DEC-001) | NOT VERIFIED (all seven recorded **locally** for relative comparison only; no preview runs) |
+| PERF-01 to PERF-07 | Performance scenarios | Reports per §15.2 | D | Preview environment (DEC-001) | NOT VERIFIED (all seven recorded **locally** for relative comparison only; PERF-03, PERF-04, and PERF-06 to be re-recorded with the corrected harness; no preview runs) |
 | Performance acceptance | Approved targets met | §15.4 | D | — | RETIRED for the template: adopter-owned (ADR-0002) |
 | CI-SEC-01 to CI-SEC-05 | CI security | Workflow review; first remote run | A, C | Remote CI not authorized | NOT VERIFIED (implemented) |
 | OPS-01 to OPS-03, §16.4, §16.5 | Deployment, rollback, operations | docs/operations.md | E | DEC-001 | BLOCKED |
@@ -1422,7 +1422,7 @@ The report clearly distinguishes verified behavior from assumptions, mocks, and 
 
 ---
 
-## 23. Current Status (2026-10-14)
+## 23. Current Status (2026-10-15)
 
 - **Implemented:**
   - **Python API as a modular monolith** (ADR-0003):
@@ -1431,7 +1431,7 @@ The report clearly distinguishes verified behavior from assumptions, mocks, and 
     - a transactional outbox with after-response dispatch;
     - scheduled jobs (CLI and secret-protected HTTP for Vercel Cron);
     - composed per-module settings;
-    - migrations with forced RLS (0001 core, 0002 outbox).
+    - migrations with forced RLS: core schema, outbox, billing reconciliation, membership verification, and the outbox lease index.
   - **Next.js web app:**
     - code organized by feature (`src/features/*`, `src/ui`, `src/lib`), with the boundaries enforced by ESLint (FE-13);
     - a typed client generated from OpenAPI (`openapi-fetch`);
@@ -1449,9 +1449,9 @@ The report clearly distinguishes verified behavior from assumptions, mocks, and 
     - the local restore drill.
 - **Integrations:** all **mocked**. No sandbox or live service has been contacted.
 - **Local evidence:**
-  - API 344 tests, web 146 unit tests (1 skipped until the lint-guard wiring in next step 4), 20 account-free e2e checks, and the generator check pass (2026-10-15, after the review fixes in [`2026-10-15-review-fixes.md`](evidence/2026-10-15-review-fixes.md)).
+  - API 466 tests, web 219 unit tests (1 skipped until the lint-guard wiring in next step 4), 32 account-free e2e checks (18 sandbox-only skipped), and the generator check pass (2026-10-15, after the second review: [`2026-10-15-second-review-identity-db.md`](evidence/2026-10-15-second-review-identity-db.md) and [`2026-10-15-second-review-billing-web-tooling.md`](evidence/2026-10-15-second-review-billing-web-tooling.md); the first review's fixes are in [`2026-10-15-review-fixes.md`](evidence/2026-10-15-review-fixes.md)).
   - The DEC-001 local proof passes ([`dec-001-vercel-python.md`](evidence/dec-001-vercel-python.md)).
-  - Lint, strict types, build, contract drift, init-template, placeholder, bundle-secret, audit, and license checks pass.
+  - Lint, strict types, build, contract drift, init-template, placeholder, bundle-secret, audit, and license checks pass. `test:init-template` **failed** at `dbf8a9b`, so the first review's PASS for it was wrong; it passes now. A dev-only `braces` advisory with no patched version is reported, not blocking.
   - At 20 ms DB RTT (local), request scope cut p50 latency by 25% to 33% beyond the one-statement setup.
 
   Details: [`dec-001-vercel-python.md`](evidence/dec-001-vercel-python.md), [`2026-10-14-adr-0003-modular-architecture.md`](evidence/2026-10-14-adr-0003-modular-architecture.md), and the earlier records.
@@ -1462,13 +1462,14 @@ The report clearly distinguishes verified behavior from assumptions, mocks, and 
   | A | NOT VERIFIED | Remote CI has never run (needs authorization to push) |
   | B | NOT VERIFIED | Browser and signed-in e2e need Clerk sandbox keys (DEC-006) |
   | C | NOT VERIFIED | CodeQL (remote CI) and sandbox verification pending; local security tests PASS |
-  | D | NOT VERIFIED | Local PERF-01 to PERF-07 recorded. Preview runs need DEC-001. Targets are adopter-owned (ADR-0002) |
+  | D | NOT VERIFIED | Local PERF-01 to PERF-07 recorded; PERF-03, PERF-04, and PERF-06 must be re-recorded (the earlier figures were whole-run averages, and PERF-06 could not detect reprocessing). Preview runs need DEC-001. Targets are adopter-owned (ADR-0002) |
   | E | BLOCKED | DEC-001 (preview deployment and topology choice; the local proof is done), DEC-006 (integration classification) |
 
 - **Decisions:**
   - DEC-002 to DEC-012: RESOLVED (ADR-0001, ADR-0002). DEC-003 to DEC-005 are adopter-owned.
   - Architecture: ADR-0003.
   - **Open:** DEC-001 and DEC-006, which need owner action, and DEC-013 (preventing a second subscription while one is unsettled), recorded by the 2026-10-15 review.
+  - **Awaiting owner approval** (2026-10-15 second review): the opt-in `STRIPE_PRICE_PRO_MONTHLY_RETAINED` and `STRIPE_PRICE_PRO_YEARLY_RETAINED` settings (a billing-related choice, §17 rule 5; empty by default), and the defaults and choices listed under "Not fixed" in both second-review records.
 - **Deviations:** D-001 and D-002 (§18).
 - **Remote actions:** none. No push, publication, deployment, or release has occurred.
 - **Next steps (owner action required):**
@@ -1479,11 +1480,13 @@ The report clearly distinguishes verified behavior from assumptions, mocks, and 
      - the production router;
      - Supabase's pooler;
      - genuine Stripe deliveries;
-     - Vercel Cron;
+     - Vercel Cron (it runs on production deployments only, so a preview cannot verify it);
      - after-response dispatch;
      - preview performance runs.
   4. Enable the stricter web lint guards: in `apps/web/eslint.config.mjs`, spread `guardConfigs(import.meta.dirname)` from `eslint.guards.mjs` and remove the inline env and import rules, then remove `.skip` from the wiring test in `src/boundaries.test.ts`. Agents are not permitted to edit lint configuration in this repository.
   5. Review the license exceptions in `scripts/check-licenses.mjs`: the Sentry CLI (`sentry`, FSL-1.1-Apache-2.0, build time only) and the weak-copyleft packages (psycopg, certifi, libvips, tzdata).
   6. Decide DEC-013.
+  7. Approve or remove the retained-price settings, and confirm the defaults listed under "Not fixed" in the two second-review records (for example: outbox lease 900 s, migration lock timeout 5 s, `DATABASE_POOL_MAX_SIZE` at most 30, a domain `503` keeps the request's writes).
+- **Next steps (no owner action needed):** re-record PERF-03, PERF-04, and PERF-06 locally with the corrected harness.
 
 **Final principle:** build a template that is secure by default, modular by design, reproducible from a clean clone, and honest about its verified limits. Do not trade correctness, security, or maintainability for superficial completion.
