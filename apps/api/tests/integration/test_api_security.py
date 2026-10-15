@@ -262,6 +262,18 @@ def test_nt11_missing_and_unknown_tokens_rejected(harness: Harness) -> None:
         assert r.headers["www-authenticate"] == "Bearer"
 
 
+def test_api04_a_valid_token_in_the_session_cookie_is_refused(harness: Harness) -> None:
+    """API-04: bearer tokens only. Browsers attach Clerk's __session cookie by themselves, cross-site
+    too, so accepting it would open every route to CSRF. The token is valid: only the cookie is refused."""
+    token = harness.login("user_dave")["Authorization"].split()[1]
+    assert harness.client.get("/api/v1/me", headers={"Authorization": f"Bearer {token}"}).status_code == 200
+    for headers in ({"Cookie": f"__session={token}"}, {"Cookie": f"__session={token}", "Authorization": "Bearer x"}):
+        r = harness.client.get("/api/v1/me", headers=headers)
+        assert r.status_code == 401, headers
+        assert r.json()["code"] == "UNAUTHENTICATED"
+        assert r.headers["www-authenticate"] == "Bearer"
+
+
 def test_nt11_revoked_token_rejected(harness: Harness) -> None:
     headers = harness.login("user_dave")
     assert harness.client.get("/api/v1/me", headers=headers).status_code == 200

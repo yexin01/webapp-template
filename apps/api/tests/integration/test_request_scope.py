@@ -312,32 +312,41 @@ def test_a_request_waiting_on_the_identity_provider_does_not_block_others(make_h
     """``release()`` gives the admission place back, so a slow provider call
     stalls only the request that makes it (§16.4)."""
     import threading
-    import time
+
+    from fastapi.testclient import TestClient
+
+    from app.bootstrap import create_app
 
     h = make_harness({"database_pool_max_size": 1})
     h.directory.set("user_slow", [ExternalMembership("org_slow", Role.MEMBER)])
     slow, fast = h.login("user_slow"), h.login("user_fast")
-    in_provider = threading.Event()
+    in_provider, provider_answers = threading.Event(), threading.Event()
     original = h.directory.list_user_memberships
 
     def slow_directory(external_user_id: str) -> list[ExternalMembership]:
         in_provider.set()
-        time.sleep(2.0)
+        provider_answers.wait(10)
         return original(external_user_id)
 
     h.directory.list_user_memberships = slow_directory  # type: ignore[method-assign]
     results: list[int] = []
-    waiting = threading.Thread(
-        target=lambda: results.append(h.client.get("/api/v1/orgs/org_slow/projects", headers=slow).status_code)
-    )
-    waiting.start()
-    assert in_provider.wait(10)
     fast_results: list[int] = []
-    other = threading.Thread(
-        target=lambda: fast_results.append(h.client.get("/api/v1/me", headers=fast).status_code), daemon=True
-    )
-    other.start()
-    other.join(1.5)  # well before the provider call ends
-    assert fast_results == [200]
-    waiting.join(10)
+    # One event loop, and so one admission gate, as in production. The harness client runs
+    # each request on its own loop, where a request would never wait for another's place.
+    with TestClient(create_app(h.container), raise_server_exceptions=False) as client:
+        waiting = threading.Thread(
+            target=lambda: results.append(client.get("/api/v1/orgs/org_slow/projects", headers=slow).status_code)
+        )
+        waiting.start()
+        try:
+            assert in_provider.wait(10)
+            other = threading.Thread(
+                target=lambda: fast_results.append(client.get("/api/v1/me", headers=fast).status_code), daemon=True
+            )
+            other.start()
+            other.join(3)  # the provider call is still in progress
+            assert fast_results == [200]
+        finally:
+            provider_answers.set()
+            waiting.join(10)
     assert results == [200]

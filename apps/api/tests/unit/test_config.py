@@ -98,10 +98,108 @@ def test_type_errors_do_not_echo_input() -> None:
 def test_the_request_pool_stays_well_below_the_request_threads() -> None:
     """Admitted scoped requests (one per request connection) plus threads waiting for a connection
     must fit in the request threads, or connection holders could find no thread to finish on."""
-    assert make_settings(database_pool_max_size=30).database_pool_max_size == 30
+    settings = make_settings(database_pool_max_size=28, database_worker_pool_max_size=2)
+    assert settings.database_pool_max_size == 28
     with pytest.raises(ConfigError) as excinfo:
         make_settings(database_pool_max_size=31)
     assert "DATABASE_POOL_MAX_SIZE" in str(excinfo.value)
+
+
+def test_the_worker_pool_is_capped_below_the_request_threads() -> None:
+    """Billing synchronization holds a request thread in each of its DATABASE_WORKER_POOL_MAX_SIZE - 1
+    slots, across Stripe calls, so the worker pool cannot be large enough to take every thread."""
+    assert make_settings(database_worker_pool_max_size=10).database_worker_pool_max_size == 10
+    with pytest.raises(ConfigError) as excinfo:
+        make_settings(database_worker_pool_max_size=11)
+    assert "DATABASE_WORKER_POOL_MAX_SIZE" in str(excinfo.value)
+
+
+def test_both_pools_together_leave_request_threads_for_everything_else() -> None:
+    defaults = make_settings()
+    assert defaults.database_pool_max_size + defaults.database_worker_pool_max_size <= 30
+    assert make_settings(database_pool_max_size=20, database_worker_pool_max_size=10).database_pool_max_size == 20
+    with pytest.raises(ConfigError) as excinfo:
+        make_settings(database_pool_max_size=21, database_worker_pool_max_size=10)
+    message = str(excinfo.value)
+    assert "DATABASE_POOL_MAX_SIZE + DATABASE_WORKER_POOL_MAX_SIZE must be at most 30" in message
+    with pytest.raises(ConfigError, match="DATABASE_POOL_MAX_SIZE \\+ DATABASE_WORKER_POOL_MAX_SIZE"):
+        make_settings(database_pool_max_size=30)  # with the default worker pool of 3
+
+
+MALFORMED_DATABASE_URLS = [
+    # An unencoded "%" or space, or a scheme typo: libpq's parse errors quote the password.
+    ("postgresql://u:pa%ssw0rdLEAKA@127.0.0.1/app", ["pa%ssw0rdLEAKA"]),
+    ("postgresql://u:LEAKB SECRET@127.0.0.1/app", ["LEAKB"]),
+    ("postgresql//u:LEAKCSecret@127.0.0.1/app", ["LEAKCSecret"]),
+    # These parse, but put part of the password in the port, the host, or the database name,
+    # which connect errors quote.
+    ("postgresql://u:LEAKD/LEAKE@127.0.0.1:5432/app", ["LEAKD", "LEAKE"]),
+    ("postgresql://u:LEAKF@LEAKG@127.0.0.1/app", ["LEAKF", "LEAKG"]),
+    ("postgresql://u:4821/LEAKH@127.0.0.1/app", ["4821", "LEAKH"]),
+    ("postgresql://u:/LEAKI@127.0.0.1:5432/app", ["LEAKI"]),
+]
+
+
+@pytest.mark.parametrize(("url", "secrets"), MALFORMED_DATABASE_URLS)
+def test_a_malformed_database_url_is_refused_at_startup_without_echoing_it(url: str, secrets: list[str]) -> None:
+    """ENV-03: the format is validated at startup, so libpq never logs a parse error quoting the password."""
+    with pytest.raises(ConfigError) as excinfo:
+        make_settings(database_url=url)
+    message = str(excinfo.value)
+    assert "DATABASE_URL is not a valid PostgreSQL connection string" in message
+    for fragment in secrets:
+        assert fragment not in message
+
+
+@pytest.mark.parametrize(("url", "secrets"), MALFORMED_DATABASE_URLS)
+def test_maintenance_commands_refuse_a_malformed_database_url_without_echoing_it(
+    url: str, secrets: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from app import cli
+    from app.kernel.infrastructure.config import DatabaseSettings
+
+    monkeypatch.setitem(DatabaseSettings.model_config, "env_file", None)  # never the developer's .env
+    monkeypatch.setenv("DATABASE_URL", url)
+    assert cli.main(["migrate", "--allow-remote"]) == 1
+    output = capsys.readouterr()
+    assert "DATABASE_URL is not a valid PostgreSQL connection string" in output.err
+    for fragment in secrets:
+        assert fragment not in output.out + output.err
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "postgresql://postgres:postgres@127.0.0.1:5432/app",
+        "postgres://u:pa%25ss%20word@db.example.com:6543/postgres?sslmode=require",
+        "postgresql://user%40server:p%2Fw@db.example.com/app",  # an encoded "@" in the user, "/" in the password
+        "postgresql://u:p@host-a:5432,host-b:5433/app",
+        "postgresql://u:p@host-a,host-b/app",
+        "postgresql://u:p@[::1]/app",
+        "postgresql:///app?host=/var/run/postgresql",
+        "host=localhost port=5432 dbname=app user=u",
+    ],
+)
+def test_well_formed_database_urls_are_accepted(url: str) -> None:
+    assert make_settings(database_url=url).database_url is not None
+
+
+@pytest.mark.parametrize("level", ["verbose", "10", "trace"])
+def test_an_unknown_log_level_is_refused_by_name(level: str) -> None:
+    """Otherwise logging would raise its own ValueError at import of index.py, without naming LOG_LEVEL."""
+    with pytest.raises(ConfigError) as excinfo:
+        make_settings(log_level=level)
+    message = str(excinfo.value)
+    assert "LOG_LEVEL must be one of DEBUG, INFO, WARNING, ERROR, CRITICAL" in message
+    assert level not in message.lower().replace("log_level", "")
+
+
+@pytest.mark.parametrize("level", ["DEBUG", "info", "Warning", "warn", "error", "CRITICAL"])
+def test_standard_log_levels_are_accepted_in_any_case(level: str) -> None:
+    import logging
+
+    assert make_settings(log_level=level).log_level == level
+    assert level.upper() in logging.getLevelNamesMapping()  # what configure_logging passes to logging
 
 
 def test_empty_values_mean_unset() -> None:
@@ -110,6 +208,25 @@ def test_empty_values_mean_unset() -> None:
     assert settings.clerk_webhook_signing_secret is None
     assert settings.llm_api_key is None
     assert settings.sentry_dsn is None
+
+
+@pytest.mark.parametrize(
+    ("field", "name", "alias", "value"),
+    [
+        ("sentry_release", "SENTRY_RELEASE", "VERCEL_GIT_COMMIT_SHA", "0123abcd"),
+        ("posthog_project_api_key", "POSTHOG_PROJECT_API_KEY", "NEXT_PUBLIC_POSTHOG_KEY", "phc_test_only"),
+        ("posthog_host", "POSTHOG_HOST", "NEXT_PUBLIC_POSTHOG_HOST", "https://eu.i.posthog.com"),
+        ("clerk_publishable_key", "CLERK_PUBLISHABLE_KEY", "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY", "pk_test_"),
+    ],
+)
+def test_an_empty_variable_never_hides_its_alias(
+    monkeypatch: pytest.MonkeyPatch, field: str, name: str, alias: str, value: str
+) -> None:
+    """Empty means unset in the process environment too: a setting read from either of two names
+    takes the second when the first is present but empty."""
+    monkeypatch.setenv(name, "")
+    monkeypatch.setenv(alias, value)
+    assert getattr(make_settings(), field) == value
 
 
 def test_env_example_placeholders_fail_clearly(tmp_path: Path) -> None:

@@ -119,17 +119,30 @@
         "title": "Entitlement",
         "type": "object"
       },
-      "HTTPValidationError": {
+      "FieldError": {
         "properties": {
-          "detail": {
+          "loc": {
             "items": {
-              "$ref": "#/components/schemas/ValidationError"
+              "type": "string"
             },
-            "title": "Detail",
+            "title": "Loc",
             "type": "array"
+          },
+          "msg": {
+            "title": "Msg",
+            "type": "string"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
           }
         },
-        "title": "HTTPValidationError",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "FieldError",
         "type": "object"
       },
       "Health": {
@@ -542,44 +555,62 @@
         "title": "Redirect",
         "type": "object"
       },
-      "ValidationError": {
+      "ValidationProblem": {
+        "description": "The 422 body: which fields are invalid, at most 20 of them (submitted values are never echoed).",
         "properties": {
-          "ctx": {
-            "title": "Context",
-            "type": "object"
+          "code": {
+            "title": "Code",
+            "type": "string"
           },
-          "input": {
-            "title": "Input"
+          "detail": {
+            "title": "Detail",
+            "type": "string"
           },
-          "loc": {
+          "errors": {
             "items": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "integer"
-                }
-              ]
+              "$ref": "#/components/schemas/FieldError"
             },
-            "title": "Location",
+            "title": "Errors",
             "type": "array"
           },
-          "msg": {
-            "title": "Message",
+          "errors_truncated": {
+            "title": "Errors Truncated",
+            "type": "boolean"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id"
+          },
+          "status": {
+            "title": "Status",
+            "type": "integer"
+          },
+          "title": {
+            "title": "Title",
             "type": "string"
           },
           "type": {
-            "title": "Error Type",
+            "title": "Type",
             "type": "string"
           }
         },
         "required": [
-          "loc",
-          "msg",
-          "type"
+          "type",
+          "title",
+          "status",
+          "code",
+          "detail",
+          "request_id",
+          "errors"
         ],
-        "title": "ValidationError",
+        "title": "ValidationProblem",
         "type": "object"
       },
       "WebhookAck": {
@@ -680,7 +711,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ValidationProblem"
                 }
               }
             },
@@ -954,7 +985,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ValidationProblem"
                 }
               }
             },
@@ -1114,7 +1145,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ValidationProblem"
                 }
               }
             },
@@ -1190,7 +1221,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ValidationProblem"
                 }
               }
             },
@@ -1315,7 +1346,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ValidationProblem"
                 }
               }
             },
@@ -1399,7 +1430,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ValidationProblem"
                 }
               }
             },
@@ -1478,7 +1509,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ValidationProblem"
                 }
               }
             },
@@ -1641,7 +1672,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ValidationProblem"
                 }
               }
             },
@@ -1710,7 +1741,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ValidationProblem"
                 }
               }
             },
@@ -1776,7 +1807,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ValidationProblem"
                 }
               }
             },

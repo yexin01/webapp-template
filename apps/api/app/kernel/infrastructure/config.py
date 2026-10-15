@@ -10,11 +10,20 @@ print their values.
 
 from __future__ import annotations
 
+import logging
 from enum import StrEnum
 from pathlib import Path
 
+import psycopg
+from psycopg.conninfo import conninfo_to_dict
 from pydantic import AliasChoices, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from app.kernel.infrastructure.db import REQUEST_THREADS
+
+# Both pools together leave request threads for threads waiting for a connection and
+# for bounded blocking work, such as billing synchronization across Stripe calls.
+POOLS_MAX_TOTAL = REQUEST_THREADS - 10
 
 # In a repository checkout this file is apps/api/app/kernel/infrastructure/config.py,
 # five levels below the root, which holds pnpm-workspace.yaml. A deployed bundle
@@ -55,6 +64,31 @@ def secret(value: SecretStr | None) -> str:
     return value.get_secret_value() if value is not None else ""
 
 
+DATABASE_URL_INVALID = (
+    "DATABASE_URL is not a valid PostgreSQL connection string (percent-encode special characters in the password)"
+)
+
+
+def database_url_is_valid(url: str) -> bool:
+    """Whether libpq can parse ``url`` into what it looks like. Never report why: the reason quotes the URL.
+
+    A malformed URL fails at every connection attempt with an error that
+    quotes the password, and some that parse put part of the password in the
+    port, the host, or the database name, which connection errors quote too.
+    An unencoded ``/`` in the password ends the host part early, so the rest
+    of the password and the real host land in the database name, after an
+    ``@`` that a database name never needs.
+    """
+    try:
+        params = conninfo_to_dict(url)
+    except psycopg.Error:
+        return False
+    ports = str(params.get("port") or "").split(",")
+    return all(not p or (p.isascii() and p.isdigit()) for p in ports) and not any(
+        "@" in str(params.get(key) or "") for key in ("host", "dbname")
+    )
+
+
 def mode_problems(name: str, mode: Mode, app_env: AppEnv) -> list[str]:
     """The environment rules every integration mode follows."""
     production = app_env is AppEnv.PRODUCTION
@@ -72,6 +106,8 @@ class CoreSettings(BaseSettings):
         extra="ignore",
         case_sensitive=False,
         hide_input_in_errors=True,
+        # Empty means unset in the environment too, so an empty name never hides its alias (SENTRY_RELEASE).
+        env_ignore_empty=True,
     )
 
     app_env: AppEnv = AppEnv.LOCAL
@@ -84,8 +120,9 @@ class CoreSettings(BaseSettings):
     # Well below the request threads (40, db.REQUEST_THREADS): admitted scoped
     # requests plus threads waiting for a connection must fit in them.
     database_pool_max_size: int = Field(default=5, ge=1, le=30)
-    # At least two: billing synchronization may hold all but one (BILL-10).
-    database_worker_pool_max_size: int = Field(default=3, ge=2, le=50)
+    # At least two: billing synchronization may hold all but one (BILL-10). At most
+    # ten: each of those slots holds a request thread across Stripe calls.
+    database_worker_pool_max_size: int = Field(default=3, ge=2, le=10)
     database_connect_timeout_seconds: float = Field(default=5.0, gt=0, le=30)
     database_statement_timeout_ms: int = Field(default=10_000, ge=100, le=60_000)
 
@@ -102,6 +139,10 @@ class CoreSettings(BaseSettings):
     error_reporting_mode: Mode = Mode.DISABLED
     sentry_dsn: SecretStr | None = None
     sentry_traces_sample_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    # OBS-02. A deployed bundle has no git checkout, and sentry-sdk does not read Vercel's variables.
+    sentry_release: str | None = Field(
+        default=None, validation_alias=AliasChoices("SENTRY_RELEASE", "VERCEL_GIT_COMMIT_SHA")
+    )
 
     # Jobs and the outbox (ADR-0003). Without CRON_SECRET the job endpoint is off.
     cron_secret: SecretStr | None = None
@@ -131,8 +172,14 @@ def core_problems(s: CoreSettings) -> list[str]:
         problems.append("APP_ENV is required outside a repository checkout (set preview or production)")
     problems += mode_problems("ANALYTICS_MODE", s.analytics_mode, s.app_env)
     problems += mode_problems("ERROR_REPORTING_MODE", s.error_reporting_mode, s.app_env)
+    if s.log_level.upper() not in logging.getLevelNamesMapping():  # as configure_logging passes it
+        problems.append("LOG_LEVEL must be one of DEBUG, INFO, WARNING, ERROR, CRITICAL")
     if s.database_url is None:
         problems.append("DATABASE_URL is required")
+    elif not database_url_is_valid(secret(s.database_url)):
+        problems.append(DATABASE_URL_INVALID)
+    if s.database_pool_max_size + s.database_worker_pool_max_size > POOLS_MAX_TOTAL:
+        problems.append(f"DATABASE_POOL_MAX_SIZE + DATABASE_WORKER_POOL_MAX_SIZE must be at most {POOLS_MAX_TOTAL}")
     if not s.app_base_url.startswith(("http://", "https://")):
         problems.append("APP_BASE_URL must be an absolute http(s) URL")
     if production and not s.app_base_url.startswith("https://"):
@@ -184,4 +231,6 @@ def load_database_url() -> str:
     url = DatabaseSettings().database_url
     if url is None or not url.get_secret_value().strip():
         raise ConfigError("Invalid configuration: DATABASE_URL is required")
+    if not database_url_is_valid(url.get_secret_value()):
+        raise ConfigError(f"Invalid configuration: {DATABASE_URL_INVALID}")
     return url.get_secret_value()

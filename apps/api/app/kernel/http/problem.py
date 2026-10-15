@@ -7,13 +7,14 @@ stack traces, SQL, submitted values, or raw vendor messages.
 from __future__ import annotations
 
 import logging
-from http import HTTPStatus
+from http import HTTPMethod, HTTPStatus
 from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.routing import Match
 
 from app.kernel.errors import (
     AuthenticationError,
@@ -28,6 +29,7 @@ from app.kernel.errors import (
     RateLimitedError,
     WebhookSignatureError,
 )
+from app.kernel.http.schemas import MAX_VALIDATION_ERRORS
 from app.kernel.request_context import request_id_var
 
 logger = logging.getLogger(__name__)
@@ -87,6 +89,22 @@ def _status_for(exc: DomainError) -> int:
     return 500
 
 
+def _allowed_methods(request: Request) -> list[str]:
+    """Every method that some route serves at the request's path.
+
+    Starlette's 405 names only the methods of the first route whose path
+    matches, but a path often has one route per method.
+    """
+    routes = request.app.router.routes
+    allowed = []
+    for method in HTTPMethod:
+        # A copy, with FastAPI's routing state of its own: matching records state in the scope.
+        probe = {**request.scope, "method": method.value, "fastapi": {}}
+        if any(route.matches(probe)[0] is Match.FULL for route in routes):
+            allowed.append(method.value)
+    return allowed
+
+
 def install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(DomainError)
     async def _domain(_request: Request, exc: DomainError) -> JSONResponse:
@@ -103,23 +121,28 @@ def install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(RequestValidationError)
     async def _validation(_request: Request, exc: RequestValidationError) -> JSONResponse:
         # Field locations and messages only; submitted values are never echoed.
+        found = exc.errors()
         errors = [
             {
                 "loc": [str(p) for p in err.get("loc", ())],
                 "msg": str(err.get("msg", "")),
                 "type": str(err.get("type", "")),
             }
-            for err in exc.errors()
+            for err in found[:MAX_VALIDATION_ERRORS]
         ]
-        return problem(
-            422, "VALIDATION_FAILED", "The request body or parameters are invalid.", extra={"errors": errors}
-        )
+        extra: dict[str, Any] = {"errors": errors}
+        if len(found) > MAX_VALIDATION_ERRORS:
+            extra["errors_truncated"] = True
+        return problem(422, "VALIDATION_FAILED", "The request body or parameters are invalid.", extra=extra)
 
     @app.exception_handler(StarletteHTTPException)
-    async def _http(_request: Request, exc: StarletteHTTPException) -> JSONResponse:
+    async def _http(request: Request, exc: StarletteHTTPException) -> JSONResponse:
         code = {404: "NOT_FOUND", 405: "METHOD_NOT_ALLOWED"}.get(exc.status_code, "HTTP_ERROR")
         detail = HTTPStatus(exc.status_code).description or HTTPStatus(exc.status_code).phrase
-        return problem(exc.status_code, code, detail)
+        headers = dict(exc.headers) if exc.headers else {}  # set by the framework, never from the request
+        if exc.status_code == 405 and (allowed := _allowed_methods(request)):
+            headers["Allow"] = ", ".join(allowed)  # RFC 9110 §15.5.6
+        return problem(exc.status_code, code, detail, headers=headers or None)
 
     @app.exception_handler(PayloadTooLargeError)
     async def _too_large(_request: Request, _exc: PayloadTooLargeError) -> JSONResponse:

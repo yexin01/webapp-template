@@ -188,3 +188,39 @@ def test_a_concurrent_run_still_waits_for_the_migration_lock(
     runner.join(10)
     assert errors == []
     assert applied == [["1_probe.sql"]]
+
+
+def test_a_run_started_during_another_waits_at_every_migration(
+    scratch_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The second run waits for the lock at the ledger and again at each migration, which the runs
+    take one at a time: no wait may be cut short by the lock timeout, and each migration is applied
+    once, in order, by whichever run takes its lock first."""
+    monkeypatch.setattr(migrations, "_LOCK_TIMEOUT", "200ms")
+    _write(tmp_path, "1_slow.sql", "SELECT pg_sleep(1);")
+    _write(tmp_path, "2_slow.sql", "SELECT pg_sleep(1);")
+    outcome: dict[str, Any] = {}
+
+    def run(name: str) -> None:
+        try:
+            outcome[name] = migrations.migrate(scratch_url, tmp_path)
+        except BaseException as exc:  # noqa: BLE001 - reported to the test
+            outcome[name] = exc
+
+    first = threading.Thread(target=run, args=("first",), daemon=True)
+    first.start()
+    give_up = time.monotonic() + 10
+    in_first_migration = (
+        "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND state = 'active' AND query = %s"
+    )
+    while not superuser_query(scratch_url, in_first_migration, ("SELECT pg_sleep(1);",))[0][0]:
+        assert time.monotonic() < give_up, "the first run never started its first migration"
+        time.sleep(0.01)
+    second = threading.Thread(target=run, args=("second",), daemon=True)
+    second.start()
+    first.join(15)
+    second.join(15)
+    assert set(outcome) == {"first", "second"}, "a run did not finish"
+    assert not any(isinstance(result, BaseException) for result in outcome.values()), outcome
+    assert outcome["first"][:1] == ["1_slow.sql"]  # it was inside that migration when the second run started
+    assert outcome["first"] + outcome["second"] == ["1_slow.sql", "2_slow.sql"]

@@ -126,6 +126,7 @@ def sentry_options(settings: CoreSettings) -> dict[str, Any]:
     return {
         "dsn": settings.sentry_dsn.get_secret_value(),
         "environment": settings.app_env.value,
+        "release": settings.sentry_release,  # None: sentry-sdk derives one (SENTRY_RELEASE, git, CI)
         # Collect nothing personal or request-derived by default; the
         # before_send scrubber is a second line of defense.
         "data_collection": {

@@ -43,6 +43,162 @@ def test_event_is_recorded_with_the_change_and_dispatched_after_the_response(har
     assert ("project_created", {"context": "personal"}) in [(e, p) for _, e, p in harness.analytics.events]
 
 
+def recording_responses(app: Any, order: list[str]) -> Any:
+    """``app``, noting in ``order`` when each response starts."""
+
+    async def recording(scope: Any, receive: Any, send: Any) -> None:
+        async def spy(message: Any) -> None:
+            if message["type"] == "http.response.start":
+                order.append(f"response {message['status']}")
+            await send(message)
+
+        await app(scope, receive, spy)
+
+    return recording
+
+
+@pytest.mark.parametrize("outcome", ["created", "conflict"])
+def test_events_are_dispatched_after_the_response(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    """Handlers run after the response is sent, for error responses too: a domain error after a
+    write commits the write and its event, and its 4xx must not wait for the event's handlers."""
+    from fastapi.testclient import TestClient
+
+    from app.kernel.errors import ConflictError
+    from app.modules.projects.domain import ProjectCreated
+
+    order: list[str] = []
+    harness.container.kernel.handlers.subscribe(ProjectCreated, "test.order", lambda event: order.append("handler"))
+    if outcome == "conflict":
+        service = harness.container.projects.service
+        create = service.create
+
+        def create_then_conflict(*args: Any, **kwargs: Any) -> Any:
+            create(*args, **kwargs)
+            raise ConflictError()
+
+        monkeypatch.setattr(service, "create", create_then_conflict)
+    client = TestClient(recording_responses(harness.client.app, order), raise_server_exceptions=False)
+    r = client.post("/api/v1/projects", json={"name": "ordered"}, headers=harness.login("user_a"))
+    assert r.status_code == (201 if outcome == "created" else 409)
+    assert order == [f"response {r.status_code}", "handler"]
+
+
+@pytest.mark.parametrize("committed", [False, True], ids=["rolled-back", "committed-before-the-error"])
+def test_an_unhandled_error_dispatches_nothing_and_its_500_never_waits(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch, committed: bool
+) -> None:
+    """An unhandled error passes the after-response dispatch before any response exists, so nothing
+    is dispatched and the 500 is sent at once. The request transaction rolls back with its event;
+    an event committed outside it (after ``release()``) is left to drain-outbox, not lost."""
+    from fastapi.testclient import TestClient
+
+    from app.modules.projects.domain import ProjectCreated
+
+    kernel = harness.container.kernel
+    order: list[str] = []
+    kernel.handlers.subscribe(ProjectCreated, "test.order", lambda event: order.append("handler"))
+    drain = kernel.outbox.drain
+
+    def spied_drain(*args: Any, **kwargs: Any) -> Any:
+        order.append("drain")
+        return drain(*args, **kwargs)
+
+    monkeypatch.setattr(kernel.outbox, "drain", spied_drain)
+    service = harness.container.projects.service
+    create = service.create
+
+    def create_then_fail(*args: Any, **kwargs: Any) -> Any:
+        if committed:
+            kernel.database.release_request_transaction()  # as before a slow external call
+        create(*args, **kwargs)
+        raise RuntimeError("a bug after the write")
+
+    monkeypatch.setattr(service, "create", create_then_fail)
+    client = TestClient(recording_responses(harness.client.app, order), raise_server_exceptions=False)
+    r = client.post("/api/v1/projects", json={"name": "failed"}, headers=harness.login("user_a"))
+    assert r.status_code == 500
+    assert order == ["response 500"]  # no dispatch at all, neither before the 500 nor after it
+    left = [("projects.created", "pending")] if committed else []
+    assert [(t, s) for t, s, _, _ in outbox_rows(harness)] == left
+    assert kernel.outbox.drain().processed == len(left)  # what drain-outbox does
+    assert order == ["response 500"] + (["drain", "handler"] if committed else ["drain"])
+
+
+def test_after_response_dispatch_never_holds_request_threads(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Handlers run after the response on threads of their own, at most one fewer at a time than the
+    worker pool has connections. A dispatch that finds no free slot within the connect timeout is
+    left to drain-outbox. Slow handlers never take the request threads that routes need (ADR-0003)."""
+    import logging
+    import threading
+    import time
+
+    import anyio
+    from fastapi.testclient import TestClient
+
+    from app.bootstrap import create_app
+    from app.modules.projects.domain import ProjectCreated
+
+    h = make_harness({"database_connect_timeout_seconds": 1})
+    slots = h.container.settings.database_worker_pool_max_size - 1
+    writes = slots + 4
+    lock = threading.Lock()
+    running = peak = 0
+    release = threading.Event()
+
+    def slow_delivery(event: StoredEvent) -> None:  # e.g. an adopter's handler calling a slow service
+        nonlocal running, peak
+        with lock:
+            running += 1
+            peak = max(peak, running)
+        try:
+            release.wait(10)
+        finally:
+            with lock:
+                running -= 1
+
+    h.container.kernel.handlers.subscribe(ProjectCreated, "test.slow_delivery", slow_delivery)
+    headers = h.login("user_a")
+    statuses: list[int] = []
+
+    def deferred() -> int:
+        return sum(r.getMessage() == "after_response_dispatch_deferred" for r in list(caplog.records))
+
+    def post(name: str) -> None:
+        statuses.append(client.post("/api/v1/projects", json={"name": name}, headers=headers).status_code)
+
+    with caplog.at_level(logging.WARNING), TestClient(create_app(h.container), raise_server_exceptions=False) as client:
+        posts = [threading.Thread(target=post, args=(f"p{i}",)) for i in range(writes)]
+        for thread in posts:
+            thread.start()
+        try:
+            give_up = time.monotonic() + 10
+            while running + deferred() < writes:  # every dispatch is running, or was deferred
+                assert time.monotonic() < give_up, (running, deferred())
+                time.sleep(0.01)
+            borrowed = client.portal.call(lambda: anyio.to_thread.current_default_thread_limiter().borrowed_tokens)
+            started = time.monotonic()
+            assert client.get("/api/v1/health").status_code == 200
+            health_seconds = time.monotonic() - started
+        finally:
+            release.set()
+            for thread in posts:
+                thread.join(10)
+    assert borrowed == 0, f"event handlers held {borrowed} request threads"
+    assert peak == slots
+    assert health_seconds < 0.5
+    assert statuses == [201] * writes
+    rows = [(t, s) for t, s, _, _ in outbox_rows(h)]
+    assert (
+        sorted(rows)
+        == [("projects.created", "pending")] * (writes - slots) + [("projects.created", "processed")] * slots
+    )
+    assert h.container.kernel.outbox.drain().processed == writes - slots  # deferred, not lost
+
+
 def test_no_event_without_the_change(harness: Harness) -> None:
     headers = harness.login("user_a")
     assert harness.client.post("/api/v1/projects", json={"name": "   "}, headers=headers).status_code in (400, 422)

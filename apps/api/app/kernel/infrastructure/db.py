@@ -74,7 +74,7 @@ _SET_CONFIG = sql.SQL("set_config(%s, %s, true)")
 R = TypeVar("R")
 RV = TypeVar("RV")
 
-_UNAVAILABLE = "The database is temporarily unavailable."
+DATABASE_UNAVAILABLE = "The database is temporarily unavailable."
 _PSYCOPG_WAIT_INTERVAL = 0.1  # psycopg's default; how often a wait wakes to notice interrupts
 
 # Threads the HTTP server runs blocking work on (AnyIO's default, set explicitly
@@ -115,14 +115,28 @@ class BoundedConnection(psycopg.Connection[TupleRow]):
 class Database:
     """Lazily opened, concurrency-safe connection pools (one per process).
 
-    **Threads waiting for request connections.** A scoped request holds an
-    ``app_api`` connection across several threadpool hops, and needs a thread
-    for each. Threads that block waiting for an ``app_api`` connection outside
-    a request scope must therefore never fill the threadpool, or the holders
-    they wait for cannot finish. At most ``request_threads - api_pool_size``
-    threads may wait at once; past that, a call fails at once with a 503,
-    holding no thread. With at most ``api_pool_size`` scoped requests admitted,
-    waiting threads plus scoped requests never exceed ``request_threads``.
+    **Threads waiting for connections.** A scoped request holds an ``app_api``
+    connection across several threadpool hops, and needs a thread for each.
+    Threads that block waiting for a connection outside a request scope, from
+    either pool, must therefore never fill the threadpool, or the holders they
+    wait for cannot finish. At most ``request_threads - api_pool_size``
+    threads may wait at once, for ``app_api`` and ``app_worker`` connections
+    together; past that, a call fails at once with a 503, holding no thread.
+    With at most ``api_pool_size`` scoped requests admitted, scoped holders
+    plus API waiters plus worker waiters never exceed ``request_threads``.
+
+    Within that budget, each pool's waiters may take every place except
+    those kept for the other pool: as many as the other pool has
+    connections, but never more than half the budget. A burst of short
+    worker transactions (rate limits, on a pool still opening its
+    connections) is therefore served, not refused, while places are free.
+    When one pool stalls (its connections held across slow calls, its
+    callers queueing), only its own excess callers fail fast: calls on the
+    other pool still find the places kept for it.
+
+    Other blocking work holds threads too: bounded external calls (LLM
+    checks, Stripe, Clerk, webhook synchronization) can delay a scoped
+    holder's next hop, but only for their own bounded duration.
     """
 
     def __init__(
@@ -141,8 +155,14 @@ class Database:
         self._statement_timeout_ms = statement_timeout_ms
         # Longer than any statement the server allows, plus a connect timeout of slack.
         self.round_trip_timeout = statement_timeout_ms / 1000 + connect_timeout
-        self.api_waiters_limit = max(1, request_threads - api_pool_size)
-        self._api_waiters = threading.BoundedSemaphore(self.api_waiters_limit)
+        self.waiters_limit = max(1, request_threads - api_pool_size)
+        kept = {role: min(size, self.waiters_limit // 2) for role, size in self._sizes.items()}
+        self.role_waiters_limits = {
+            API_ROLE: max(1, self.waiters_limit - kept[WORKER_ROLE]),
+            WORKER_ROLE: max(1, self.waiters_limit - kept[API_ROLE]),
+        }
+        self._waiters = threading.BoundedSemaphore(self.waiters_limit)
+        self._role_waiters = {role: threading.BoundedSemaphore(n) for role, n in self.role_waiters_limits.items()}
         self._pools: dict[str, ConnectionPool[BoundedConnection]] = {}
         self._lock = threading.Lock()
         self._scope: contextvars.ContextVar[RequestScope | None] = contextvars.ContextVar(
@@ -162,6 +182,9 @@ class Database:
                         min_size=0,
                         max_size=self._sizes[role],
                         timeout=self._connect_timeout,
+                        # A failed reconnect gives its slot back quickly, so the next call reconnects as
+                        # soon as the database answers, not after a backoff that grows with the outage.
+                        reconnect_timeout=max(1.0, self._connect_timeout),
                         # Transaction-mode poolers (e.g. Supabase's) do not
                         # support server-side prepared statements.
                         kwargs={
@@ -241,21 +264,26 @@ class Database:
                 yield conn
                 _require_committable(conn)
         except (PoolTimeout, psycopg.OperationalError) as exc:
-            raise DependencyUnavailableError(_UNAVAILABLE) from exc
+            raise DependencyUnavailableError(DATABASE_UNAVAILABLE) from exc
 
     def _begin_outside_scope(
         self, stack: ExitStack, role: str, query: sql.Composed, params: list[str]
     ) -> psycopg.Connection:
-        """``begin``, bounding the threads that wait for a request connection (see the class docstring)."""
-        if role != API_ROLE:
+        """``begin``, bounding the threads that wait for a connection (see the class docstring)."""
+        with self._waiter_place(role):
             return self.begin(stack, role, query, params)
-        if not self._api_waiters.acquire(blocking=False):
-            logger.warning("database_waiters_exhausted", extra={"limit": self.api_waiters_limit})
-            raise DependencyUnavailableError(_UNAVAILABLE)
-        try:
-            return self.begin(stack, role, query, params)
-        finally:
-            self._api_waiters.release()
+
+    @contextmanager
+    def _waiter_place(self, role: str) -> Iterator[None]:
+        """Hold a place of the role's own and one of the shared budget, or fail at once, holding neither."""
+        limits = ((self._role_waiters[role], self.role_waiters_limits[role]), (self._waiters, self.waiters_limit))
+        with ExitStack() as places:
+            for waiters, limit in limits:
+                if not waiters.acquire(blocking=False):
+                    logger.warning("database_waiters_exhausted", extra={"role": role, "limit": limit})
+                    raise DependencyUnavailableError(DATABASE_UNAVAILABLE)
+                places.callback(waiters.release)
+            yield
 
     # -- Request scope ----------------------------------------------------------
 
@@ -268,6 +296,15 @@ class Database:
     @property
     def api_pool_size(self) -> int:
         return self._sizes[API_ROLE]
+
+    @property
+    def worker_pool_size(self) -> int:
+        return self._sizes[WORKER_ROLE]
+
+    @property
+    def connect_timeout(self) -> float:
+        """How long a call may wait for a connection (``DATABASE_CONNECT_TIMEOUT_SECONDS``)."""
+        return self._connect_timeout
 
     def end_request_scope(
         self, token: contextvars.Token[RequestScope | None], *, error: BaseException | None
@@ -371,7 +408,7 @@ class RequestScope:
             # Whatever failed, the shared transaction must not stay open in an unknown state.
             self._rollback(exc)
             if isinstance(exc, (PoolTimeout, psycopg.OperationalError)):
-                raise DependencyUnavailableError(_UNAVAILABLE) from exc
+                raise DependencyUnavailableError(DATABASE_UNAVAILABLE) from exc
             raise
         try:
             yield conn
@@ -379,7 +416,7 @@ class RequestScope:
         except BaseException as exc:
             self._rollback(exc)
             if isinstance(exc, psycopg.OperationalError):
-                raise DependencyUnavailableError(_UNAVAILABLE) from exc
+                raise DependencyUnavailableError(DATABASE_UNAVAILABLE) from exc
             raise
 
     def _open(self, query: sql.Composed, params: list[str]) -> psycopg.Connection:
@@ -400,14 +437,14 @@ class RequestScope:
         except BaseException as exc:
             self._rollback(exc)
             if isinstance(exc, psycopg.OperationalError):
-                raise DependencyUnavailableError(_UNAVAILABLE) from exc
+                raise DependencyUnavailableError(DATABASE_UNAVAILABLE) from exc
             raise
         stack, self._stack, self._conn, self._applied = self._stack, None, None, None
         if stack is not None:
             try:
                 stack.close()  # exits the transaction (COMMIT), then returns the connection
             except psycopg.OperationalError as exc:
-                raise DependencyUnavailableError(_UNAVAILABLE) from exc
+                raise DependencyUnavailableError(DATABASE_UNAVAILABLE) from exc
 
     def rollback(self, error: BaseException) -> None:
         """Roll back and end the scope, because the request failed with ``error``."""
@@ -437,7 +474,7 @@ class RequestScope:
                 # The ROLLBACK itself failed, so the connection is closed and the
                 # server discards the transaction. Report the outage, as an
                 # unscoped transaction does.
-                raise DependencyUnavailableError(_UNAVAILABLE) from rollback_error
+                raise DependencyUnavailableError(DATABASE_UNAVAILABLE) from rollback_error
 
 
 def _require_committable(conn: psycopg.Connection) -> None:

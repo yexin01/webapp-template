@@ -10,12 +10,47 @@ from typing import Any
 import anyio
 from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware import Middleware
 
 from app.kernel.http.middleware import BodySizeLimitMiddleware, RequestContextMiddleware
 from app.kernel.http.problem import install_error_handlers
+from app.kernel.http.schemas import ValidationProblem
 from app.kernel.infrastructure.config import AppEnv, CoreSettings
 
 API_PREFIX = "/api/v1"
+_SCHEMAS = "#/components/schemas/"
+
+
+class _Application(FastAPI):
+    """Documents the 422 body the API returns (``ValidationProblem``, see ``problem.py``)
+    in place of FastAPI's default ``HTTPValidationError``, for every route that can fail validation."""
+
+    def openapi(self) -> dict[str, Any]:
+        if not self.openapi_schema:
+            self.openapi_schema = _document_validation_problems(super().openapi())
+        return self.openapi_schema
+
+
+def _document_validation_problems(document: dict[str, Any]) -> dict[str, Any]:
+    default = {"$ref": f"{_SCHEMAS}HTTPValidationError"}
+    responses = [
+        operation["responses"]["422"]
+        for path_item in document.get("paths", {}).values()
+        for operation in path_item.values()
+        if operation.get("responses", {}).get("422", {}).get("content", {}).get("application/json", {}).get("schema")
+        == default
+    ]
+    if not responses:
+        return document
+    for response in responses:
+        response["content"] = {"application/json": {"schema": {"$ref": f"{_SCHEMAS}ValidationProblem"}}}
+    schemas = document["components"]["schemas"]
+    for unused in ("HTTPValidationError", "ValidationError"):  # FastAPI's, referenced only by its default 422
+        schemas.pop(unused, None)
+    definition = ValidationProblem.model_json_schema(ref_template=f"{_SCHEMAS}{{model}}", mode="serialization")
+    schemas.update(definition.pop("$defs", {}), ValidationProblem=definition)
+    document["components"]["schemas"] = dict(sorted(schemas.items()))
+    return document
 
 
 def build_fastapi(
@@ -24,9 +59,13 @@ def build_fastapi(
     title: str,
     routers: Sequence[APIRouter],
     dependencies: Sequence[Any] = (),
+    inner_middleware: Sequence[Middleware] = (),
     worker_threads: int,
     on_shutdown: Callable[[], None] = lambda: None,
 ) -> FastAPI:
+    """``inner_middleware`` wraps the routes, inside the platform middleware (request
+    context, body-size limit, CORS), in Starlette's order: the first entry is the outermost."""
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         # Sync dependencies and handlers run on AnyIO's default thread limiter.
@@ -35,7 +74,7 @@ def build_fastapi(
         yield
         on_shutdown()
 
-    app = FastAPI(
+    app = _Application(
         title=title,
         version="0.1.0",
         docs_url=None,
@@ -49,6 +88,8 @@ def build_fastapi(
     for router in routers:
         app.include_router(router, prefix=API_PREFIX)
 
+    for cls, args, kwargs in reversed(inner_middleware):
+        app.add_middleware(cls, *args, **kwargs)
     # Browsers reach the API same-origin through the web app's rewrites; CORS
     # is limited to the configured app origin for direct calls (API-04).
     app.add_middleware(

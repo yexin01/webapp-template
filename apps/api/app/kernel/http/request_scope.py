@@ -1,5 +1,6 @@
-"""Request-level dependencies: the request-scoped transaction and
-after-response event dispatch (ADR-0003).
+"""Request-level transaction and event dispatch (ADR-0003): the
+request-scoped transaction dependency, and the middleware that dispatches a
+request's events after its response.
 
 ``request_transaction`` is opt-in per router. Use it only for routes that
 touch nothing but the database. A route that calls an external service must
@@ -17,10 +18,11 @@ from uuid import UUID
 
 import anyio
 from anyio.lowlevel import RunVar
-from starlette.concurrency import run_in_threadpool
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.kernel.application.outbox import OutboxDispatcher
-from app.kernel.infrastructure.db import Database
+from app.kernel.errors import DependencyUnavailableError
+from app.kernel.infrastructure.db import DATABASE_UNAVAILABLE, Database
 
 logger = logging.getLogger(__name__)
 
@@ -51,11 +53,13 @@ def request_transaction(database: Database) -> Callable[[], AsyncIterator[None]]
     connection:
 
     - **Admission:** at most ``api_pool_size`` scoped requests run at once.
-      Others wait asynchronously, holding neither a thread nor a connection.
-      ``release()`` ends the scope and gives the place back at once, so a
-      request waiting on an external service never blocks other requests.
-      The gate belongs to the event loop (an ASGI server runs one per
-      process): an AnyIO semaphore cannot wake a waiter on another loop.
+      Others wait asynchronously, holding neither a thread nor a connection,
+      for at most the connect timeout; then they get a 503, so a backlog
+      during an outage cannot grow without bound. ``release()`` ends the
+      scope and gives the place back at once, so a request waiting on an
+      external service never blocks other requests. The gate belongs to the
+      event loop (an ASGI server runs one per process): an AnyIO semaphore
+      cannot wake a waiter on another loop.
     - **Commit or rollback:** runs on its own one-off thread limiter, the
       pattern FastAPI uses for dependency exits, so it never queues behind the
       shared threadpool. It is shielded from cancellation, so a client that
@@ -73,7 +77,13 @@ def request_transaction(database: Database) -> Callable[[], AsyncIterator[None]]
 
     async def dependency() -> AsyncIterator[None]:
         gate = current_gate()
-        await gate.acquire()
+        admitted = False
+        with anyio.move_on_after(database.connect_timeout):
+            await gate.acquire()
+            admitted = True
+        if not admitted:
+            logger.warning("database_admission_timeout", extra={"limit": database.api_pool_size})
+            raise DependencyUnavailableError(DATABASE_UNAVAILABLE)
         loop_thread = threading.get_ident()
         given_back = threading.Event()
 
@@ -112,24 +122,74 @@ def request_transaction(database: Database) -> Callable[[], AsyncIterator[None]]
     return dependency
 
 
-def dispatch_recorded_events(dispatcher: OutboxDispatcher) -> Callable[[], AsyncIterator[None]]:
-    """Dependency: after the response is sent, dispatch the events this request recorded.
+class AfterResponseDispatch:
+    """Pure ASGI middleware: dispatch the events a request recorded once its response is sent.
 
-    Register it with ``scope="request"``. Failures here never affect the
-    response. Anything left over is picked up by the ``drain-outbox`` job.
+    It runs when the application returns, so the response has been sent,
+    whether it reports a success or an error (a domain error commits the
+    request's writes and events). An unhandled error propagates through it
+    before any response exists, so it dispatches nothing then, and the 500
+    never waits: the request transaction rolls back, and an event that a
+    route committed outside it is left to ``drain-outbox``. Failures here
+    never affect the response, and anything left over is picked up by the
+    ``drain-outbox`` job.
+
+    Dispatch never takes the request threads: per event loop, at most
+    ``DATABASE_WORKER_POOL_MAX_SIZE - 1`` dispatches run at once, on threads
+    of their own, so one worker connection stays free for readiness and rate
+    limits. A dispatch that finds no free slot within the connect timeout is
+    left to ``drain-outbox`` (``after_response_dispatch_deferred``).
     """
 
-    async def dependency() -> AsyncIterator[None]:
+    def __init__(self, app: ASGIApp, *, dispatcher: OutboxDispatcher, database: Database) -> None:
+        self.app = app
+        self._dispatcher = dispatcher
+        self._wait_seconds = database.connect_timeout
+        self._size = max(1, database.worker_pool_size - 1)
+        self._slots: RunVar[anyio.Semaphore] = RunVar(f"dispatch_slots_{id(self)}")
+        self._threads: RunVar[anyio.CapacityLimiter] = RunVar(f"dispatch_threads_{id(self)}")
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
         recorded: list[UUID] = []
         token = _recorded.set(recorded)
         try:
-            yield
+            await self.app(scope, receive, send)
         finally:
             _recorded.reset(token)
-            if recorded:
-                try:
-                    await run_in_threadpool(dispatcher.drain, list(recorded))
-                except Exception:
-                    logger.exception("after_response_dispatch_failed", extra={"events": len(recorded)})
+        if recorded:
+            await self._dispatch(list(recorded))
 
-    return dependency
+    async def _dispatch(self, recorded: list[UUID]) -> None:
+        slots = self._slots_for_this_loop()
+        acquired = False
+        with anyio.move_on_after(self._wait_seconds):
+            await slots.acquire()
+            acquired = True
+        if not acquired:
+            logger.warning("after_response_dispatch_deferred", extra={"events": len(recorded)})
+            return
+        try:
+            await anyio.to_thread.run_sync(self._dispatcher.drain, recorded, limiter=self._threads_for_this_loop())
+        except Exception:
+            logger.exception("after_response_dispatch_failed", extra={"events": len(recorded)})
+        finally:
+            slots.release()
+
+    def _slots_for_this_loop(self) -> anyio.Semaphore:
+        try:
+            return self._slots.get()
+        except LookupError:
+            created = anyio.Semaphore(self._size)
+            self._slots.set(created)
+            return created
+
+    def _threads_for_this_loop(self) -> anyio.CapacityLimiter:
+        try:
+            return self._threads.get()
+        except LookupError:
+            created = anyio.CapacityLimiter(self._size)
+            self._threads.set(created)
+            return created

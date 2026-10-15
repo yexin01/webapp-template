@@ -2,8 +2,8 @@
 
 A TCP proxy sits where a connection pooler would. It can freeze, which
 models a pooler that stops responding while the kernel still accepts its
-traffic, and it can drop every open connection, which models a pooler
-restart.
+traffic; it can drop every open connection, which models a pooler restart;
+and it can refuse new connections, which models a pooler that is down.
 """
 
 from __future__ import annotations
@@ -42,11 +42,20 @@ class FaultProxy:
         self.port = int(self._listener.getsockname()[1])
         self._frozen = threading.Event()
         self._closed = threading.Event()
+        self._refusing = threading.Event()
         self._lock = threading.Lock()
         self._sockets: list[socket.socket] = []
         self._freeze_on: bytes | None = None
         self.connections = 0  # accepted client connections
+        self.refused = 0  # connection attempts closed while refusing
         threading.Thread(target=self._accept, daemon=True).start()
+
+    def refuse(self) -> None:
+        """Close every new connection at once, as a pooler that is down or restarting does."""
+        self._refusing.set()
+
+    def allow(self) -> None:
+        self._refusing.clear()
 
     def freeze(self) -> None:
         self._frozen.set()
@@ -79,6 +88,11 @@ class FaultProxy:
                 client, _ = self._listener.accept()
             except OSError:
                 return
+            if self._refusing.is_set():
+                with self._lock:
+                    self.refused += 1
+                client.close()
+                continue
             upstream = socket.create_connection(self._upstream)
             with self._lock:
                 self.connections += 1
@@ -211,6 +225,38 @@ def test_connections_that_died_while_idle_are_replaced(proxy: tuple[FaultProxy, 
         fault.drop_connections()
         assert [select_one(database) for _ in range(5)] == [1] * 5
     finally:
+        database.close()
+
+
+def test_the_pool_reconnects_as_soon_as_the_database_is_back(proxy: tuple[FaultProxy, str]) -> None:
+    """After an outage long enough for several failed reconnects, the next calls succeed once the
+    database answers again, instead of failing until a reconnect scheduled with exponential
+    backoff (psycopg_pool's default gives up only after 300 s) happens to come due."""
+    fault, url = proxy
+    database = make_database(url)
+    try:
+        assert select_one(database) == 1
+        fault.refuse()
+        fault.drop_connections()
+        give_up = time.monotonic() + 30
+        while fault.refused < 3:  # the pool has tried to reconnect three times: the outage is not brief
+            assert time.monotonic() < give_up, "the pool stopped trying to reconnect"
+            with contextlib.suppress(DependencyUnavailableError):
+                select_one(database)
+            time.sleep(0.05)
+        fault.allow()
+        restored = time.monotonic()
+        while True:
+            try:
+                assert select_one(database) == 1
+                break
+            except DependencyUnavailableError:
+                assert time.monotonic() - restored < 20, "the pool never reconnected"
+                time.sleep(0.05)
+        lag = time.monotonic() - restored
+        assert lag < CONNECT_TIMEOUT + 1.0, f"calls kept failing for {lag:.1f} s after the database came back"
+    finally:
+        fault.allow()
         database.close()
 
 

@@ -33,17 +33,29 @@ PUBLIC_ROUTES = {
     ("POST", "/api/v1/webhooks/stripe"),
     ("POST", "/api/v1/webhooks/clerk"),
 }
+# Authenticated by a bearer secret of its own (CRON_SECRET), not a session, and hidden from the
+# contract; test_outbox_jobs checks that it refuses a missing or wrong secret.
+SECRET_AUTHENTICATED_ROUTES = {("GET", "/api/v1/jobs/{name}")}
+
+Discovered = tuple[str, str, APIRoute, tuple[Any, ...]]
 
 
-def _api_routes(routes: list[Any]) -> list[APIRoute]:
-    found: list[APIRoute] = []
+def _api_routes(routes: list[Any], prefix: str = "", inherited: tuple[Any, ...] = ()) -> list[Discovered]:
+    """Every ``APIRoute`` of the app, hidden ones included, as (method, full path, route, include dependencies).
+
+    FastAPI 0.143 keeps an included router as one ``_IncludedRouter`` (``original_router`` plus an
+    include context with the prefix and dependencies); a ``Mount``, or older FastAPI versions, expose
+    ``routes`` instead.
+    """
+    found: list[Discovered] = []
     for route in routes:
         if isinstance(route, APIRoute):
-            found.append(route)
-        for attr in ("routes", "router"):
-            nested = getattr(route, attr, None)
-            if nested is not None and nested is not routes:
-                found += _api_routes(nested.routes if hasattr(nested, "routes") else nested)
+            found += [(method, prefix + route.path_format, route, inherited) for method in sorted(route.methods)]
+        elif (included := getattr(route, "original_router", None)) is not None:
+            context = route.include_context
+            found += _api_routes(included.routes, prefix + context.prefix, inherited + tuple(context.dependencies))
+        elif (nested := getattr(route, "routes", None)) is not None:
+            found += _api_routes(list(nested), prefix + getattr(route, "path", ""), inherited)
     return found
 
 
@@ -51,28 +63,56 @@ def _requires_auth(dependant: Any, authenticate: Any) -> bool:
     return any(d.call is authenticate or _requires_auth(d, authenticate) for d in dependant.dependencies)
 
 
+def unprotected_routes(app: Any, authenticate: Any) -> list[tuple[str, str]]:
+    """Routes neither allowlisted nor depending on ``authenticate``, directly, through another
+    dependency, or through the include that added them."""
+    allowlisted = PUBLIC_ROUTES | SECRET_AUTHENTICATED_ROUTES
+    return sorted(
+        (method, path)
+        for method, path, route, inherited in _api_routes(list(app.routes))
+        if (method, path) not in allowlisted
+        and not _requires_auth(route.dependant, authenticate)
+        and not any(getattr(d, "dependency", None) is authenticate for d in inherited)
+    )
+
+
 def test_route_manifest_every_route_declares_authentication(harness: Harness) -> None:
-    """TEN-02: every route is authenticated unless explicitly allowlisted."""
+    """TEN-02: every route is authenticated unless explicitly allowlisted, checked on the routes the
+    app serves (not on an anonymous probe, which a route refusing an empty header would also pass)."""
     app = harness.client.app
-    spec_paths = {(m.upper(), p) for p, ops in app.openapi()["paths"].items() for m in ops}  # type: ignore[attr-defined]
-    routes = {r.path: r for r in _api_routes(list(app.routes))}  # type: ignore[attr-defined]
-    assert len(spec_paths) >= 17
-    unprotected = []
-    for method, path in spec_paths:
-        if (method, path) in PUBLIC_ROUTES:
-            continue
-        route = routes.get(path)
-        if route is None:
-            # Fall back to an HTTP probe: an unauthenticated call must be refused.
-            probe_path = path.replace("{org_id}", "org_probe").replace(
-                "{project_id}", "00000000-0000-4000-8000-000000000000"
-            )
-            status = harness.client.request(method, probe_path).status_code
-            if status != 401:
-                unprotected.append((method, path, status))
-        elif not _requires_auth(route.dependant, harness.container.identity.auth.authenticate):
-            unprotected.append((method, path, "no authenticate dependency"))
-    assert unprotected == []
+    discovered = {(method, path) for method, path, _, _ in _api_routes(list(app.routes))}  # type: ignore[attr-defined]
+    operations = {(m.upper(), p) for p, ops in app.openapi()["paths"].items() for m in ops}  # type: ignore[attr-defined]
+    assert len(operations) >= 20
+    assert operations <= discovered, "route discovery missed operations of the contract"
+    assert discovered >= SECRET_AUTHENTICATED_ROUTES, "route discovery missed routes hidden from the contract"
+    assert unprotected_routes(app, harness.container.identity.auth.authenticate) == []
+
+
+def test_the_route_manifest_reports_a_route_that_skips_authentication(harness: Harness) -> None:
+    """The check itself: a route that only looks for an Authorization header (an anonymous probe gets
+    401, yet any token is accepted), or one hidden from the contract, is reported."""
+    from fastapi import APIRouter, Request
+
+    from app.kernel.errors import AuthenticationError
+
+    router = APIRouter()
+
+    @router.get("/manifest-probe/header-only")
+    def header_only(request: Request) -> dict[str, str]:
+        if not request.headers.get("authorization"):
+            raise AuthenticationError()
+        return {"data": "any token works"}
+
+    @router.get("/manifest-probe/hidden", include_in_schema=False)
+    def hidden() -> dict[str, str]:
+        return {"data": "anyone"}
+
+    app = harness.client.app
+    app.include_router(router, prefix="/api/v1")  # type: ignore[attr-defined]
+    assert unprotected_routes(app, harness.container.identity.auth.authenticate) == [
+        ("GET", "/api/v1/manifest-probe/header-only"),
+        ("GET", "/api/v1/manifest-probe/hidden"),
+    ]
 
 
 def test_unauthenticated_probe_of_every_protected_route(harness: Harness) -> None:
@@ -202,6 +242,91 @@ def test_text_with_a_nul_character_is_invalid_input_not_a_server_error(harness: 
         assert "a\\u0000b" not in response.text  # the submitted value is never echoed (JSON escapes NUL)
 
 
+def test_a_body_of_many_unknown_keys_is_refused_as_one_error(harness: Harness) -> None:
+    """Each unknown key would be a validation error of its own, and building them for a body within the
+    size limit costs many times its size in memory. Past what a response lists, the body is refused as
+    a whole, with one error (§15.3)."""
+    headers = {**harness.login("user_a"), "Content-Type": "application/json"}
+    body = '{"name":"x",' + ",".join(f'"k{i}":0' for i in range(20_000)) + "}"
+    response = harness.client.post("/api/v1/projects", content=body, headers=headers)
+    assert response.status_code == 422
+    problem = response.json()
+    assert problem["code"] == "VALIDATION_FAILED"
+    assert [(error["loc"], error["type"]) for error in problem["errors"]] == [(["body"], "value_error")]
+    assert "Too many unknown fields." in problem["errors"][0]["msg"]
+    assert "errors_truncated" not in problem
+
+
+def test_a_validation_response_lists_at_most_20_errors(harness: Harness) -> None:
+    """A body can fail in more ways than a response lists: it copies the first 20 errors, and says
+    that there were more."""
+    headers = {**harness.login("user_a"), "Content-Type": "application/json"}
+    body = "{" + ",".join(f'"k{i}":0' for i in range(20)) + "}"  # 20 unknown keys and no name: 21 errors
+    problem = harness.client.post("/api/v1/projects", content=body, headers=headers).json()
+    assert problem["code"] == "VALIDATION_FAILED"
+    assert len(problem["errors"]) == 20
+    assert problem["errors_truncated"] is True
+    one = harness.client.post("/api/v1/projects", json={"name": ""}, headers=headers).json()
+    assert len(one["errors"]) == 1
+    assert "errors_truncated" not in one
+
+
+def test_the_contract_declares_the_validation_problem_the_api_returns(harness: Harness) -> None:
+    """DEC-007: the OpenAPI document is the frontend's source of truth, so its 422 is the problem body
+    with field errors that the API sends, not FastAPI's default {"detail": [...]}."""
+    from app.kernel.http.schemas import ValidationProblem
+
+    document = harness.client.app.openapi()  # type: ignore[attr-defined]
+    declared = [
+        operation["responses"]["422"]["content"]["application/json"]["schema"]
+        for path_item in document["paths"].values()
+        for operation in path_item.values()
+        if "422" in operation["responses"]
+    ]
+    assert len(declared) >= 10
+    assert all(schema == {"$ref": "#/components/schemas/ValidationProblem"} for schema in declared)
+    schemas = document["components"]["schemas"]
+    assert "HTTPValidationError" not in schemas
+    assert "ValidationError" not in schemas
+    assert set(schemas["ValidationProblem"]["required"]) == {
+        "type",
+        "title",
+        "status",
+        "code",
+        "detail",
+        "request_id",
+        "errors",
+    }
+    headers = {**harness.login("user_a"), "Content-Type": "application/json"}
+    truncated = "{" + ",".join(f'"k{i}":0' for i in range(20)) + "}"
+    refused_whole = '{"name":"x",' + ",".join(f'"k{i}":0' for i in range(100)) + "}"
+    for body in ('{"name": ""}', truncated, refused_whole):
+        response = harness.client.post("/api/v1/projects", content=body, headers=headers)
+        assert response.status_code == 422
+        ValidationProblem.model_validate(response.json(), strict=True)
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "allowed"),
+    [
+        ("PUT", "/api/v1/health", {"GET"}),
+        # One route per method share these paths; Allow names the methods of all of them.
+        ("PUT", "/api/v1/projects", {"GET", "POST"}),
+        ("DELETE", "/api/v1/orgs/org_probe/projects", {"GET", "POST"}),
+        ("PATCH", "/api/v1/projects/00000000-0000-4000-8000-000000000000", {"DELETE"}),
+    ],
+)
+def test_method_not_allowed_names_the_allowed_methods(
+    harness: Harness, method: str, path: str, allowed: set[str]
+) -> None:
+    """RFC 9110 §15.5.6: a 405 carries Allow, listing every method the target resource supports."""
+    response = harness.client.request(method, path)
+    assert response.status_code == 405
+    assert response.headers["content-type"] == "application/problem+json"
+    assert response.json()["code"] == "METHOD_NOT_ALLOWED"
+    assert {m.strip() for m in response.headers["allow"].split(",")} == allowed
+
+
 def test_deeply_nested_input_is_invalid_not_a_server_error(harness: Harness) -> None:
     headers = harness.login("user_a")
     body = '{"name": ' + "[" * 900 + "]" * 900 + "}"  # deep, yet within what the JSON parser accepts
@@ -232,6 +357,118 @@ def test_readiness_reports_database_unavailable(make_harness: Any) -> None:
     r = h.client.get("/api/v1/me", headers=h.login("user_a"))
     assert r.status_code == 503
     assert "127.0.0.1" not in r.text
+
+
+def test_a_readiness_flood_holds_one_thread_and_liveness_stays_fast(make_harness: Any) -> None:
+    """API-06: concurrent /ready calls share one database check per instance, so a flood of them
+    (anonymous, during an outage) holds at most one thread, and /health never waits for a thread."""
+    import threading
+    from collections.abc import Iterator
+    from contextlib import contextmanager
+
+    import anyio
+    import httpx
+
+    from app.kernel.infrastructure.db import REQUEST_THREADS, Database
+    from tests.integration.test_request_admission import silent_database
+
+    inside = peak = 0
+    lock = threading.Lock()
+    checking = threading.Event()
+    statuses: list[tuple[int, Any]] = []
+    slowest = 0.0
+    connect_timeout = 1.0
+    with silent_database() as url:
+        database = Database(
+            url, api_pool_size=5, worker_pool_size=3, connect_timeout=connect_timeout, statement_timeout_ms=1000
+        )
+        transaction = database.transaction
+
+        @contextmanager
+        def counted(role: str, context: Any) -> Iterator[Any]:
+            nonlocal inside, peak
+            with lock:
+                inside += 1
+                peak = max(peak, inside)
+            checking.set()
+            try:
+                with transaction(role, context) as conn:
+                    yield conn
+            finally:
+                with lock:
+                    inside -= 1
+
+        database.transaction = counted  # type: ignore[method-assign]
+        h = make_harness(database=database)
+
+        async def main() -> float:
+            anyio.to_thread.current_default_thread_limiter().total_tokens = REQUEST_THREADS  # as at startup
+            transport = httpx.ASGITransport(app=h.client.app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://api.test") as client:
+
+                async def ready() -> None:
+                    nonlocal slowest
+                    started = time.monotonic()
+                    response = await client.get("/api/v1/ready")
+                    slowest = max(slowest, time.monotonic() - started)
+                    statuses.append((response.status_code, response.json()))
+
+                with anyio.fail_after(30):
+                    async with anyio.create_task_group() as tg:
+                        for _ in range(REQUEST_THREADS + 5):
+                            tg.start_soon(ready)
+                        while not checking.is_set():
+                            await anyio.sleep(0.01)
+                        started = time.monotonic()
+                        assert (await client.get("/api/v1/health")).status_code == 200
+                        return time.monotonic() - started
+
+        health_seconds = anyio.run(main)
+    assert health_seconds < 0.5, f"/health took {health_seconds:.2f} s"
+    assert peak == 1, f"{peak} threads checked the database at once"
+    # Each caller waited for at most the check in progress, not for the checks of those ahead of it.
+    assert slowest < 2 * connect_timeout + 1, f"the slowest /ready took {slowest:.1f} s"
+    not_ready = {"status": "not_ready", "checks": {"database": "unavailable"}}
+    assert statuses == [(503, not_ready)] * (REQUEST_THREADS + 5)
+
+
+def get_while_every_request_thread_is_busy(app: Any, path: str) -> int:
+    """The status of ``GET path`` while every request thread (AnyIO's default limiter) is held."""
+    import threading
+
+    import anyio
+    import httpx
+
+    async def main() -> int:
+        threads = anyio.to_thread.current_default_thread_limiter()
+        threads.total_tokens = 2
+        release = threading.Event()
+        async with anyio.create_task_group() as tg:
+            try:
+                for _ in range(threads.total_tokens):
+                    tg.start_soon(anyio.to_thread.run_sync, release.wait, 10)
+                while threads.borrowed_tokens < threads.total_tokens:
+                    await anyio.sleep(0.01)
+                transport = httpx.ASGITransport(app=app)
+                async with httpx.AsyncClient(transport=transport, base_url="http://api.test") as client:
+                    with anyio.fail_after(2):
+                        return (await client.get(path)).status_code
+            finally:
+                release.set()
+
+    return anyio.run(main)
+
+
+def test_liveness_needs_no_thread(harness: Harness) -> None:
+    """API-06: /health makes no dependency call, so it answers even when every request thread is
+    busy, for example waiting for a database that stopped responding."""
+    assert get_while_every_request_thread_is_busy(harness.client.app, "/api/v1/health") == 200
+
+
+def test_readiness_checks_the_database_on_a_thread_of_its_own(harness: Harness) -> None:
+    """API-06: the database check needs a thread, but never one of the request threads, so /ready
+    still answers when they are all busy, for example with threads waiting for connections."""
+    assert get_while_every_request_thread_is_busy(harness.client.app, "/api/v1/ready") == 200
 
 
 def test_analytics_failure_does_not_break_requests(make_harness: Any) -> None:

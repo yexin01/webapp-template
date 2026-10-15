@@ -14,14 +14,15 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
 
-from fastapi import Depends, FastAPI
+from fastapi import FastAPI
+from starlette.middleware import Middleware
 
 from app.kernel.application.outbox import OutboxDispatcher
 from app.kernel.application.probes import AnalyticsProbe, DatabaseProbe, ErrorReportingProbe
 from app.kernel.application.rate_limit import RateLimiter
 from app.kernel.events import EventHandlers
 from app.kernel.http.app import build_fastapi
-from app.kernel.http.request_scope import dispatch_recorded_events, note_recorded_event, request_transaction
+from app.kernel.http.request_scope import AfterResponseDispatch, note_recorded_event, request_transaction
 from app.kernel.http.routes import build_health_router, build_jobs_router
 from app.kernel.infrastructure.clock import SystemClock
 from app.kernel.infrastructure.config import AppEnv, Mode
@@ -175,7 +176,7 @@ def create_app(container: Container) -> FastAPI:
         settings=container.settings,
         title=API_TITLE,
         routers=routers,
-        dependencies=[Depends(dispatch_recorded_events(kernel.outbox), scope="request")],
+        inner_middleware=[Middleware(AfterResponseDispatch, dispatcher=kernel.outbox, database=kernel.database)],
         worker_threads=REQUEST_THREADS,
         on_shutdown=container.close,
     )

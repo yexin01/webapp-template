@@ -7,6 +7,8 @@ import logging
 import time
 from typing import Any
 
+import anyio
+from anyio.lowlevel import RunVar
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
@@ -18,24 +20,69 @@ from app.kernel.ports import KernelStore, Transactions
 logger = logging.getLogger(__name__)
 
 
+class _Check:
+    """A database check in progress; callers that arrive meanwhile share its outcome."""
+
+    def __init__(self) -> None:
+        self.done = anyio.Event()
+        self.ready = False
+
+
 def build_health_router(tx: Transactions[KernelStore]) -> APIRouter:
-    """Public; reveals no configuration."""
+    """Public; reveals no configuration.
+
+    ``/health`` runs on the event loop: it needs no thread, so a saturated
+    threadpool never delays it. ``/ready`` runs one database check at a time
+    per event loop, on a thread of its own: concurrent callers wait for the
+    check in progress and share its outcome, so a flood of them holds at
+    most one thread and one worker connection. Nothing is cached once a
+    check ends; the next caller starts a new one.
+    """
     router = APIRouter(tags=["health"])
+    checks: RunVar[_Check | None] = RunVar(f"readiness_check_{id(tx)}", default=None)
+    limiters: RunVar[anyio.CapacityLimiter] = RunVar(f"readiness_threads_{id(tx)}")
 
-    @router.get("/health", response_model=Health)
-    def health() -> Health:
-        return Health(status="ok")
-
-    @router.get("/ready", response_model=Readiness, responses={503: {"model": Readiness}})
-    def ready() -> JSONResponse:
+    def database_ready() -> bool:
         try:
             with tx.as_system() as t:
                 t.repo.ping()
+        except DependencyUnavailableError:
+            return False
+        return True
+
+    def limiter() -> anyio.CapacityLimiter:
+        try:
+            return limiters.get()
+        except LookupError:
+            created = anyio.CapacityLimiter(1)
+            limiters.set(created)
+            return created
+
+    async def check_database() -> bool:
+        current = checks.get()
+        if current is not None:
+            await current.done.wait()
+            return current.ready
+        current = _Check()
+        checks.set(current)
+        try:
+            current.ready = await anyio.to_thread.run_sync(database_ready, limiter=limiter())
+        finally:
+            checks.set(None)
+            current.done.set()
+        return current.ready
+
+    @router.get("/health", response_model=Health)
+    async def health() -> Health:
+        return Health(status="ok")
+
+    @router.get("/ready", response_model=Readiness, responses={503: {"model": Readiness}})
+    async def ready() -> JSONResponse:
+        if await check_database():
             body = Readiness(status="ready", checks={"database": "ok"})
             return JSONResponse(body.model_dump(), status_code=200)
-        except DependencyUnavailableError:
-            body = Readiness(status="not_ready", checks={"database": "unavailable"})
-            return JSONResponse(body.model_dump(), status_code=503)
+        body = Readiness(status="not_ready", checks={"database": "unavailable"})
+        return JSONResponse(body.model_dump(), status_code=503)
 
     return router
 
