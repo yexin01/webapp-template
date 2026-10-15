@@ -13,7 +13,8 @@
  *     [--db-port 54330] [--dry-run]
  *
  * The contact options are required while the placeholders are still present.
- * A copy is renamed once: a re-run with the same values changes nothing, and
+ * A copy is renamed once: a re-run with the same values changes nothing (a
+ * later mention of the template in the copy is the adopter's and stays), and
  * a re-run with a different name, slug, port, or contact is refused. Every
  * target is checked for write access first, and package.json (the marker of an
  * initialized copy) is written last, so a run that still fails part-way can be
@@ -26,7 +27,16 @@ import { accessSync, constants, copyFileSync, existsSync, readFileSync, writeFil
 import path from "node:path";
 import { parseArgs } from "node:util";
 
-import { ORIGINAL_DB_PORT, ORIGINAL_NAME, ORIGINAL_SLUG, PLACEHOLDERS, isValidContact } from "./lib/template.mjs";
+import {
+  ORIGINAL_DB_PORT,
+  ORIGINAL_NAME,
+  ORIGINAL_SLUG,
+  PLACEHOLDERS,
+  TAKEN_PORTS,
+  isValidContact,
+  isValidName,
+  isValidSlug,
+} from "./lib/template.mjs";
 
 const root = process.env.TEMPLATE_ROOT ?? path.resolve(import.meta.dirname, "..");
 
@@ -78,23 +88,14 @@ const slug = values.slug?.trim();
 const dbPort = values["db-port"]?.trim();
 const dryRun = values["dry-run"];
 
-// The name lands verbatim in JSON, Python, TOML, TSX, and Markdown, and the
-// API's OpenAPI generator escapes non-ASCII characters, so only printable
-// ASCII that is inert in all of them is accepted.
-const SAFE_NAME = /^[A-Za-z0-9](?:[A-Za-z0-9.,()+!-]| (?! ))*$/;
-// A name or slug that contains the original would be renamed again on every re-run.
-const ORIGINAL = /saas[ _-]?template/i;
-
-if (!name || name.length > 60 || !SAFE_NAME.test(name) || ORIGINAL.test(name)) {
+if (!isValidName(name)) {
   usage(
     "--name is required: up to 60 characters of ASCII letters, digits, single spaces, and . , ( ) + ! -, starting with a letter or digit, and not containing the template's name.",
   );
 }
-if (!slug || !/^[a-z][a-z0-9-]{1,40}$/.test(slug) || ORIGINAL.test(slug)) {
+if (!isValidSlug(slug)) {
   usage("--slug is required: lowercase letters, digits, and hyphens, starting with a letter, and not the template's slug.");
 }
-// Ports the template's own servers use: web, API, and the performance server.
-const TAKEN_PORTS = new Set(["3000", "8000", "8001"]);
 if (
   dbPort !== undefined &&
   (!/^[1-9]\d{3,4}$/.test(dbPort) || Number(dbPort) < 1024 || Number(dbPort) > 65535 || TAKEN_PORTS.has(dbPort))
@@ -152,8 +153,18 @@ function rewrite(rel, transform) {
   else pending.delete(rel);
 }
 
-for (const rel of IDENTIFIER_FILES) {
-  rewrite(rel, (text) => text.replaceAll(ORIGINAL_NAME, name).replaceAll(ORIGINAL_SLUG, slug));
+// Renamed for good once package.json (written last) is renamed and neither the
+// API title nor the generated OpenAPI title is the template's: an older run
+// wrote package.json first and openapi.json last. The template's name in the
+// copy's files is then the adopter's own text.
+const renameDone =
+  initialized &&
+  currentName !== ORIGINAL_NAME &&
+  !read("packages/contracts/openapi.json").includes(`"title": "${ORIGINAL_NAME} API"`);
+if (!renameDone) {
+  for (const rel of IDENTIFIER_FILES) {
+    rewrite(rel, (text) => text.replaceAll(ORIGINAL_NAME, name).replaceAll(ORIGINAL_SLUG, slug));
+  }
 }
 for (const { file, token, option } of PLACEHOLDERS) {
   const value = values[option]?.trim();

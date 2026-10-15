@@ -2,7 +2,7 @@
 
 Disposable proof for [DEC-001](../../dev-docs/engineering-implementation-plan.md#dec-001--python-backend-on-vercel). It packages the real template with the Vercel CLI and exercises the packaged function **on this machine only**. Results are recorded in [`dev-docs/evidence/dec-001-vercel-python.md`](../../dev-docs/evidence/dec-001-vercel-python.md).
 
-Nothing here is template code. Delete this folder once DEC-001 is resolved.
+Nothing here is template code. Delete this folder once DEC-001 is resolved, together with the `dec001` tests in [`apps/api/tests/integration/test_perf_harness.py`](../../apps/api/tests/integration/test_perf_harness.py), which skip once the folder is gone.
 
 ## Safety
 
@@ -50,4 +50,32 @@ These items stay `NOT VERIFIED` until the owner authorizes a preview deployment 
 
 Vercel Cron itself invokes **production** deployments only, never previews. Verifying that it calls the job routes needs a production deployment, which is a separate authorization.
 
-With authorization, the same build output can be deployed to a preview environment, and `proof.py probe` can be pointed at the preview URL. If the preview is behind Vercel Deployment Protection, export `VERCEL_AUTOMATION_BYPASS_SECRET` (the project's Protection Bypass for Automation secret, created with the owner's approval) first: every probe request then carries the `x-vercel-protection-bypass` header. The value is never printed or written to the results. Without it, a protected preview answers `/api/v1/health` with `401`, and the probe stops with a message naming Deployment Protection rather than reporting failed checks.
+### Probing a preview
+
+Not run yet: a preview deployment needs the owner's authorization. `proof.py probe` can check a deployment only if that deployment trusts the test-only values of one proof run. `proof.py env` generates them (`proof.json`, next to the generated key pair), and `run.sh` deletes them when it exits:
+
+- session tokens signed with that run's RSA key, for the issuer `https://proof-dec-001.clerk.invalid` and the authorized party in `proof.json`'s `azp`;
+- the job route called with that run's `CRON_SECRET`, and webhooks signed with its `STRIPE_WEBHOOK_SECRET`.
+
+A preview with its own Clerk instance and secrets therefore fails `auth_rejections`, `cron_job_route`, `stripe_webhook_raw_body`, and `concurrent_isolation` while it works correctly. Such failures say nothing about the platform. To probe a preview, once the owner has authorized it:
+
+1. Generate a key set by hand, in a directory outside the repository: `uv run --project apps/api --frozen python proofs/dec-001/proof.py env --out <dir>/proof.env --keys <dir>/keys --port 3910 --database-url postgresql://unused@127.0.0.1:1/unused`. The port only names the authorized party, and the database URL is not used: the preview keeps its own `DATABASE_URL`.
+2. Deploy the preview from a dedicated proof branch. Set these five values as Preview variables scoped to that branch only (Vercel lets a Preview variable apply to a single Git branch), never to all previews or to Production:
+   - `CLERK_JWT_KEY`: the contents of `<dir>/keys/jwt-public.pem`, pasted as they are, on several lines. Do not copy it from `proof.env`, which holds it on one line, in quotes, ending in a `\n` escape: the web app's configuration check, which `next build` runs, refuses that form with or without the quotes;
+   - `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` (the API derives the token issuer from it), `CLERK_AUTHORIZED_PARTIES`, `CRON_SECRET`, and `STRIPE_WEBHOOK_SECRET`: the values in `<dir>/proof.env`.
+
+   The rest of `proof.env` is for the local run only. While these values are set, that preview trusts only the proof's tokens and signing secret: sign-in does not work on it, and genuine Stripe sandbox deliveries fail their signature check (`400 WEBHOOK_SIGNATURE_INVALID`). That failure is not the raw-body failure the proof rules out. Verify sign-in and genuine deliveries and retries on a preview that has the sandbox values instead (the Stripe endpoint's own signing secret), or after removing the proof values. Afterwards, remove the variables and delete `<dir>`.
+3. Run the probe from the repository root. The preview's database must be non-production with synthetic data only, because the probe creates users, projects, and ledger rows:
+
+   ```bash
+   read -rs PGPASSWORD && export PGPASSWORD   # the database password stays off the command line
+   uv run --project apps/api --frozen python proofs/dec-001/proof.py probe --base-url https://<preview-host> \
+     --label preview --web --proof-json <dir>/keys/proof.json --results <dir>/results \
+     --admin-url postgresql://<user>@<direct-host>:5432/postgres --database <database> --max-db-clients <bound>
+   ```
+
+   `--admin-url` is required and must be a direct, not pooled, connection: the ledger check reads `app.billing_events` through it, and `connection_bound` counts the client connections of `--database` during the concurrent burst, not counting the probe's own. Put connection options such as `PGSSLMODE` in the environment, not in the URL: the ledger check replaces everything after the URL's last `/` with `--database`. Leave out `--web` unless the preview serves the web app on the same host.
+
+   **`connection_bound` is only indicative on a hosted database.** The bound was written for one local instance, the only client of its database. On a hosted or pooled database, every other client of `--database` counts too: other function instances, a pooler's server connections, and the provider's own services (on Supabase, they use the `postgres` database). There the check, and with it the probe's exit status, can fail on a deployment that works correctly. A `connection_bound` failure is then not a platform failure: record the observed count together with the bound you passed.
+
+If the preview is behind Vercel Deployment Protection, export `VERCEL_AUTOMATION_BYPASS_SECRET` (the project's Protection Bypass for Automation secret, created with the owner's approval) first: every probe request then carries the `x-vercel-protection-bypass` header. The value is never printed or written to the results. Without it, a protected preview answers `/api/v1/health` with `401`, and the probe stops with a message naming Deployment Protection rather than reporting failed checks.

@@ -9,11 +9,14 @@
  * (DEC-012) passes in template mode and after init but fails for a renamed,
  * unfilled copy. Also that a run that failed part-way can be resumed with the
  * same options, that read-only targets are refused before anything changes,
- * and that the Docker Compose project is named after the slug.
+ * that the Docker Compose project is named after the slug, that a later run in
+ * an initialized copy leaves the adopter's own text alone, and that this check
+ * itself passes in initialized copies after ordinary edits.
  *
  * In a copy that is already initialized, the renaming checks have nothing to
  * rename; it checks only that re-running init with the copy's own identity
- * changes nothing and that a different identity is refused.
+ * changes nothing and that a different identity is refused. An identity edited
+ * by hand into one init-template does not accept as input skips those checks.
  * Runs on copies of the tracked files (scripts/lib/tracked-copy.mjs) and never
  * touches the working tree.
  */
@@ -35,7 +38,7 @@ import {
 import { devNull, tmpdir } from "node:os";
 import path from "node:path";
 
-import { ORIGINAL_NAME, ORIGINAL_SLUG } from "./lib/template.mjs";
+import { ORIGINAL_NAME, ORIGINAL_SLUG, TAKEN_PORTS, isValidName, isValidSlug } from "./lib/template.mjs";
 import { copyTrackedFiles as copyTracked } from "./lib/tracked-copy.mjs";
 
 const repo = path.resolve(import.meta.dirname, "..");
@@ -92,6 +95,13 @@ function checkInitializedCopy() {
   console.log(`Already initialized as ${currentSlug}: the renaming checks have nothing to rename and are skipped.`);
   if (!currentName || currentName === ORIGINAL_NAME) {
     console.log("The API title was not found or not renamed, so the re-run checks are skipped too.");
+    return;
+  }
+  // Such an identity was set by hand after init; init-template would refuse it as input.
+  if (!isValidName(currentName) || !isValidSlug(currentSlug)) {
+    console.log(
+      `The name "${currentName}" or slug "${currentSlug}" is one init-template does not accept as input, so it cannot be passed back to it; the re-run checks are skipped too.`,
+    );
     return;
   }
   const dir = copyTrackedFiles();
@@ -223,8 +233,8 @@ try {
     ["--name", "SaaS Template Pro", "--slug", SLUG, ...CONTACTS],
     ["--name", NAME, "--slug", "saas-template-pro", ...CONTACTS],
     ["--name", NAME, "--slug", SLUG, "--db-port", "80", ...CONTACTS],
-    // Not canonical, or used by the template's own servers.
-    ...["08000", "01024", "65536", "1e4", "3000", "8000", "8001"].map((port) => [
+    // Not canonical, or used by the template's own servers (the e2e servers included).
+    ...["08000", "01024", "65536", "1e4", "3000", "8000", "8001", "3100", "8100"].map((port) => [
       "--name", NAME, "--slug", SLUG, "--db-port", port, ...CONTACTS,
     ]),
     ["--slug", SLUG, ...CONTACTS],
@@ -239,6 +249,10 @@ try {
     check(result.status === 2, `invalid input was accepted: ${args.join(" ")}`);
   }
   check(JSON.stringify(snapshot(dry)) === JSON.stringify(pristine), "invalid input changed files");
+  // The e2e servers bind fixed ports; PostgreSQL must never be moved onto one.
+  const e2ePorts = [...pristine["apps/web/playwright.config.ts"].matchAll(/^const (?:web|api)Port = (\d+);$/gm)];
+  check(e2ePorts.length === 2, "the e2e ports were not found in apps/web/playwright.config.ts");
+  for (const [, port] of e2ePorts) check(TAKEN_PORTS.has(port), `init-template accepts the e2e port ${port}`);
 
   // 5. A name with the allowed punctuation yields valid, consistent files.
   const punctuated = copyTrackedFiles();
@@ -256,6 +270,17 @@ try {
   check(openapiTitle === `${PUNCTUATED} API`, "openapi.json title does not match the name");
   check(readIn("apps/api/app/bootstrap.py").includes(`API_TITLE = "${PUNCTUATED} API"\n`), "bootstrap.py title is wrong");
 
+  // 5b. Once a copy is initialized its text is the adopter's: a later run with the
+  // same identity (here to move the port) leaves a mention of the template alone.
+  const credit = "\nAcme Cloud started from the SaaS Template (saas-template).\n";
+  writeFileSync(path.join(punctuated, "README.md"), readIn("README.md") + credit);
+  const later = init(punctuated, ["--name", PUNCTUATED, "--slug", SLUG, "--db-port", PORT]);
+  check(
+    later.status === 0 && readIn("docker-compose.yml").includes(`127.0.0.1:${PORT}:5432`),
+    `a later --db-port run in an initialized copy failed: ${later.stderr}`,
+  );
+  check(readIn("README.md").endsWith(credit), "a later run with the same identity rewrote the adopter's own text");
+
   // 6. A renamed copy that still has placeholders fails check-placeholders.
   const unfilled = copyTrackedFiles();
   dirs.push(unfilled);
@@ -264,9 +289,15 @@ try {
   check(checkPlaceholders(unfilled) === 1, "check-placeholders passed for a renamed copy with placeholders");
 
   // 7. A run that failed part-way is resumed by the same options: an older run
-  // wrote package.json first, the current one writes it last.
+  // wrote package.json first, then the other identifier files in turn; the
+  // current one writes package.json last.
+  const olderOrder = new Set([
+    "package.json", "README.md", "apps/api/pyproject.toml", "apps/api/app/__init__.py", "apps/api/app/bootstrap.py",
+  ]);
   for (const [label, partial, other] of [
     ["only package.json renamed", (rel) => rel === "package.json", ["--name", NAME, "--slug", "other-cloud"]],
+    // Stopped before the web files and openapi.json.
+    ["older order, up to bootstrap.py renamed", (rel) => olderOrder.has(rel), ["--name", "Other Cloud", "--slug", SLUG]],
     ["all but package.json renamed", (rel) => rel !== "package.json", ["--name", "Other Cloud", "--slug", SLUG]],
     // The first write of the current order.
     ["only bootstrap.py renamed", (rel) => rel === "apps/api/app/bootstrap.py", ["--name", "Other Cloud", "--slug", SLUG]],
@@ -293,14 +324,12 @@ try {
     check(finish.status === 0, `a part-way rename (${label}) could not be resumed: ${finish.stderr.trim()}`);
     const expected = snapshot(done);
     const actual = snapshot(resumed);
-    if (label === "only package.json renamed") {
+    if (partial("package.json") && !partial("docker-compose.yml")) {
       // Looks like a copy initialized before init named the Compose project: left as it is (2c).
       expected["docker-compose.yml"] = expected["docker-compose.yml"].replace(/^name: .*\n\n/m, "");
     }
-    check(
-      Object.keys(expected).every((rel) => actual[rel] === expected[rel]),
-      `resuming a part-way rename (${label}) did not finish it`,
-    );
+    const unfinished = Object.keys(expected).filter((rel) => actual[rel] !== expected[rel]);
+    check(unfinished.length === 0, `resuming a part-way rename (${label}) did not finish ${unfinished.join(", ")}`);
   }
 
   // 8. A read-only target is refused before anything changes (root ignores permissions).
@@ -347,15 +376,65 @@ try {
   for (const [link, label] of [
     [path.join(fixture, "docs"), "an absolute link"],
     ["../outside", "a link out of the repository"],
+    // Inside the repository when resolved from it, but `..` climbs from the copy.
+    [`${"../".repeat(30)}${fixture.slice(1)}/docs/SECURITY.md`, "a link that climbs to / and back into the repository"],
+    [`../${path.basename(fixture)}/docs/SECURITY.md`, "a link through a folder named like the repository"],
   ]) {
     symlinkSync(link, path.join(fixture, "escape"));
     git("add", "escape");
-    refusedCopy(label, /outside the repository/);
+    refusedCopy(label, /escape is a symbolic link to .+, outside the repository/);
     git("rm", "-q", "--cached", "escape");
     rmSync(path.join(fixture, "escape"));
   }
+  // Each link stays inside on its own, but `..` after a link climbs from where that link points.
+  mkdirSync(path.join(fixture, "docs/deep"));
+  symlinkSync("..", path.join(fixture, "docs/deep/up"));
+  symlinkSync(`up/../../${path.basename(fixture)}/docs/SECURITY.md`, path.join(fixture, "docs/deep/escape"));
+  git("add", "docs/deep");
+  refusedCopy("a chain of links that leads out of the copy", /escape is a symbolic link that leads outside the repository/);
+  git("rm", "-q", "-r", "--cached", "docs/deep");
+  rmSync(path.join(fixture, "docs/deep"), { recursive: true });
+  // Where a link to a file the copy lacks would write cannot be checked.
+  symlinkSync("docs/untracked.md", path.join(fixture, "dangling"));
+  git("add", "dangling");
+  refusedCopy("a link to a file that is not in the copy", /not in the copy/);
+  git("rm", "-q", "--cached", "dangling");
+  rmSync(path.join(fixture, "dangling"));
   git("update-index", "--add", "--cacheinfo", `160000,${"1".repeat(40)},vendor/lib`);
   refusedCopy("a submodule", /is a git submodule/);
+
+  // 10. In an initialized copy this check re-runs init with the copy's own
+  // identity. An ordinary later edit must not fail it, and an identity edited
+  // by hand into one init-template refuses as input is skipped, not failed.
+  const adopted = copyTrackedFiles();
+  dirs.push(adopted);
+  check(init(adopted, ["--name", NAME, "--slug", SLUG, ...CONTACTS]).status === 0, "init failed in the adopter copy");
+  const isolatedGit = { ...process.env, GIT_CONFIG_GLOBAL: devNull, GIT_CONFIG_NOSYSTEM: "1" };
+  execFileSync("git", ["init", "-q"], { cwd: adopted, env: isolatedGit });
+  execFileSync("git", ["add", "-A"], { cwd: adopted, env: isolatedGit });
+  for (const [label, rel, from, to, expected] of [
+    ["a later mention of the template", "README.md", /$/, "\nAcme Cloud started from the SaaS Template.\n", /check passed/],
+    ["a scoped package name", "package.json", `"name": "${SLUG}"`, '"name": "@acme/cloud"', /does not accept/],
+    ["a package name with an underscore", "package.json", `"name": "${SLUG}"`, '"name": "acme_cloud"', /does not accept/],
+    ["an API title with an ampersand", "apps/api/app/bootstrap.py", `"${NAME} API"`, '"Acme Cloud & Co API"', /does not accept/],
+    // Read back as "Acme Cloud " (trailing space), which init-template, trimming --name, can never receive.
+    ["an API title with two spaces before API", "apps/api/app/bootstrap.py", `"${NAME} API"`, `"${NAME}  API"`, /does not accept/],
+  ]) {
+    const file = path.join(adopted, rel);
+    const original = readFileSync(file, "utf8");
+    const edited = original.replace(from, to);
+    check(edited !== original, `the adopter-copy edit (${label}) changed nothing`);
+    writeFileSync(file, edited);
+    const self = spawnSync(process.execPath, [path.join(adopted, "scripts/test-init-template.mjs")], {
+      env: isolatedGit,
+      encoding: "utf8",
+    });
+    writeFileSync(file, original);
+    check(
+      self.status === 0 && expected.test(self.stdout),
+      `test:init-template failed in an initialized copy with ${label} (exit ${self.status}):\n${self.stdout}${self.stderr}`,
+    );
+  }
 } finally {
   for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
 }
@@ -365,5 +444,5 @@ if (failures.length) {
   process.exit(1);
 }
 console.log(
-  "init-template check passed: renamed, contacts filled, port moved, Compose project named (an existing one kept), .env created from the example, idempotent, different re-runs refused, dry run safe, bad input rejected, punctuated names valid, placeholder check enforced, part-way runs resumable, read-only targets refused up front, copies never reach back into the repository.",
+  "init-template check passed: renamed, contacts filled, port moved, Compose project named (an existing one kept), .env created from the example, idempotent, different re-runs refused, dry run safe, bad input rejected, punctuated names valid, adopter text kept on later runs, placeholder check enforced, part-way runs resumable, read-only targets refused up front, copies never reach back into the repository, initialized copies checked without false failures.",
 );

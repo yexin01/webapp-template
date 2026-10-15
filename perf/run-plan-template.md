@@ -58,7 +58,7 @@ The built-in tokens and webhook secret work only with the local `perf/server.py`
 2. Set it as `STRIPE_WEBHOOK_SECRET` on the preview environment only, and redeploy the preview.
 3. Export it as shown above, then remove or rotate it after the run.
 
-The events name the customers that `perf/server.py` seeds: `cus_perf0000`, `cus_perf0002`, and so on (even user indexes). Seed those billing customers in the preview database: an event for an unknown customer comes back `needs_reconciliation`, and the run fails. Event IDs carry a per-run identifier (`evt_perf_<run>_00000` onwards), so runs never collide in the `app.billing_events` ledger.
+The events name the customers of the odd-numbered users in `perf/server.py`'s dataset: `cus_perf0001`, `cus_perf0003`, and so on. Seed those billing customers in the preview database, each linked to a Free user with no subscriptions. The preview's mocked Stripe starts empty, so an event for an unknown customer, or for a customer with a stored subscription that is not final, comes back `needs_reconciliation`, and the run fails. Event IDs carry a per-run identifier (`evt_perf_<run>_00000` onwards), so runs never collide in the `app.billing_events` ledger.
 
 PERF-06 against a deployed target measures latency and acknowledgements only. It **cannot show double processing**: the local server proves exactly-once by counting the mocked Stripe API's re-reads, and a preview offers no such count. Use the local result for that claim.
 
@@ -74,7 +74,8 @@ For each scenario, record:
 
 - p50, p95, and p99 latency per endpoint class;
 - throughput and error rate by class;
-- achieved against offered rate per stage (`stages` in the results file), and whether the offered load was delivered (`offered_load_delivered`). Never report a whole-run average as a sustained rate;
+- achieved against offered rate per stage (`stages` in the results file), with each stage's error rate and latency, and whether the offered load was delivered (`offered_load_delivered`). Never report a whole-run average as a sustained rate;
+- for a run that stopped early (`aborted`), where it stopped (the `cut_short` stage) and why (`error_threshold_crossed`, or the `401` or interruption in k6's output). Only `complete` stages are results;
 - concurrency;
 - cold-start count and latency;
 - function duration and memory;

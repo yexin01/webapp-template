@@ -1,8 +1,9 @@
 # Directory patterns that a module or feature name could match (logs, tmp,
-# build, secrets, ...) are anchored to where tools write them: the repository
-# root and the package roots (apps/*, packages/*). Unanchored, `logs/` would
-# also hide apps/api/app/modules/logs/ from `pnpm new:module logs`, which
-# refuses names git would ignore.
+# build, ...) are anchored to where tools write them: the repository root and
+# the package roots (apps/*, packages/*). Unanchored, `logs/` would also hide
+# apps/api/app/modules/logs/ from `pnpm new:module logs`, which refuses names
+# git would ignore. Secret directories are the exception: they are ignored at
+# every depth, so `pnpm new:module secrets` is refused.
 
 # ---------------------------------------------------------------------------
 # Secrets and environment files — never commit real values.
@@ -20,8 +21,7 @@
 *.jks
 *.keystore
 .secrets/
-/secrets/
-/*/*/secrets/
+secrets/
 .vercel/.env*
 
 # ---------------------------------------------------------------------------

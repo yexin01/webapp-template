@@ -134,6 +134,8 @@ def cmd_env(args: argparse.Namespace) -> None:
     key_file = keys / "jwt-private.pem"
     key_file.write_text(private_pem, encoding="utf-8")
     key_file.chmod(0o600)
+    # A preview's CLERK_JWT_KEY, pasted as multi-line text (README: Probing a preview).
+    (keys / "jwt-public.pem").write_text(public_pem, encoding="utf-8")
 
     origin = f"http://127.0.0.1:{args.port}"
     host = "proof-dec-001.clerk.invalid"  # .invalid never resolves (RFC 2606)
@@ -508,8 +510,10 @@ def connection_sampler(admin_url: str | None, pooler_admin_url: str | None, data
         try:
             while not stop.is_set():
                 if admin is not None:
+                    # Not its own connection: a hosted admin URL often names the probed database itself.
                     row = admin.execute(
-                        "SELECT count(*) FROM pg_stat_activity WHERE datname = %s AND backend_type = 'client backend'",
+                        "SELECT count(*) FROM pg_stat_activity WHERE datname = %s AND backend_type = 'client backend'"
+                        " AND pid <> pg_backend_pid()",
                         (database,),
                     ).fetchone()
                     peaks["postgres_backends"] = max(peaks["postgres_backends"], int(row[0]) if row else 0)
@@ -733,17 +737,14 @@ def cmd_probe(args: argparse.Namespace) -> None:
         duplicate_body=duplicate.text[:120],
         payload_bytes=len(payload),
     )
-    if args.admin_url:
-        # The redelivery must find the first delivery's ledger row, not create a second one.
-        with psycopg.connect(args.admin_url.rsplit("/", 1)[0] + f"/{args.database}") as conn:
-            row = conn.execute(
-                "SELECT count(*), max(attempts), max(status) FROM app.billing_events WHERE stripe_event_id = %s",
-                (event_id,),
-            ).fetchone()
-        ledger = {"rows": row[0], "attempts": row[1], "status": row[2]} if row else {}
-        checks.add(
-            "stripe_webhook_duplicate_ledger", ledger == {"rows": 1, "attempts": 2, "status": "ignored"}, **ledger
-        )
+    # The redelivery must find the first delivery's ledger row, not create a second one.
+    with psycopg.connect(args.admin_url.rsplit("/", 1)[0] + f"/{args.database}") as conn:
+        row = conn.execute(
+            "SELECT count(*), max(attempts), max(status) FROM app.billing_events WHERE stripe_event_id = %s",
+            (event_id,),
+        ).fetchone()
+    ledger = {"rows": row[0], "attempts": row[1], "status": row[2]} if row else {}
+    checks.add("stripe_webhook_duplicate_ledger", ledger == {"rows": 1, "attempts": 2, "status": "ignored"}, **ledger)
 
     # Request body limit enforced by the app (MAX_REQUEST_BODY_BYTES; SEC-09).
     token = tokens.mint(sub)
@@ -1228,7 +1229,8 @@ def main() -> None:
     p.add_argument("--proof-json", required=True)
     p.add_argument("--results", required=True)
     p.add_argument("--database", required=True)
-    p.add_argument("--admin-url")
+    # The ledger and connection checks read the database; without it they would prove nothing.
+    p.add_argument("--admin-url", required=True, help="direct (not pooled) connection to the database server")
     p.add_argument("--pooler-admin-url")
     p.add_argument("--users", type=int, default=40)
     p.add_argument("--web", action="store_true")

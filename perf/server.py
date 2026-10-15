@@ -25,7 +25,7 @@ Pool sizes: ``--pool-size`` (request pool) and ``--worker-pool-size``
 ``worker pool - 1`` webhooks at a time, so that caps how many deliveries
 reach the database together (PERF-06). Startup and exit reports print all three.
 
-On exit (Ctrl+C) it prints JSON: webhook ledger counts, the number of Stripe
+On exit (Ctrl+C or SIGTERM) it prints JSON: webhook ledger counts, the number of Stripe
 re-reads against the number of events processed (PERF-06 exactly-once), the
 peak number of connections observed, and telemetry sink counts. It exits
 non-zero when the re-reads and processed events differ.
@@ -37,6 +37,7 @@ import argparse
 import asyncio
 import json
 import os
+import signal
 import sys
 import threading
 import time
@@ -120,18 +121,22 @@ def recreate_database() -> str:
 def seed(url: str, users: int, orgs: int, projects: int) -> dict[str, int]:
     """Deterministic synthetic dataset: identifiers derive from indexes only."""
     params = {"users": users, "orgs": orgs, "projects": projects}
+    # Zero-padded like user_id() and k6's padStart. lpad alone would cut a longer
+    # number short ('10000' to '1000'), so user 10000 would collide with user 1000.
+    padded = """CREATE FUNCTION pg_temp.padded(i bigint, width int) RETURNS text IMMUTABLE LANGUAGE sql
+                AS $$ SELECT lpad(i::text, greatest(width, length(i::text)), '0') $$"""
     statements = [
         # Users perf_user_0000..; UUIDs are md5 of the external ID.
         """INSERT INTO app.users (id, clerk_user_id)
            SELECT md5(u)::uuid, u FROM (
-             SELECT 'perf_user_' || lpad(i::text, 4, '0') AS u FROM generate_series(0, %(users)s - 1) i) s""",
+             SELECT 'perf_user_' || pg_temp.padded(i, 4) AS u FROM generate_series(0, %(users)s - 1) i) s""",
         """INSERT INTO app.organizations (id, clerk_org_id)
            SELECT md5(o)::uuid, o FROM (
-             SELECT 'org_perf' || lpad(i::text, 3, '0') AS o FROM generate_series(0, %(orgs)s - 1) i) s""",
+             SELECT 'org_perf' || pg_temp.padded(i, 3) AS o FROM generate_series(0, %(orgs)s - 1) i) s""",
         # Every user belongs to one organization; the first user of each is its admin.
         """INSERT INTO app.organization_memberships (org_id, user_id, role)
-           SELECT md5('org_perf' || lpad((i %% %(orgs)s)::text, 3, '0'))::uuid,
-                  md5('perf_user_' || lpad(i::text, 4, '0'))::uuid,
+           SELECT md5('org_perf' || pg_temp.padded(i %% %(orgs)s, 3))::uuid,
+                  md5('perf_user_' || pg_temp.padded(i, 4))::uuid,
                   CASE WHEN i < %(orgs)s THEN 'admin' ELSE 'member' END
            FROM generate_series(0, %(users)s - 1) i""",
         """INSERT INTO app.projects (id, org_id, owner_user_id, created_by, name, created_at)
@@ -144,24 +149,35 @@ def seed(url: str, users: int, orgs: int, projects: int) -> dict[str, int]:
                    WHERE m.org_id = o.id AND m.role = 'admin' LIMIT 1),
                   'Organization project ' || p, timestamptz '2026-01-01' + p * interval '1 minute'
            FROM app.organizations o CROSS JOIN generate_series(1, %(projects)s) p""",
-        # Even-numbered users are Pro (active monthly subscription).
+        # Every user has a billing customer. Even-numbered users are Pro (active
+        # monthly subscription). Odd-numbered ones have no subscription: PERF-06
+        # sends its events for them, so a deployed preview's empty Stripe mock has
+        # nothing it would need to re-read.
         """INSERT INTO app.billing_customers (user_id, stripe_customer_id)
-           SELECT md5('perf_user_' || lpad(i::text, 4, '0'))::uuid, 'cus_perf' || lpad(i::text, 4, '0')
-           FROM generate_series(0, %(users)s - 1, 2) i""",
+           SELECT md5('perf_user_' || pg_temp.padded(i, 4))::uuid, 'cus_perf' || pg_temp.padded(i, 4)
+           FROM generate_series(0, %(users)s - 1) i""",
         """INSERT INTO app.subscriptions (stripe_subscription_id, user_id, stripe_customer_id, status, plan_key,
                                           price_id, current_period_end)
-           SELECT 'sub_perf' || lpad(i::text, 4, '0'), md5('perf_user_' || lpad(i::text, 4, '0'))::uuid,
-                  'cus_perf' || lpad(i::text, 4, '0'), 'active', 'pro_monthly', 'price_perf_monthly',
+           SELECT 'sub_perf' || pg_temp.padded(i, 4), md5('perf_user_' || pg_temp.padded(i, 4))::uuid,
+                  'cus_perf' || pg_temp.padded(i, 4), 'active', 'pro_monthly', 'price_perf_monthly',
                   timestamptz '2099-01-01'
            FROM generate_series(0, %(users)s - 1, 2) i""",
     ]
     with psycopg.connect(url) as conn, conn.transaction():
+        conn.execute(padded)
         for sql in statements:
             conn.execute(sql, params)  # type: ignore[arg-type]
         # Table names come from this fixed tuple, never from input.
         return {
             table: conn.execute(f"SELECT count(*) FROM app.{table}").fetchone()[0]  # type: ignore[index]  # noqa: S608
-            for table in ("users", "organizations", "organization_memberships", "projects", "subscriptions")
+            for table in (
+                "users",
+                "organizations",
+                "organization_memberships",
+                "projects",
+                "billing_customers",
+                "subscriptions",
+            )
         }
 
 
@@ -413,6 +429,16 @@ def pool_report(app: Any) -> dict[str, int]:
     }
 
 
+def serve(app: Any, port: int) -> None:
+    """Serve on loopback until Ctrl+C or SIGTERM, then return so the caller can report."""
+    # After shutting down, uvicorn re-raises the signal that stopped it. SIGTERM's
+    # default action would end the process there, so it raises KeyboardInterrupt
+    # instead, which uvicorn.run swallows as it does for Ctrl+C.
+    signal.signal(signal.SIGTERM, signal.default_int_handler)
+    # Loopback only: this server accepts synthetic tokens.
+    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning", access_log=False)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--users", type=int, default=200)
@@ -487,8 +513,7 @@ def main() -> None:
     sampler = ConnectionSampler()
     sampler.start()
     try:
-        # Loopback only: this server accepts synthetic tokens.
-        uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning", access_log=False)
+        serve(app, args.port)
     finally:
         sampler.stop()
         webhooks = webhook_report(url, billing)

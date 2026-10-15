@@ -17,7 +17,9 @@
  * writing anything; that a dry run writes nothing; that entity names are
  * derived only from clear plurals; and that a failed write leaves nothing
  * behind. Fixture names carry a random prefix, so they cannot clash with
- * modules an adopter has generated.
+ * modules an adopter has generated. A few fixed names (logs, tmp, ...) check
+ * the template's own ignore rules: they fail only when those rules hide them,
+ * in the template itself, and are skipped where a copy already uses them.
  *
  * Never touches the working tree: the API runs in its own virtual environment
  * inside the copy (built from uv.lock and uv's cache), and the web tools reuse
@@ -40,6 +42,7 @@ import {
 import { devNull } from "node:os";
 import path from "node:path";
 
+import { ORIGINAL_SLUG } from "./lib/template.mjs";
 import { copyTrackedFiles, untrackedFiles } from "./lib/tracked-copy.mjs";
 
 const repo = path.resolve(import.meta.dirname, "..");
@@ -125,6 +128,8 @@ try {
     .filter((n) => valid(n) && !isModule(n))
     .sort();
   const kernelName = kernelNames.includes("probes") ? "probes" : kernelNames[0];
+  // The template itself, not an initialized copy, whose ignore rules are the adopter's (as in check-placeholders).
+  const templateMode = JSON.parse(inCopy("package.json")).name === ORIGINAL_SLUG;
 
   // -- Refusals: bad input and collisions, refused with a reason before any write ---
   const refusals = [
@@ -136,8 +141,13 @@ try {
     [["order", "--entity", "OrderItem"], /"order" is a PostgreSQL reserved word/],
     [[fresh("items"), "--entity", "None"], /"None" is a Python keyword/],
     [[fresh("passes"), "--entity", "Pass"], /"pass" is a Python keyword/],
-    // No clear singular: the entity must be named.
-    ...["data", "series", "news", "status", "caches", "quizzes", "abuses", "s"].map((word) => [
+    // No clear singular: the entity must be named. Endings such as -oes and
+    // -rves are ambiguous (heroes, shoes; scarves, curves), ellipses has two
+    // singulars, and canvas and chaos are singular.
+    ...[
+      "data", "series", "news", "status", "caches", "quizzes", "abuses", "s",
+      "volcanoes", "cargoes", "scarves", "selves", "canvas", "ellipses", "chaos",
+    ].map((word) => [
       [fresh(word)],
       /Cannot derive a singular entity name/,
     ]),
@@ -181,6 +191,10 @@ try {
   mkdirSync(path.join(dir, ".git/info"), { recursive: true });
   appendFileSync(path.join(dir, ".git/info/exclude"), `/apps/web/src/features/${prefix}-hidden-items/\n`);
   refusals.push([[fresh("hidden_items")], /would be ignored by git/]);
+  // Secret directories are ignored at every depth, so no module can be named after them.
+  if (templateMode && !isModule("secrets") && !inBootstrap("secrets") && !routeUsed("secrets")) {
+    refusals.push([["secrets", "--entity", `${Prefix}Thing`], /would be ignored by git \(\.gitignore:\d+: secrets\/\)/]);
+  }
 
   const untouched = snapshot();
   for (const [args, reason] of refusals) {
@@ -192,11 +206,32 @@ try {
   }
   check(snapshot() === untouched, "refused input wrote files");
 
-  // Names that broad ignore rules used to hide are accepted (where the copy has no such module or route).
-  for (const name of ["logs", "tmp", "secrets", "build", "coverage", "test_results"]) {
+  // Names that broad ignore rules used to hide are not hidden by the template's
+  // anchored rules. Any other refusal (an existing test file, feature, table, or
+  // kernel name), and in an initialized copy the adopter's own rules, are skipped.
+  for (const name of ["logs", "tmp", "build", "coverage", "test_results"]) {
     if (isModule(name) || inBootstrap(name) || routeUsed(name.replaceAll("_", "-"))) continue;
     const planned = gen([name, "--entity", `${Prefix}Thing`, "--dry-run"]);
-    check(planned.status === 0, `"${name}" was refused (exit ${planned.status}):\n${planned.stderr}`);
+    if (planned.status === 0) continue;
+    // A refusal exits 2; any other status is the generator failing, never a reason to skip.
+    if (planned.status !== 2) {
+      failures.push(`"${name}" dry run exited ${planned.status}:\n${planned.stderr}`);
+    } else if (templateMode && /would be ignored by git/.test(planned.stderr)) {
+      failures.push(`"${name}" is hidden by the template's ignore rules:\n${planned.stderr}`);
+    } else {
+      console.log(`Skipped "${name}": ${planned.stderr.split("\n")[0]}`);
+    }
+  }
+  // Secret directories stay ignored wherever they are created (REPO-12).
+  if (templateMode) {
+    const probes = ["secrets/a.json", "perf/secrets/a.json", "apps/api/secrets/a.json", "apps/api/tests/secrets/a.json"];
+    const ignored = spawnSync("git", ["check-ignore", "--no-index", "--stdin"], {
+      cwd: dir,
+      input: probes.join("\n"),
+      encoding: "utf8",
+      env: gitEnv(dir),
+    });
+    for (const probe of probes) check(ignored.stdout.split("\n").includes(probe), `.gitignore does not ignore ${probe}`);
   }
 
   // -- Entity names come only from clear plurals -------------------------------------
@@ -213,6 +248,20 @@ try {
     houses: "House",
     emojis: "Emoji",
     people: "Person",
+    heroes: "Hero",
+    shoes: "Shoe",
+    curves: "Curve",
+    archives: "Archive",
+    lenses: "Lens",
+    responses: "Response",
+    oases: "Oasis",
+    synopses: "Synopsis",
+    parentheses: "Parenthesis",
+    paralyses: "Paralysis",
+    doses: "Dose",
+    eclipses: "Eclipse",
+    schemas: "Schema",
+    photos: "Photo",
   })) {
     const planned = gen([fresh(word), "--dry-run"]);
     const derived = planned.status === 0 ? JSON.parse(planned.stdout).entity : planned.stderr.trim();

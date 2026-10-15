@@ -24,6 +24,9 @@ import exec from "k6/execution";
 import http from "k6/http";
 import { Counter } from "k6/metrics";
 
+import { customerFor, syntheticUser } from "./dataset.mjs";
+import { stageResults } from "./summary.mjs";
+
 const BASE_URL = __ENV.BASE_URL || "http://127.0.0.1:8001";
 const SCENARIO = __ENV.SCENARIO || "baseline";
 const INCLUDE_LLM = __ENV.INCLUDE_LLM === "1";
@@ -70,16 +73,10 @@ const TARGET = TARGET_HOST || "The BASE_URL host";
 const BYPASS = __ENV.VERCEL_AUTOMATION_BYPASS_SECRET || "";
 const BYPASS_HEADERS = BYPASS ? { "x-vercel-protection-bypass": BYPASS } : {};
 
-// perf/server.py's synthetic users: user i holds token perf-token-perf_user_NNNN,
-// belongs to organization i % ORGS, and is Pro when i is even. Only that local
-// server accepts these tokens.
+// perf/server.py's synthetic users. Only that local server accepts their tokens.
 function localUsers() {
   const orgs = integer("ORGS", 20);
-  return Array.from({ length: integer("USERS", 200) }, (_, i) => ({
-    token: `perf-token-perf_user_${String(i).padStart(4, "0")}`,
-    org: `org_perf${String(i % orgs).padStart(3, "0")}`,
-    pro: i % 2 === 0,
-  }));
+  return Array.from({ length: integer("USERS", 200) }, (_, i) => syntheticUser(i, orgs));
 }
 
 // Error messages name the entry and field only: the file holds bearer tokens.
@@ -242,6 +239,7 @@ function webhookScenario() {
   if (vus > WEBHOOK_EVENTS * DUPLICATES) {
     throw new Error(`WEBHOOK_VUS (${vus}) must be at most WEBHOOK_EVENTS × DUPLICATES (${WEBHOOK_EVENTS * DUPLICATES})`);
   }
+  if (USERS < 2) throw new Error("PERF-06 needs USERS of at least 2: its customers are the odd-numbered users");
   return { executor: "shared-iterations", exec: "webhooks", vus, iterations: WEBHOOK_EVENTS * DUPLICATES, maxDuration: "5m" };
 }
 
@@ -284,11 +282,14 @@ const WEBHOOK_RESULTS = ["processed", "ignored", "needs_reconciliation", "failed
 const classThresholds = Object.fromEntries(
   CLASSES.map((name) => [`http_req_duration{class:${name}}`, ["max>=0"]]),
 );
-// Per-stage counts for the summary: iterations started and requests sent by them.
+// Per-stage figures for the summary: iterations started, and the requests they
+// sent with their error rate and latency.
 const stageThresholds = Object.fromEntries(
   PROFILE.flatMap(({ stage }) => [
     [`iteration_starts{stage:${stage}}`, ["count>=0"]],
     [`http_reqs{stage:${stage}}`, ["count>=0"]],
+    [`http_req_failed{stage:${stage}}`, ["rate>=0"]],
+    [`http_req_duration{stage:${stage}}`, ["max>=0"]],
   ]),
 );
 const webhookThresholds = {
@@ -396,12 +397,6 @@ function sign(payload) {
   return `t=${timestamp},v1=${digest}`;
 }
 
-// The billing customers perf/server.py seeds: cus_perfNNNN for even user indexes.
-// USERS must not exceed the server's --users, or events name unknown customers.
-function customerFor(group) {
-  return `cus_perf${String(2 * (group % Math.ceil(USERS / 2))).padStart(4, "0")}`;
-}
-
 function webhookResult(response) {
   if (response.status === 503) return "busy";
   if (response.status !== 200) return "error";
@@ -424,7 +419,7 @@ function webhookResult(response) {
 // Event IDs carry the run's identifier, so every run sends new events.
 export function webhooks(data) {
   const n = Math.floor(exec.scenario.iterationInTest / DUPLICATES);
-  const customer = customerFor(Math.floor(n / EVENTS_PER_CUSTOMER));
+  const customer = customerFor(Math.floor(n / EVENTS_PER_CUSTOMER), USERS);
   const payload = JSON.stringify({
     id: `evt_perf_${data.run}_${String(n).padStart(5, "0")}`,
     object: "event",
@@ -452,8 +447,6 @@ function count(metrics, name) {
   return metrics[name] ? metrics[name].values.count : 0;
 }
 
-const round = (value, digits = 1) => Math.round(value * 10 ** digits) / 10 ** digits;
-
 export function handleSummary(data) {
   const out = {};
   const metrics = {};
@@ -466,22 +459,11 @@ export function handleSummary(data) {
       metrics[name] = metric.values;
     }
   }
-  // Achieved against offered load per stage. Requests are those of the
-  // iterations that started in the stage.
-  const stages = PROFILE.map(({ stage, from, to, seconds: length }) => {
-    const offered = ((from + to) / 2) * length;
-    const started = count(data.metrics, `iteration_starts{stage:${stage}}`);
-    return {
-      stage,
-      seconds: length,
-      offered_iterations_per_s: from === to ? to : { from, to },
-      offered_iterations: Math.round(offered),
-      started_iterations: started,
-      achieved_iterations_per_s: round(started / length),
-      requests_per_s: round(count(data.metrics, `http_reqs{stage:${stage}}`) / length),
-      delivered: offered > 0 ? round(started / offered, 3) : null,
-    };
-  });
+  // Achieved against offered load per stage, over the seconds the run covered.
+  // Requests are those of the iterations that started in the stage.
+  const elapsed = data.state.testRunDurationMs / 1000;
+  const { planned_duration_s, aborted, stages } = stageResults(PROFILE, data.metrics, elapsed);
+  const errorThreshold = data.metrics.http_req_failed?.thresholds?.["rate<0.05"];
   const dropped = count(data.metrics, "dropped_iterations");
   const webhookCounts = Object.fromEntries(
     WEBHOOK_RESULTS.map((r) => [r, count(data.metrics, `webhook_results{result:${r}}`)]),
@@ -495,6 +477,8 @@ export function handleSummary(data) {
     users: USERS,
     users_source: __ENV.PERF_USERS_FILE ? "PERF_USERS_FILE" : "perf/server.py synthetic users",
     protection_bypass: Boolean(BYPASS),
+    // The abort criterion: more than 5% of requests failed (which stops the run once crossed).
+    error_threshold_crossed: errorThreshold ? !errorThreshold.ok : null,
     ...(SCENARIO === "webhooks"
       ? {
           webhooks: {
@@ -509,9 +493,14 @@ export function handleSummary(data) {
         }
       : {
           offered_iterations: Math.round(OFFERED_ITERATIONS),
+          planned_duration_s,
+          // Stopped (on errors, a 401, or Ctrl+C) before its last whole iteration was
+          // due: stages are cut short or not reached.
+          aborted,
           dropped_iterations: dropped,
-          // At most 1% of the offered iterations dropped: the target received the offered load.
-          offered_load_delivered: dropped <= Math.floor(OFFERED_ITERATIONS / 100),
+          // The run was not cut short and dropped at most 1% of the offered
+          // iterations: the target received the offered load.
+          offered_load_delivered: !aborted && dropped <= Math.floor(OFFERED_ITERATIONS / 100),
           stages,
         }),
     started: new Date(Date.now() - data.state.testRunDurationMs).toISOString(),

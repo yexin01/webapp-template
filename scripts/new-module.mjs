@@ -45,24 +45,30 @@ const RESERVED = new Set([
 
 // -- Singular entity names ----------------------------------------------------------
 // Only clear, regular plurals are singularized; anything ambiguous (caches:
-// cache or cach? abuses, quizzes, news, series) needs --entity instead of a
-// wrong guess.
+// cache or cach? abuses, quizzes, volcanoes, scarves, ellipses, news, series)
+// needs --entity instead of a wrong guess.
 const IRREGULAR = new Map(
   Object.entries({
     people: "person", children: "child", men: "man", women: "woman", mice: "mouse", geese: "goose", feet: "foot",
     teeth: "tooth", criteria: "criterion", phenomena: "phenomenon", indices: "index", matrices: "matrix",
     vertices: "vertex", appendices: "appendix", analyses: "analysis", crises: "crisis", theses: "thesis",
     hypotheses: "hypothesis", diagnoses: "diagnosis", syntheses: "synthesis", aliases: "alias", biases: "bias",
-    gases: "gas", atlases: "atlas", canvases: "canvas", heroes: "hero", potatoes: "potato", tomatoes: "tomato",
-    echoes: "echo", vetoes: "veto", knives: "knife", wives: "wife", wolves: "wolf", halves: "half",
-    shelves: "shelf", thieves: "thief", calves: "calf", menus: "menu", gurus: "guru", emus: "emu", haikus: "haiku",
+    gases: "gas", atlases: "atlas", canvases: "canvas", lenses: "lens", oases: "oasis", heroes: "hero",
+    potatoes: "potato", tomatoes: "tomato", echoes: "echo", vetoes: "veto", knives: "knife", wives: "wife",
+    wolves: "wolf", halves: "half", shelves: "shelf", thieves: "thief", calves: "calf", menus: "menu",
+    gurus: "guru", emus: "emu", haikus: "haiku",
+    // -sis plurals whose ending regular plurals share (doses, cases, eclipses, cheeses).
+    prognoses: "prognosis", neuroses: "neurosis", psychoses: "psychosis", metamorphoses: "metamorphosis",
+    symbioses: "symbiosis", emphases: "emphasis", synopses: "synopsis", nemeses: "nemesis",
   }),
 );
+// Singular words that end in -s (canvas, gas): such a name is not a plural.
+const SINGULARS = new Set(IRREGULAR.values());
 // Same in both numbers, or with more than one plausible singular.
 const NO_CLEAR_SINGULAR = new Set([
-  "news", "series", "species", "means", "axes", "bases", "leaves", "lives", "headquarters", "crossroads",
+  "news", "series", "species", "means", "axes", "bases", "ellipses", "leaves", "lives", "headquarters", "crossroads",
   "physics", "mathematics", "economics", "politics", "ethics", "logistics", "athletics", "linguistics",
-  "gymnastics", "diabetes", "measles",
+  "gymnastics", "diabetes", "measles", "chaos", "kudos", "ethos",
 ]);
 // Singular -us words whose plural adds -es (statuses), unlike abuses or fuses.
 const US_WORDS = new Set([
@@ -75,12 +81,23 @@ const IE_WORDS = new Set([
   "movie", "cookie", "zombie", "rookie", "calorie", "hoodie", "selfie", "smoothie", "brownie", "goalie", "genie",
   "prairie", "sortie", "freebie", "newbie", "techie", "birdie", "auntie", "lingerie",
 ]);
+// Singular -oe words whose plural adds -s (shoes), unlike heroes or volcanoes.
+const OE_WORDS = new Set([
+  "shoe", "horseshoe", "snowshoe", "toe", "tiptoe", "canoe", "oboe", "hoe", "foe", "floe", "woe", "aloe",
+]);
+// Singular -ve words whose plural adds -s (curves) after l, r, oa, ea, or oo,
+// where an -f singular is as likely (scarves, selves, loaves, sheaves, hooves).
+const VE_WORDS = new Set([
+  "curve", "nerve", "reserve", "preserve", "conserve", "serve", "swerve", "valve", "bivalve", "groove", "weave",
+]);
 
 /** The singular of one plural word, or undefined when it is not clear. */
 function singularOf(word) {
   if (IRREGULAR.has(word)) return IRREGULAR.get(word);
-  // Not a regular plural: -ss (class), -us (status), -sis or -xis (analysis, axis).
-  if (NO_CLEAR_SINGULAR.has(word) || !word.endsWith("s") || /(ss|us|sis|xis)$/.test(word)) return undefined;
+  // Not a regular plural: -ss (class), -us (status), -sis or -xis (analysis, axis), or singular (canvas).
+  if (NO_CLEAR_SINGULAR.has(word) || SINGULARS.has(word) || !word.endsWith("s") || /(ss|us|sis|xis)$/.test(word)) {
+    return undefined;
+  }
   const drop = (n) => word.slice(0, -n) || undefined;
   if (word.endsWith("ies")) {
     // pies, movies; categories; but not -aies or -eies.
@@ -95,7 +112,10 @@ function singularOf(word) {
     return /[ao]uses$/.test(word) ? drop(1) : undefined; // houses, causes; abuses and fuses are unclear
   }
   if (word.endsWith("zzes")) return undefined; // quizzes, buzzes
-  return drop(1); // notes, cases, invoices, days
+  if (word.endsWith("oes")) return OE_WORDS.has(drop(1)) ? drop(1) : undefined; // shoes; volcanoes is unclear
+  if (/(l|r|oa|ea|oo)ves$/.test(word)) return VE_WORDS.has(drop(1)) ? drop(1) : undefined; // curves; scarves is unclear
+  if (/(y|the)ses$/.test(word)) return `${drop(2)}is`; // paralyses, parentheses: no singular ends in -yse or -these
+  return drop(1); // notes, cases, invoices, days, waves, archives, responses
 }
 // Python's keyword.kwlist: such a module cannot be imported, and such an entity cannot be declared.
 const PYTHON_KEYWORDS = new Set([
