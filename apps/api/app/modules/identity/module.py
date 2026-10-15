@@ -44,13 +44,16 @@ def build_identity(
         overrides,
         "identity_webhook_verifier",
         lambda: (
-            ClerkWebhookVerifier(settings.clerk_webhook_signing_secret.get_secret_value())
+            # Trimmed as validated: svix would read a leading space into the key.
+            ClerkWebhookVerifier(settings.clerk_webhook_signing_secret.get_secret_value().strip())
             if settings.clerk_webhook_signing_secret
             else None
         ),
     )
 
-    resolver = ContextResolver(tx, directory, kernel.clock, staleness, kernel.rate_limiter)
+    resolver = ContextResolver(
+        tx, directory, kernel.clock, staleness, kernel.rate_limiter, settings.clerk_max_concurrent_reads
+    )
     sync = IdentitySyncService(tx, webhooks, resolver, kernel.clock)
     reconciler = MembershipReconciler(tx, resolver, kernel.clock, staleness, settings.membership_reconcile_batch_size)
     auth = build_auth(verifier, resolver)
@@ -58,7 +61,7 @@ def build_identity(
     kernel.jobs.register(
         Job(
             "reconcile-memberships",
-            "Re-verify the stalest organization-membership mirrors against Clerk.",
+            "Re-verify stale organization-membership mirrors against Clerk, least recently tried or read first.",
             "30 3 * * *",
             reconciler.run,
         )

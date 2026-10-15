@@ -290,6 +290,113 @@ def test_a_jwks_brownout_never_blocks_a_cached_key(keys: tuple[Any, str]) -> Non
     assert outcomes == ["DependencyUnavailableError"] * 5
 
 
+def test_only_a_few_requests_wait_for_a_key_set_fetch_in_flight(
+    keys: tuple[Any, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Tokens with made-up key IDs cannot park request threads behind a slow fetch (§16.4).
+
+    A few wait for the fetch in flight; the rest get the answer for a key set
+    that cannot be read (503) at once. A cached key is never delayed.
+    """
+    monkeypatch.setattr(clerk, "_JWKS_TIMEOUT_SECONDS", 30.0)  # the waiters stay parked until the fetch ends
+    published = Published(jwk(keys[0], "kid1"))
+    clock = FakeMonotonic()
+    verifier = jwks_verifier(published, clock)
+    good = token(keys[0], kid="kid1")
+    verifier.verify(good)
+
+    clock.now += clerk._JWKS_MIN_REFRESH_INTERVAL_SECONDS
+    published.gate = threading.Event()  # the endpoint hangs
+    outcomes: list[str] = []
+
+    def unknown_kid(n: int) -> None:
+        try:
+            verifier.verify(token(keys[0], kid=f"unknown-{n}"))
+            outcomes.append("verified")
+        except (AuthenticationError, DependencyUnavailableError) as exc:
+            outcomes.append(type(exc).__name__)
+
+    fetcher = threading.Thread(target=unknown_kid, args=(0,))
+    callers = [threading.Thread(target=unknown_kid, args=(n,)) for n in range(1, 13)]
+    try:
+        fetcher.start()
+        deadline = time.monotonic() + 5
+        while published.fetches < 2 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert published.fetches == 2  # one fetch in flight
+        for caller in callers:
+            caller.start()
+        refused = len(callers) - clerk._JWKS_MAX_WAITERS
+        deadline = time.monotonic() + 5
+        while len(outcomes) < refused and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert outcomes == ["DependencyUnavailableError"] * refused  # at once, while the fetch is in flight
+        assert sum(caller.is_alive() for caller in callers) == clerk._JWKS_MAX_WAITERS
+
+        started = time.monotonic()
+        assert verifier.verify(good).external_user_id == "user_123"
+        assert time.monotonic() - started < 0.5
+    finally:
+        published.gate.set()
+        for thread in (fetcher, *callers):
+            thread.join(10)
+    assert published.fetches == 2
+    # The fetch succeeded without the made-up keys: the fetcher and the waiters are signed out.
+    assert sorted(outcomes) == ["AuthenticationError"] * (1 + clerk._JWKS_MAX_WAITERS) + [
+        "DependencyUnavailableError"
+    ] * (len(callers) - clerk._JWKS_MAX_WAITERS)
+
+
+@pytest.mark.parametrize("key_set", ["none yet", "expired"])
+def test_every_request_waits_for_a_fetch_while_no_usable_key_set_is_cached(
+    keys: tuple[Any, str], monkeypatch: pytest.MonkeyPatch, key_set: str
+) -> None:
+    """A fresh instance (or one whose key set expired) can verify no token without the fetch in
+    flight, so valid tokens wait for it instead of getting 503: the waiter cap is for made-up key
+    IDs while a usable key set is cached."""
+    monkeypatch.setattr(clerk, "_JWKS_TIMEOUT_SECONDS", 30.0)  # the waiters stay parked until the fetch ends
+    published = Published(jwk(keys[0], "kid1"))
+    clock = FakeMonotonic()
+    verifier = jwks_verifier(published, clock)
+    good = token(keys[0], kid="kid1")
+    if key_set == "expired":
+        verifier.verify(good)
+        clock.now += clerk._JWKS_LIFESPAN_SECONDS
+    fetches = published.fetches
+    published.gate = threading.Event()  # the fetch takes a moment, as a network round trip does
+    outcomes: list[str] = []
+    lock = threading.Lock()
+
+    def request() -> None:
+        try:
+            verifier.verify(good)
+            outcome = "verified"
+        except (AuthenticationError, DependencyUnavailableError) as exc:
+            outcome = type(exc).__name__
+        with lock:
+            outcomes.append(outcome)
+
+    requests = [threading.Thread(target=request) for _ in range(12)]
+    try:
+        for thread in requests:
+            thread.start()
+        deadline = time.monotonic() + 5
+        # One request fetches; each of the others waits for that fetch, or was refused at once.
+        while (
+            published.fetches == fetches or verifier._key_set._waiting + len(outcomes) < len(requests) - 1
+        ) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert published.fetches == fetches + 1
+        assert verifier._key_set._waiting == len(requests) - 1
+        assert outcomes == []
+    finally:
+        published.gate.set()
+        for thread in requests:
+            thread.join(10)
+    assert outcomes == ["verified"] * len(requests)
+    assert published.fetches == fetches + 1
+
+
 def test_a_failed_refresh_keeps_the_previous_key_set(keys: tuple[Any, str]) -> None:
     """Past three quarters of its lifespan, one request refreshes the set; a
     failed or unusable answer never replaces it."""

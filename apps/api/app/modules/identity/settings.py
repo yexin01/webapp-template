@@ -25,6 +25,9 @@ class IdentitySettings(BaseModel):
     clerk_authorized_parties: Annotated[list[str], NoDecode] = Field(default_factory=list)
     clerk_webhook_signing_secret: SecretStr | None = None
     clerk_api_url: str = "https://api.clerk.com"
+    # Each membership read holds a server thread (40 by default, shared by every synchronous route).
+    # At least a read and the two requests that may always wait for it.
+    clerk_max_concurrent_reads: int = Field(default=8, ge=3, le=16)
     # TEN-07: at most the owner-approved bound of 300 s (DEC-009, ADR-0002); lower is allowed.
     membership_max_staleness_seconds: int = Field(default=300, ge=0, le=300)
     membership_reconcile_batch_size: int = Field(default=50, ge=1, le=1_000)
@@ -59,6 +62,10 @@ def identity_problems(s: IdentitySettings, core: CoreSettings) -> list[str]:
             problems.append(f"{name} must be a live key when APP_ENV=production")
     if s.clerk_jwt_key is not None and not is_rsa_public_key_pem(normalize_pem(secret(s.clerk_jwt_key))):
         problems.append("CLERK_JWT_KEY must be a PEM-encoded RSA public key")
+    if s.clerk_webhook_signing_secret is not None and not is_svix_signing_secret(
+        secret(s.clerk_webhook_signing_secret).strip()
+    ):
+        problems.append("CLERK_WEBHOOK_SIGNING_SECRET must be the endpoint's signing secret: whsec_ followed by base64")
     if core.app_env is AppEnv.TEST:
         return problems
     if not s.clerk_publishable_key:
@@ -76,6 +83,22 @@ def normalize_pem(value: str) -> str:
     """A PEM pasted into a single-line variable often carries literal ``\\n`` escapes."""
     value = value.strip()
     return value.replace("\\n", "\n") if "\n" not in value else value
+
+
+def is_svix_signing_secret(value: str) -> bool:
+    """``whsec_`` followed by the base64-encoded key; callers trim surrounding whitespace first.
+
+    Checked strictly: svix skips characters outside the base64 alphabet, so a
+    stray character (an unquoted ``#comment``, say) would silently verify with
+    a different key.
+    """
+    encoded = value.removeprefix("whsec_")
+    if encoded == value:
+        return False
+    try:
+        return bool(base64.b64decode(encoded + "=" * (-len(encoded) % 4), validate=True))
+    except binascii.Error:
+        return False
 
 
 def is_rsa_public_key_pem(value: str) -> bool:

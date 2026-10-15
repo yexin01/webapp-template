@@ -21,7 +21,7 @@ from svix.webhooks import Webhook, WebhookVerificationError
 from app.kernel.errors import AuthenticationError, DependencyUnavailableError, WebhookSignatureError
 from app.kernel.tenancy import VerifiedIdentity
 from app.modules.identity.domain import ExternalMembership, role_from_external
-from app.modules.identity.ports import IdentityWebhookEvent
+from app.modules.identity.ports import IdentityWebhookEvent, MembershipListTooLargeError
 
 logger = logging.getLogger(__name__)
 
@@ -39,12 +39,22 @@ _JWKS_REFRESH_AHEAD_SECONDS = _JWKS_LIFESPAN_SECONDS * 3 / 4
 # with unknown key IDs nor a Clerk outage turns into one fetch per request.
 _JWKS_MIN_REFRESH_INTERVAL_SECONDS = 5.0
 _JWKS_TIMEOUT_SECONDS = 3.0
+# While a usable key set is cached, the requests with an unknown key ID that may
+# wait for a fetch in flight. The rest get 503 at once, so made-up key IDs cannot
+# park request threads (§16.4). With no usable set (a fresh instance), every
+# request needs the fetch, so each one waits for it.
+_JWKS_MAX_WAITERS = 4
 _AUTH_UNAVAILABLE = "Authentication service is unavailable."
 
 _DIRECTORY_UNAVAILABLE = "Organization directory is unavailable."
 # After a failed directory read, reads fail fast for this long instead of each
 # one waiting out the timeout during an outage (§16.4).
 _DIRECTORY_COOLDOWN_SECONDS = 5.0
+# Clerk's largest page for this endpoint. The page bound keeps one read bounded,
+# and a read whose every page is full may go on, so it is refused: a user's
+# memberships are read only if there are at most 4,999.
+_MEMBERSHIP_PAGE_SIZE = 500
+_MEMBERSHIP_MAX_PAGES = 10
 
 
 def fetch_jwks(url: str, *, transport: httpx.BaseTransport | None = None) -> object:
@@ -67,8 +77,10 @@ class JwksKeySet:
     The cache is one immutable snapshot, read without a lock: a request whose
     key is cached never waits on Clerk (§16.4). Fetches are single-flight and
     throttled, and a failed or unusable fetch never replaces a good snapshot.
-    The refresh ahead of expiry runs on its own thread. Once the snapshot
-    expires without a successful refresh, verification fails closed.
+    While a usable snapshot exists, only a few requests wait for a fetch in
+    flight; without one, every request waits for it. The refresh ahead of
+    expiry runs on its own thread. Once the snapshot expires without a
+    successful refresh, verification fails closed.
     """
 
     def __init__(
@@ -86,20 +98,22 @@ class JwksKeySet:
         self._snapshot: _KeySnapshot | None = None
         self._last_attempt: float | None = None  # guarded by _lock
         self._last_attempt_failed = False  # written under _lock
+        self._waiting = 0  # guarded by _waiting_lock
+        self._waiting_lock = threading.Lock()
 
     def signing_key(self, kid: str) -> Any:
         snapshot = self._snapshot
-        if snapshot is not None and self._age(snapshot) < _JWKS_LIFESPAN_SECONDS:
+        if snapshot is not None and self._usable(snapshot):
             key = snapshot.keys.get(kid)
             if key is not None:
                 if self._age(snapshot) >= _JWKS_REFRESH_AHEAD_SECONDS:
                     self._refresh_in_background()
                 return key
         # An unknown key ID (Clerk may have rotated its keys), or no valid set.
-        if self._lock.acquire(timeout=_JWKS_TIMEOUT_SECONDS):
+        if self._acquire_for_refresh():
             self._refresh_holding_lock()
         snapshot = self._snapshot
-        if snapshot is None or self._age(snapshot) >= _JWKS_LIFESPAN_SECONDS:
+        if snapshot is None or not self._usable(snapshot):
             raise DependencyUnavailableError(_AUTH_UNAVAILABLE)
         key = snapshot.keys.get(kid)
         if key is None:
@@ -109,6 +123,24 @@ class JwksKeySet:
                 raise DependencyUnavailableError(_AUTH_UNAVAILABLE)
             raise AuthenticationError()
         return key
+
+    def _acquire_for_refresh(self) -> bool:
+        """Take the fetch lock. While a fetch holds it, only a few requests may wait, unless no key set is usable."""
+        if self._lock.acquire(blocking=False):
+            return True
+        capped = self._usable(self._snapshot)
+        with self._waiting_lock:
+            if capped and self._waiting >= _JWKS_MAX_WAITERS:
+                raise DependencyUnavailableError(_AUTH_UNAVAILABLE)
+            self._waiting += 1
+        try:
+            return self._lock.acquire(timeout=_JWKS_TIMEOUT_SECONDS)
+        finally:
+            with self._waiting_lock:
+                self._waiting -= 1
+
+    def _usable(self, snapshot: _KeySnapshot | None) -> bool:
+        return snapshot is not None and self._age(snapshot) < _JWKS_LIFESPAN_SECONDS
 
     def _age(self, snapshot: _KeySnapshot) -> float:
         return self._clock() - snapshot.fetched_at
@@ -266,11 +298,13 @@ class ClerkMembershipDirectory:
         api_url: str,
         timeout_seconds: float = 5.0,
         clock: Callable[[], float] = time.monotonic,
+        transport: httpx.BaseTransport | None = None,
     ) -> None:
         self._client = httpx.Client(
             base_url=api_url.rstrip("/"),
             headers={"Authorization": f"Bearer {secret_key}"},
             timeout=timeout_seconds,
+            transport=transport,
         )
         self._clock = clock
         self._unavailable_until = float("-inf")
@@ -280,6 +314,8 @@ class ClerkMembershipDirectory:
             raise DependencyUnavailableError(_DIRECTORY_UNAVAILABLE)
         try:
             return self._read(external_user_id)
+        except MembershipListTooLargeError:
+            raise  # one user's list, not an outage: every other read goes on
         except DependencyUnavailableError:
             self._unavailable_until = self._clock() + _DIRECTORY_COOLDOWN_SECONDS
             raise
@@ -287,8 +323,8 @@ class ClerkMembershipDirectory:
     def _read(self, external_user_id: str) -> list[ExternalMembership]:
         memberships: list[ExternalMembership] = []
         offset = 0
-        limit = 100
-        for _ in range(10):  # bounded: at most 1,000 memberships per user
+        limit = _MEMBERSHIP_PAGE_SIZE
+        for _ in range(_MEMBERSHIP_MAX_PAGES):
             try:
                 response = self._client.get(
                     f"/v1/users/{external_user_id}/organization_memberships",
@@ -312,9 +348,11 @@ class ClerkMembershipDirectory:
                 raise DependencyUnavailableError(_DIRECTORY_UNAVAILABLE) from exc
             memberships += page
             if len(page) < limit:
-                break
+                return memberships
             offset += limit
-        return memberships
+        # Every page was full, so the list may go on. Applying it would remove the memberships it lacks.
+        logger.warning("clerk_directory_truncated", extra={"pages": _MEMBERSHIP_MAX_PAGES})
+        raise MembershipListTooLargeError()
 
     def close(self) -> None:
         self._client.close()

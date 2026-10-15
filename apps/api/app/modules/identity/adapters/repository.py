@@ -165,19 +165,30 @@ class PgIdentityRepository:
         self._exec("DELETE FROM app.organization_memberships WHERE user_id = %s", (user_id,))
 
     def list_users_with_stale_memberships(self, older_than: datetime, limit: int) -> list[tuple[UUID, str]]:
+        """Users with a membership verified before ``older_than``, least recently tried or read first.
+
+        Tried by the reconcile job, or read by anything (a request, a webhook,
+        the job). Users never read come last. Walks
+        ``users_memberships_reconcile_idx`` in order, skipping users without a
+        stale membership, and stops at ``limit``.
+        """
         rows = self._all(
             """
-            SELECT u.id, u.clerk_user_id, min(m.verified_at) AS oldest
-            FROM app.organization_memberships m
-            JOIN app.users u ON u.id = m.user_id
-            WHERE m.verified_at < %s
-            GROUP BY u.id, u.clerk_user_id
-            ORDER BY oldest
+            SELECT u.id, u.clerk_user_id
+            FROM app.users u
+            WHERE EXISTS (
+              SELECT 1 FROM app.organization_memberships m
+              WHERE m.user_id = u.id AND m.verified_at < %s
+            )
+            ORDER BY GREATEST(u.memberships_checked_at, u.memberships_verified_at), u.id
             LIMIT %s
             """,
             (older_than, limit),
         )
         return [(r["id"], r["clerk_user_id"]) for r in rows]
+
+    def mark_memberships_checked(self, user_id: UUID, at: datetime) -> None:
+        self._exec("UPDATE app.users SET memberships_checked_at = %s WHERE id = %s", (at, user_id))
 
     # -- Webhook ledger ----------------------------------------------------------
 
