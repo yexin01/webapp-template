@@ -20,7 +20,11 @@ when it changes. That folds identity lookup, membership check, and the data
 query into a single transaction. Semantics:
 
 - a block that raises rolls the request transaction back;
-- the transaction commits when the request ends, before the response is sent;
+- the transaction commits when the request ends, before the response is sent,
+  if the handler returned or raised a ``DomainError``; any other error rolls
+  it back;
+- a block whose transaction can no longer commit (a caught statement error,
+  a lost connection) fails instead of ending as a success;
 - ``release()`` commits early, before slow external calls;
 - ``app_worker`` blocks never join; they always commit on their own.
 
@@ -37,6 +41,8 @@ query into a single transaction. Semantics:
 from __future__ import annotations
 
 import contextvars
+import functools
+import logging
 import math
 import threading
 import time
@@ -54,7 +60,7 @@ from psycopg.rows import TupleRow
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool, PoolTimeout
 
-from app.kernel.errors import DependencyUnavailableError
+from app.kernel.errors import DependencyUnavailableError, DomainError
 from app.kernel.events import DomainEvent
 from app.kernel.ports import AuditEntry, Clock
 from app.kernel.tenancy import Role, TenantContext
@@ -70,6 +76,12 @@ RV = TypeVar("RV")
 
 _UNAVAILABLE = "The database is temporarily unavailable."
 _PSYCOPG_WAIT_INTERVAL = 0.1  # psycopg's default; how often a wait wakes to notice interrupts
+
+# Threads the HTTP server runs blocking work on (AnyIO's default, set explicitly
+# at startup). Request connections are bounded against it; see ``Database``.
+REQUEST_THREADS = 40
+
+logger = logging.getLogger(__name__)
 
 
 class BoundedConnection(psycopg.Connection[TupleRow]):
@@ -101,7 +113,17 @@ class BoundedConnection(psycopg.Connection[TupleRow]):
 
 
 class Database:
-    """Lazily opened, concurrency-safe connection pools (one per process)."""
+    """Lazily opened, concurrency-safe connection pools (one per process).
+
+    **Threads waiting for request connections.** A scoped request holds an
+    ``app_api`` connection across several threadpool hops, and needs a thread
+    for each. Threads that block waiting for an ``app_api`` connection outside
+    a request scope must therefore never fill the threadpool, or the holders
+    they wait for cannot finish. At most ``request_threads - api_pool_size``
+    threads may wait at once; past that, a call fails at once with a 503,
+    holding no thread. With at most ``api_pool_size`` scoped requests admitted,
+    waiting threads plus scoped requests never exceed ``request_threads``.
+    """
 
     def __init__(
         self,
@@ -111,6 +133,7 @@ class Database:
         worker_pool_size: int,
         connect_timeout: float,
         statement_timeout_ms: int,
+        request_threads: int = REQUEST_THREADS,
     ) -> None:
         self._conninfo = conninfo
         self._sizes = {API_ROLE: api_pool_size, WORKER_ROLE: worker_pool_size}
@@ -118,6 +141,8 @@ class Database:
         self._statement_timeout_ms = statement_timeout_ms
         # Longer than any statement the server allows, plus a connect timeout of slack.
         self.round_trip_timeout = statement_timeout_ms / 1000 + connect_timeout
+        self.api_waiters_limit = max(1, request_threads - api_pool_size)
+        self._api_waiters = threading.BoundedSemaphore(self.api_waiters_limit)
         self._pools: dict[str, ConnectionPool[BoundedConnection]] = {}
         self._lock = threading.Lock()
         self._scope: contextvars.ContextVar[RequestScope | None] = contextvars.ContextVar(
@@ -212,11 +237,25 @@ class Database:
             return
         try:
             with ExitStack() as stack:
-                conn = self.begin(stack, role, query, params)
+                conn = self._begin_outside_scope(stack, role, query, params)
                 yield conn
-                _refuse_failed_transaction(conn)
+                _require_committable(conn)
         except (PoolTimeout, psycopg.OperationalError) as exc:
             raise DependencyUnavailableError(_UNAVAILABLE) from exc
+
+    def _begin_outside_scope(
+        self, stack: ExitStack, role: str, query: sql.Composed, params: list[str]
+    ) -> psycopg.Connection:
+        """``begin``, bounding the threads that wait for a request connection (see the class docstring)."""
+        if role != API_ROLE:
+            return self.begin(stack, role, query, params)
+        if not self._api_waiters.acquire(blocking=False):
+            logger.warning("database_waiters_exhausted", extra={"limit": self.api_waiters_limit})
+            raise DependencyUnavailableError(_UNAVAILABLE)
+        try:
+            return self.begin(stack, role, query, params)
+        finally:
+            self._api_waiters.release()
 
     # -- Request scope ----------------------------------------------------------
 
@@ -231,29 +270,40 @@ class Database:
         return self._sizes[API_ROLE]
 
     def end_request_scope(
-        self, token: contextvars.Token[RequestScope | None], *, completed: bool
+        self, token: contextvars.Token[RequestScope | None], *, error: BaseException | None
     ) -> Callable[[], None] | None:
-        """End the scope in the caller's context; return the blocking commit to run, if any.
+        """End the scope in the caller's context; return the blocking commit or rollback to run, if any.
 
         The context variable must be reset in the context that set it (the
         event loop), while the commit belongs in a worker thread. Returns
         ``None`` when no transaction is open, so no thread hop is needed.
 
-        ``completed`` says the handler returned normally. If a block rolled the
-        request transaction back and the handler still returned, the work of
-        earlier blocks is gone, so the request fails instead of reporting a
-        success that did not happen.
+        ``error`` is what the request raised, or ``None`` if it completed:
+
+        - Completed, or a ``DomainError``: commit. A domain error is an
+          expected outcome whose writes must persist, such as the audit entry
+          of a denied action (NT-07).
+        - Any other error (a bug, a cancelled request): roll back, so an
+          unexpected failure never leaves committed writes behind it.
+
+        If a block rolled the request transaction back and the handler still
+        completed, the work of earlier blocks is gone, so the request fails
+        instead of reporting a success that did not happen.
         """
         scope = self._scope.get()
         self._scope.reset(token)
         if scope is None:
             return None
-        if completed and scope.rolled_back:
+        if error is None and scope.rolled_back:
             raise RuntimeError(
                 "A database block raised and rolled back the request transaction, but the request completed. "
                 "Let the error propagate, or use explicit transactions for this route."
             )
-        return scope.commit if scope.is_open else None
+        if not scope.is_open:
+            return None
+        if error is None or isinstance(error, DomainError):
+            return scope.commit
+        return functools.partial(scope.rollback, error)
 
     def release_request_transaction(self) -> None:
         scope = self._scope.get()
@@ -317,12 +367,15 @@ class RequestScope:
                 if params != self._applied:
                     conn.execute(query, params)
                     self._applied = params
-        except (PoolTimeout, psycopg.OperationalError) as exc:
+        except BaseException as exc:
+            # Whatever failed, the shared transaction must not stay open in an unknown state.
             self._rollback(exc)
-            raise DependencyUnavailableError(_UNAVAILABLE) from exc
+            if isinstance(exc, (PoolTimeout, psycopg.OperationalError)):
+                raise DependencyUnavailableError(_UNAVAILABLE) from exc
+            raise
         try:
             yield conn
-            _refuse_failed_transaction(conn)
+            _require_committable(conn)
         except BaseException as exc:
             self._rollback(exc)
             if isinstance(exc, psycopg.OperationalError):
@@ -340,12 +393,25 @@ class RequestScope:
         return conn
 
     def commit(self) -> None:
+        if self._conn is None:
+            return
+        try:
+            _require_committable(self._conn)
+        except BaseException as exc:
+            self._rollback(exc)
+            if isinstance(exc, psycopg.OperationalError):
+                raise DependencyUnavailableError(_UNAVAILABLE) from exc
+            raise
         stack, self._stack, self._conn, self._applied = self._stack, None, None, None
         if stack is not None:
             try:
                 stack.close()  # exits the transaction (COMMIT), then returns the connection
             except psycopg.OperationalError as exc:
                 raise DependencyUnavailableError(_UNAVAILABLE) from exc
+
+    def rollback(self, error: BaseException) -> None:
+        """Roll back and end the scope, because the request failed with ``error``."""
+        self._rollback(error)
 
     def release(self) -> None:
         """Commit now and end the scope, before a slow external call."""
@@ -374,10 +440,24 @@ class RequestScope:
                 raise DependencyUnavailableError(_UNAVAILABLE) from rollback_error
 
 
-def _refuse_failed_transaction(conn: psycopg.Connection) -> None:
-    """A statement failed and its error was caught: PostgreSQL would turn COMMIT into ROLLBACK silently."""
-    if conn.info.transaction_status == TransactionStatus.INERROR:
+def _require_committable(conn: psycopg.Connection) -> None:
+    """Refuse to end a block as a success when its transaction can no longer commit.
+
+    - A statement failed and its error was caught: PostgreSQL would turn
+      ``COMMIT`` into ``ROLLBACK`` silently.
+    - The connection was lost (the server ended the session, a pooler
+      restarted, a deadline closed it) and the error was caught: psycopg
+      would leave the block without a ``COMMIT`` and without an error.
+      This raises ``OperationalError``, so callers report a 503.
+    """
+    status = conn.info.transaction_status
+    if status == TransactionStatus.INTRANS:
+        return
+    if status == TransactionStatus.INERROR:
         raise RuntimeError("A statement failed inside this transaction, so it cannot commit.")
+    if conn.closed or status == TransactionStatus.UNKNOWN:
+        raise psycopg.OperationalError("The database connection was lost inside this transaction; nothing committed.")
+    raise RuntimeError("The transaction ended inside the block, so its work cannot be committed here.")
 
 
 # ---------------------------------------------------------------------------

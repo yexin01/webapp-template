@@ -81,8 +81,11 @@ class CoreSettings(BaseSettings):
 
     # Database (DEC-008). Two pools: request work (app_api) and system work (app_worker).
     database_url: SecretStr | None = None
-    database_pool_max_size: int = Field(default=5, ge=1, le=50)
-    database_worker_pool_max_size: int = Field(default=3, ge=1, le=50)
+    # Well below the request threads (40, db.REQUEST_THREADS): admitted scoped
+    # requests plus threads waiting for a connection must fit in them.
+    database_pool_max_size: int = Field(default=5, ge=1, le=30)
+    # At least two: billing synchronization may hold all but one (BILL-10).
+    database_worker_pool_max_size: int = Field(default=3, ge=2, le=50)
     database_connect_timeout_seconds: float = Field(default=5.0, gt=0, le=30)
     database_statement_timeout_ms: int = Field(default=10_000, ge=100, le=60_000)
 
@@ -102,8 +105,10 @@ class CoreSettings(BaseSettings):
 
     # Jobs and the outbox (ADR-0003). Without CRON_SECRET the job endpoint is off.
     cron_secret: SecretStr | None = None
-    outbox_batch_size: int = Field(default=100, ge=1, le=1_000)
     outbox_max_attempts: int = Field(default=10, ge=1, le=100)
+    # Longer than any function may run (Vercel: 300 s by default, up to 800 s),
+    # so a lease expires only once its worker is gone.
+    outbox_lease_seconds: int = Field(default=900, ge=60, le=86_400)
     outbox_retention_days: int = Field(default=7, ge=1, le=365)
 
     @model_validator(mode="before")
@@ -153,15 +158,24 @@ class DatabaseSettings(BaseSettings):
     )
 
     database_url: SecretStr | None = None
-    app_env: AppEnv = AppEnv.LOCAL
+    # No default: destructive commands need APP_ENV set explicitly (ENV-05).
+    app_env: AppEnv | None = None
 
 
 def require_development_environment(operation: str) -> None:
-    """ENV-05: development and test commands run only when APP_ENV is local or test."""
+    """ENV-05: development and test commands run only when APP_ENV is explicitly local or test.
+
+    An unset APP_ENV does not count as local here: a shell that holds a remote
+    DATABASE_URL, but no APP_ENV, must not pass.
+    """
     try:
         app_env = DatabaseSettings().app_env
     except ValueError as exc:
         raise ConfigError("Invalid configuration: APP_ENV") from exc
+    if app_env is None:
+        raise ConfigError(
+            f"Refusing to {operation}: APP_ENV is not set. Set APP_ENV=local (or test) in .env or the environment."
+        )
     if app_env not in (AppEnv.LOCAL, AppEnv.TEST):
         raise ConfigError(f"Refusing to {operation}: APP_ENV={app_env.value}; this command needs local or test.")
 

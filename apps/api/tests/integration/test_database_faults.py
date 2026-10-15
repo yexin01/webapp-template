@@ -18,10 +18,12 @@ from collections.abc import Callable, Iterator
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
+import psycopg
 import pytest
 
 from app.kernel.errors import DependencyUnavailableError
 from app.kernel.infrastructure.db import API_ROLE, Database
+from tests.conftest import superuser_query
 
 pytestmark = pytest.mark.db
 
@@ -181,7 +183,7 @@ def test_a_request_transaction_is_bounded_too(proxy: tuple[FaultProxy, str]) -> 
             with database.transaction(API_ROLE, {}) as conn:
                 conn.execute("SELECT 1")
         finally:
-            commit = database.end_request_scope(token, completed=sys.exc_info()[0] is None)
+            commit = database.end_request_scope(token, error=sys.exc_info()[1])
             if commit is not None:
                 commit()
 
@@ -223,7 +225,7 @@ def test_a_request_transaction_survives_connections_that_died_while_idle(proxy: 
             with database.transaction(API_ROLE, {}) as conn:
                 row = conn.execute("SELECT 1").fetchone()
         finally:
-            commit = database.end_request_scope(token, completed=sys.exc_info()[0] is None)
+            commit = database.end_request_scope(token, error=sys.exc_info()[1])
             if commit is not None:
                 commit()
         assert row == (1,)
@@ -246,7 +248,7 @@ def test_a_rollback_that_never_completes_reports_unavailable(proxy: tuple[FaultP
                 raise LookupError("not found")
         finally:
             if token is not None:
-                commit = database.end_request_scope(token, completed=sys.exc_info()[0] is None)
+                commit = database.end_request_scope(token, error=sys.exc_info()[1])
                 if commit is not None:
                     commit()
 
@@ -275,7 +277,7 @@ def test_a_commit_that_never_completes_reports_unavailable(proxy: tuple[FaultPro
                 fault.freeze_on(b"COMMIT")
         finally:
             if token is not None:
-                commit = database.end_request_scope(token, completed=sys.exc_info()[0] is None)
+                commit = database.end_request_scope(token, error=sys.exc_info()[1])
                 if commit is not None:
                     commit()
 
@@ -288,4 +290,59 @@ def test_a_commit_that_never_completes_reports_unavailable(proxy: tuple[FaultPro
         assert select_one(database) == 1
     finally:
         fault.thaw()
+        database.close()
+
+
+def _users_named(url: str, name: str) -> int:
+    return int(superuser_query(url, "SELECT count(*) FROM app.users WHERE clerk_user_id = %s", (name,))[0][0])
+
+
+@pytest.mark.parametrize("pattern", ["caught", "savepoint"])
+@pytest.mark.parametrize("scoped", [False, True], ids=["transaction", "request-scope"])
+def test_a_connection_lost_inside_a_block_is_never_reported_as_success(db: str, scoped: bool, pattern: str) -> None:
+    """The server ends the session mid-block (a pooler restart, a failover, an operator), and the block
+    catches the error, directly or around a savepoint. psycopg then leaves the block without a COMMIT
+    and without an error, so the block must fail instead of reporting work that never committed."""
+    database = make_database(db)
+
+    def lose_the_connection_and_carry_on() -> None:
+        with database.transaction(API_ROLE, {"app.clerk_user_id": "user_lost"}) as conn:
+            conn.execute("INSERT INTO app.users (clerk_user_id) VALUES ('user_lost')")
+            superuser_query(db, "SELECT pg_terminate_backend(%s)", (conn.info.backend_pid,))
+            with contextlib.suppress(psycopg.OperationalError):
+                if pattern == "savepoint":
+                    with conn.transaction():  # try a statement and carry on if it fails
+                        conn.execute("SELECT 1")
+                else:
+                    conn.execute("SELECT 1")
+
+    try:
+        token = database.begin_request_scope() if scoped else None
+        with pytest.raises(DependencyUnavailableError):
+            lose_the_connection_and_carry_on()
+        if token is not None:
+            with pytest.raises(RuntimeError, match="rolled back"):
+                database.end_request_scope(token, error=None)
+        assert _users_named(db, "user_lost") == 0
+        assert select_one(database) == 1  # the lost connection was replaced
+    finally:
+        database.close()
+
+
+def test_a_request_commit_on_a_lost_connection_reports_unavailable(db: str) -> None:
+    """The commit checks the connection too: code that noticed the loss outside a block cannot hide it."""
+    database = make_database(db)
+    try:
+        token = database.begin_request_scope()
+        with database.transaction(API_ROLE, {"app.clerk_user_id": "user_lost"}) as conn:
+            conn.execute("INSERT INTO app.users (clerk_user_id) VALUES ('user_lost')")
+        superuser_query(db, "SELECT pg_terminate_backend(%s)", (conn.info.backend_pid,))
+        with contextlib.suppress(psycopg.OperationalError):
+            conn.execute("SELECT 1")
+        commit = database.end_request_scope(token, error=None)
+        assert commit is not None
+        with pytest.raises(DependencyUnavailableError):
+            commit()
+        assert _users_named(db, "user_lost") == 0
+    finally:
         database.close()

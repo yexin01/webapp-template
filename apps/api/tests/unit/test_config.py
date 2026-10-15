@@ -95,6 +95,15 @@ def test_type_errors_do_not_echo_input() -> None:
     assert "DATABASE_POOL_MAX_SIZE" in str(excinfo.value)
 
 
+def test_the_request_pool_stays_well_below_the_request_threads() -> None:
+    """Admitted scoped requests (one per request connection) plus threads waiting for a connection
+    must fit in the request threads, or connection holders could find no thread to finish on."""
+    assert make_settings(database_pool_max_size=30).database_pool_max_size == 30
+    with pytest.raises(ConfigError) as excinfo:
+        make_settings(database_pool_max_size=31)
+    assert "DATABASE_POOL_MAX_SIZE" in str(excinfo.value)
+
+
 def test_empty_values_mean_unset() -> None:
     settings = make_settings(clerk_jwt_key="", clerk_webhook_signing_secret="  ", llm_api_key="", sentry_dsn="")
     assert settings.clerk_jwt_key is None

@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from typing import Any
 
+import anyio
 from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -23,10 +24,14 @@ def build_fastapi(
     title: str,
     routers: Sequence[APIRouter],
     dependencies: Sequence[Any] = (),
+    worker_threads: int,
     on_shutdown: Callable[[], None] = lambda: None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        # Sync dependencies and handlers run on AnyIO's default thread limiter.
+        # Set it explicitly: the database bounds its waiting threads against it.
+        anyio.to_thread.current_default_thread_limiter().total_tokens = worker_threads
         yield
         on_shutdown()
 

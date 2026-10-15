@@ -17,6 +17,10 @@ _CRON = re.compile(r"^(\S+\s+){4}\S+$")
 
 JobSummary = Mapping[str, int | str | bool]
 
+# How long one run of a job may keep starting new work. It stays well inside
+# the platform's function duration limit; the next run continues.
+TIME_BUDGET_SECONDS = 60.0
+
 
 @dataclass(frozen=True, slots=True)
 class Job:

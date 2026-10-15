@@ -95,7 +95,7 @@ def test_commit_failure_is_reported_before_the_response(harness: Harness, member
 
 
 def _finish(database: Database, token: Any) -> None:
-    commit = database.end_request_scope(token, completed=True)
+    commit = database.end_request_scope(token, error=None)
     if commit is not None:
         commit()
 
@@ -119,6 +119,61 @@ def test_block_exception_rolls_back_pending_request_work(db: str) -> None:
         with pytest.raises(RuntimeError, match="rolled back"):
             _finish(database, token)
         assert superuser_query(db, "SELECT count(*) FROM app.users WHERE clerk_user_id = 'user_rollback'")[0][0] == 0
+    finally:
+        database.close()
+
+
+def test_a_failed_context_switch_rolls_the_request_back(db: str) -> None:
+    """Whatever error re-applying the context raises, the request transaction is rolled back, never left open."""
+    database = _database(db)
+    try:
+        token = database.begin_request_scope()
+        with database.transaction(API_ROLE, {"app.clerk_user_id": "user_switch"}) as conn:
+            conn.execute("INSERT INTO app.users (clerk_user_id) VALUES ('user_switch')")
+        # A value the driver refuses to send: the setup statement fails before reaching the server.
+        with pytest.raises(psycopg.DataError), database.transaction(API_ROLE, {"app.clerk_user_id": "bad\x00id"}):
+            pass
+        with pytest.raises(RuntimeError, match="rolled back"):
+            _finish(database, token)
+        assert superuser_query(db, "SELECT count(*) FROM app.users WHERE clerk_user_id = 'user_switch'")[0][0] == 0
+    finally:
+        database.close()
+
+
+def test_an_unexpected_error_after_a_write_rolls_the_request_back(
+    harness: Harness, member: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bug after the write is a 500, so neither the write nor its outbox event may commit:
+    a client retrying the 500 would otherwise create the project twice."""
+    projects = harness.container.projects.service
+    create = projects.create
+
+    def create_then_fail(*args: Any, **kwargs: Any) -> Any:
+        create(*args, **kwargs)
+        raise RuntimeError("a bug after the write")
+
+    monkeypatch.setattr(projects, "create", create_then_fail)
+    r = harness.client.post("/api/v1/orgs/org_q/projects", json={"name": "half-done"}, headers=member)
+    assert r.status_code == 500
+    assert (
+        superuser_query(harness.database_url, "SELECT count(*) FROM app.projects WHERE name = 'half-done'")[0][0] == 0
+    )
+    assert superuser_query(harness.database_url, "SELECT count(*) FROM app.outbox")[0][0] == 0
+
+
+def test_a_domain_error_after_a_write_still_commits(db: str) -> None:
+    """A domain error is an expected outcome: writes made for it, such as a denial's audit entry (NT-07), persist."""
+    from app.kernel.errors import ForbiddenError
+
+    database = _database(db)
+    try:
+        token = database.begin_request_scope()
+        with database.transaction(API_ROLE, {"app.clerk_user_id": "user_denied"}) as conn:
+            conn.execute("INSERT INTO app.users (clerk_user_id) VALUES ('user_denied')")
+        finish = database.end_request_scope(token, error=ForbiddenError())
+        assert finish is not None
+        finish()
+        assert superuser_query(db, "SELECT count(*) FROM app.users WHERE clerk_user_id = 'user_denied'")[0][0] == 1
     finally:
         database.close()
 
@@ -211,13 +266,9 @@ def test_no_thread_hop_or_commit_when_no_transaction_was_opened(db: str) -> None
     database = _database(db)
     try:
         token = database.begin_request_scope()
-        assert database.end_request_scope(token, completed=True) is None
+        assert database.end_request_scope(token, error=None) is None
     finally:
         database.close()
-
-
-def test_admission_is_bounded_by_the_api_pool(harness: Harness) -> None:
-    assert harness.container.kernel.database.api_pool_size == harness.container.settings.database_pool_max_size
 
 
 @pytest.mark.parametrize("scoped", [False, True], ids=["transaction", "request-scope"])
@@ -237,7 +288,7 @@ def test_a_swallowed_statement_error_never_commits_silently(db: str, scoped: boo
             swallow_an_error()
         if token is not None:
             with pytest.raises(RuntimeError, match="rolled back"):
-                database.end_request_scope(token, completed=True)
+                database.end_request_scope(token, error=None)
         assert superuser_query(db, "SELECT count(*) FROM app.users WHERE clerk_user_id = 'user_swallow'")[0][0] == 0
     finally:
         database.close()

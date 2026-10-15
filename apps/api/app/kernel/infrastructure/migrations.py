@@ -4,7 +4,12 @@ Applied migrations are recorded with a checksum; editing a migration after it
 has been applied is detected and refused, and so is a new migration numbered
 before one already applied. Concurrent runs are serialized per migration with
 a transaction-level advisory lock, which also works through a transaction-mode
-pooler.
+pooler, as does everything else here: no server-side prepared statements, and
+only transaction-local settings.
+
+A migration statement that waits for a table lock (held by running traffic)
+gives up after ``_LOCK_TIMEOUT`` instead of queueing every later query on that
+table behind it. Waiting for a concurrent run's advisory lock is not limited.
 """
 
 from __future__ import annotations
@@ -21,6 +26,12 @@ from app.kernel.infrastructure.config import REPO_ROOT
 
 LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "host.docker.internal"})
 _LOCAL_ADDRESSES = frozenset({"127.0.0.1", "::1"})
+# Directories where a local PostgreSQL server puts its Unix socket. Any other
+# socket directory may belong to a proxy for a remote server (the Cloud SQL
+# Auth Proxy uses /cloudsql/<instance>), so it does not count as local.
+LOCAL_SOCKET_DIRECTORIES = frozenset(
+    {"/tmp", "/private/tmp", "/var/run/postgresql", "/run/postgresql"}  # noqa: S108 - socket directories, not temp files
+)
 
 # The ledger lives in ``public`` so it exists before the first migration. On
 # Supabase, ``public`` is exposed through the Data API with default grants, so
@@ -44,6 +55,8 @@ BEGIN
 END $$;
 """
 _LOCK = "SELECT pg_advisory_xact_lock(hashtextextended('app_schema_migrations', 0))"
+_LOCK_TIMEOUT = "5s"
+_CONNECT_TIMEOUT_SECONDS = 10
 
 
 class MigrationError(RuntimeError):
@@ -66,7 +79,10 @@ def is_local_database(url: str) -> bool:
 
     The URL's host is not enough: ``host``/``hostaddr`` query parameters and the
     ``PGHOST``/``PGHOSTADDR``/``PGSERVICE`` environment variables override it,
-    and a service file can name any server.
+    and a service file can name any server. A Unix socket counts only in one of
+    ``LOCAL_SOCKET_DIRECTORIES``. A tunnel to a remote server on a local port
+    still looks local, which is why destructive commands also need an explicit
+    ``APP_ENV`` and a confirmation flag (ENV-05).
     """
     try:
         params = conninfo_to_dict(url)
@@ -76,9 +92,18 @@ def is_local_database(url: str) -> bool:
         return False
     hosts = str(params.get("host") or os.environ.get("PGHOST") or "localhost")
     addresses = str(params.get("hostaddr") or os.environ.get("PGHOSTADDR") or "")
-    return all(h in LOCAL_HOSTS or h.startswith("/") for h in hosts.split(",")) and all(
+    return all(h in LOCAL_HOSTS or _is_local_socket(h) for h in hosts.split(",")) and all(
         a in _LOCAL_ADDRESSES for a in addresses.split(",") if a
     )
+
+
+def _is_local_socket(host: str) -> bool:
+    return host.startswith("/") and os.path.normpath(host) in LOCAL_SOCKET_DIRECTORIES
+
+
+def _connect(url: str, *, autocommit: bool = False) -> psycopg.Connection:
+    # Transaction-mode poolers do not support server-side prepared statements.
+    return psycopg.connect(url, autocommit=autocommit, prepare_threshold=None, connect_timeout=_CONNECT_TIMEOUT_SECONDS)
 
 
 def require_local_database(url: str, operation: str) -> None:
@@ -114,9 +139,10 @@ def discover(directory: Path | None = None) -> list[Migration]:
 def migrate(url: str, directory: Path | None = None) -> list[str]:
     """Apply pending migrations in order, each in its own transaction."""
     applied_now: list[str] = []
-    with psycopg.connect(url, autocommit=True) as conn:
+    with _connect(url, autocommit=True) as conn:
         with conn.transaction():
             conn.execute(_LOCK)
+            conn.execute(f"SET LOCAL lock_timeout = '{_LOCK_TIMEOUT}'")
             conn.execute(_LEDGER_DDL)
         for migration in discover(directory):
             with conn.transaction():
@@ -138,6 +164,7 @@ def migrate(url: str, directory: Path | None = None) -> list[str]:
                         f"Migration {migration.path.name} is numbered before {latest}, which is already applied. "
                         "Give it a version after the latest applied migration."
                     )
+                conn.execute(f"SET LOCAL lock_timeout = '{_LOCK_TIMEOUT}'")  # after the advisory lock
                 conn.execute(migration.path.read_text(encoding="utf-8"))
                 conn.execute(
                     "INSERT INTO public.app_schema_migrations (version, checksum) VALUES (%s, %s)",
@@ -152,13 +179,13 @@ def seed(url: str, seed_file: Path | None = None) -> None:
     seed_file = seed_file or repository_file("supabase", "seed.sql")
     # Runs as the local connecting role: seeding inserts rows into every
     # table, which neither runtime role is permitted to do.
-    with psycopg.connect(url) as conn, conn.transaction():
+    with _connect(url) as conn, conn.transaction():
         conn.execute(seed_file.read_text(encoding="utf-8"))
 
 
 def reset(url: str) -> None:
     """Drop all application objects. Local databases only."""
     require_local_database(url, "reset the database")
-    with psycopg.connect(url, autocommit=True) as conn:
+    with _connect(url, autocommit=True) as conn:
         conn.execute("DROP SCHEMA IF EXISTS app CASCADE")
         conn.execute("DROP TABLE IF EXISTS public.app_schema_migrations")

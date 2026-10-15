@@ -61,9 +61,14 @@ def test_request_role_can_only_append_to_the_outbox(harness: Harness) -> None:
             conn.execute("INSERT INTO app.outbox (id, event_type) VALUES (gen_random_uuid(), 'projects.created')")
 
 
+LEASE_SECONDS = 60
+
+
 def _dispatcher(harness: Harness, handlers: EventHandlers, max_attempts: int = 3) -> OutboxDispatcher:
     kernel = harness.container.kernel
-    return OutboxDispatcher(kernel.store, handlers, harness.clock, batch_size=10, max_attempts=max_attempts)
+    return OutboxDispatcher(
+        kernel.store, handlers, harness.clock, max_attempts=max_attempts, lease_seconds=LEASE_SECONDS
+    )
 
 
 def _record(harness: Harness, user: str = "user_a") -> None:
@@ -116,6 +121,9 @@ def test_expired_lease_is_reclaimed(harness: Harness) -> None:
     dispatcher = _dispatcher(harness, handlers)
     assert dispatcher.drain().claimed == 0
     harness.clock.advance(seconds=61)
+    # The expired lease counts as a failed attempt: retried after backoff, behind events already due.
+    assert dispatcher.drain().retried == 1
+    harness.clock.advance(seconds=2)
     assert dispatcher.drain().processed == 1
     assert len(seen) == 1
 
@@ -239,29 +247,42 @@ def test_completion_is_fenced_to_the_current_lease(harness: Harness) -> None:
     _record(harness)
     store = harness.container.kernel.store
     with store.as_system() as t:
-        first = t.repo.claim_outbox(limit=1, now=harness.clock.now(), lease_seconds=1, ids=None)[0]
-    harness.clock.advance(seconds=2)  # the first lease expires; a second worker re-leases
+        first = t.repo.claim_outbox(limit=1, now=harness.clock.now(), lease_seconds=1, max_attempts=3, ids=None)[0]
+    harness.clock.advance(seconds=2)  # the first lease expires
+    handlers = EventHandlers()
+    handlers.subscribe(EntitlementChanged, "test.ok", lambda event: None)
+    dispatcher = _dispatcher(harness, handlers)
+    assert dispatcher.drain().retried == 1  # the expired lease is recorded as a failed attempt
+    harness.clock.advance(seconds=2)
+    assert dispatcher.drain().processed == 1  # a second worker leases the event again and completes it
     with store.as_system() as t:
-        second = t.repo.claim_outbox(limit=1, now=harness.clock.now(), lease_seconds=60, ids=None)[0]
-    assert second.attempts == first.attempts + 1
-    with store.as_system() as t:
-        assert t.repo.complete_outbox(second.id, second.attempts, harness.clock.now()) is True
         # The stale worker finishes late: nothing changes.
         assert t.repo.fail_outbox(first.id, first.attempts, "late failure", retry_at=None) is False
         assert t.repo.complete_outbox(first.id, first.attempts, harness.clock.now()) is False
-    assert [r[1] for r in outbox_rows(harness)] == ["processed"]
+    assert [(r[1], r[2]) for r in outbox_rows(harness)] == [("processed", 2)]
 
 
 def test_an_event_whose_worker_keeps_dying_is_dead_lettered(harness: Harness) -> None:
     """ARCH-15: attempts stay bounded even when the handler never returns (a crash or a platform timeout)."""
     _record(harness)
-    dispatcher = _dispatcher(harness, EventHandlers(), max_attempts=3)
-    store = harness.container.kernel.store
-    for _ in range(3):  # each worker leases the event and dies
-        with store.as_system() as t:
-            assert len(t.repo.claim_outbox(limit=1, now=harness.clock.now(), lease_seconds=60, ids=None)) == 1
-        harness.clock.advance(seconds=61)
-    report = dispatcher.drain()
+
+    class WorkerDied(BaseException):
+        pass
+
+    def crash(event: StoredEvent) -> None:
+        raise WorkerDied
+
+    handlers = EventHandlers()
+    handlers.subscribe(EntitlementChanged, "test.crash", crash)
+    dispatcher = _dispatcher(harness, handlers, max_attempts=3)
+    for attempt in (1, 2, 3):
+        with pytest.raises(WorkerDied):
+            dispatcher.drain()  # the worker leases the event and dies
+        harness.clock.advance(seconds=LEASE_SECONDS + 1)
+        report = dispatcher.drain()  # the next drain records the expired lease
+        if attempt < 3:
+            assert (report.retried, report.claimed) == (1, 0)  # retried after backoff
+            harness.clock.advance(seconds=2**attempt)
     assert (report.dead, report.claimed) == (1, 0)
     status, attempts, error = superuser_query(
         harness.database_url, "SELECT status, attempts, last_error FROM app.outbox"
@@ -289,14 +310,14 @@ def test_a_crashing_handler_never_costs_other_events_an_attempt(harness: Harness
     assert sorted(rows) == [("pending", 0), ("pending", 0), ("processing", 1)]
 
 
-def test_the_drain_job_keeps_going_past_one_batch(harness: Harness) -> None:
+def test_the_drain_job_stops_starting_work_when_its_budget_is_spent(harness: Harness) -> None:
     for i in range(5):
         _record(harness, f"user_{i}")
     handlers = EventHandlers()
     handlers.subscribe(EntitlementChanged, "test.ok", lambda event: None)
-    dispatcher = OutboxDispatcher(harness.container.kernel.store, handlers, harness.clock, batch_size=2, max_attempts=3)
-    assert dispatcher.drain().processed == 2  # after-response style: one bounded batch
-    assert dispatcher.drain(time_budget_seconds=30).processed == 3  # the job: until nothing is due
+    dispatcher = _dispatcher(harness, handlers)
+    assert dispatcher.drain(time_budget_seconds=0).processed == 1  # spent after the first event
+    assert dispatcher.drain(time_budget_seconds=30).processed == 4  # the job: until nothing is due
 
 
 def test_prune_deletes_in_bounded_batches(cron: Harness, monkeypatch: pytest.MonkeyPatch) -> None:

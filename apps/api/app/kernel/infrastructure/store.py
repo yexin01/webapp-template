@@ -80,17 +80,22 @@ class PgKernelStore:
     # -- Outbox -----------------------------------------------------------------
 
     def claim_outbox(
-        self, *, limit: int, now: datetime, lease_seconds: int, ids: Sequence[UUID] | None
+        self, *, limit: int, now: datetime, lease_seconds: int, max_attempts: int, ids: Sequence[UUID] | None
     ) -> list[StoredEvent]:
-        """Lease up to ``limit`` due events. Rows leased by a crashed worker become due again."""
+        """Lease up to ``limit`` pending, due events with attempts left.
+
+        A leased event is never re-leased here, even after its lease expired:
+        ``expired_outbox_leases`` first turns it back into a retry (or a dead
+        event), so the attempt limit holds and a crashing event goes to the
+        back of the queue.
+        """
         rows = self._all(
             """
             UPDATE app.outbox o
             SET status = 'processing', attempts = o.attempts + 1, locked_until = %(lease_end)s
             WHERE o.id IN (
               SELECT id FROM app.outbox
-              WHERE ((status = 'pending' AND available_at <= %(now)s)
-                     OR (status = 'processing' AND locked_until < %(now)s))
+              WHERE status = 'pending' AND available_at <= %(now)s AND attempts < %(max_attempts)s
                 AND (%(ids)s::uuid[] IS NULL OR id = ANY(%(ids)s::uuid[]))
               ORDER BY available_at, id
               LIMIT %(limit)s
@@ -101,6 +106,7 @@ class PgKernelStore:
             {
                 "lease_end": now + timedelta(seconds=lease_seconds),
                 "now": now,
+                "max_attempts": max_attempts,
                 "ids": list(ids) if ids is not None else None,
                 "limit": limit,
             },
@@ -137,18 +143,39 @@ class PgKernelStore:
         )
         return row is not None
 
-    def expire_outbox_leases(self, now: datetime, max_attempts: int) -> int:
-        """A lease that expires on the last attempt means the worker stopped (a crash or a
-        platform timeout) every time: dead-letter the event instead of leasing it forever."""
+    def expired_outbox_leases(self, now: datetime, limit: int) -> list[tuple[UUID, int]]:
+        """Leased events whose worker stopped (a crash or a platform timeout) before recording an outcome.
+
+        The rows stay locked until the transaction ends, so concurrent drains
+        skip them, and ``fail_outbox`` with the returned attempt is fenced as usual.
+        """
+        rows = self._all(
+            """
+            SELECT id, attempts FROM app.outbox
+            WHERE status = 'processing' AND locked_until < %s
+            ORDER BY locked_until, id
+            LIMIT %s
+            FOR UPDATE SKIP LOCKED
+            """,
+            (now, limit),
+        )
+        return [(r["id"], int(r["attempts"])) for r in rows]
+
+    def dead_letter_exhausted_outbox(self, max_attempts: int, limit: int) -> int:
+        """Pending events that already used ``max_attempts`` (it was lowered) can never be leased: mark them dead."""
         with self._conn.cursor() as cur:
             cur.execute(
                 """
-                UPDATE app.outbox
-                SET status = 'dead', locked_until = NULL,
-                    last_error = 'lease expired on the last attempt: the worker stopped or timed out'
-                WHERE status = 'processing' AND locked_until < %s AND attempts >= %s
+                UPDATE app.outbox SET status = 'dead',
+                  last_error = 'no attempts left: OUTBOX_MAX_ATTEMPTS is lower than the attempts already made'
+                WHERE id IN (
+                  SELECT id FROM app.outbox
+                  WHERE status = 'pending' AND attempts >= %s
+                  LIMIT %s
+                  FOR UPDATE SKIP LOCKED
+                )
                 """,
-                (now, max_attempts),
+                (max_attempts, limit),
             )
             return cur.rowcount
 

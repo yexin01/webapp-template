@@ -16,6 +16,7 @@ from collections.abc import AsyncIterator, Callable
 from uuid import UUID
 
 import anyio
+from anyio.lowlevel import RunVar
 from starlette.concurrency import run_in_threadpool
 
 from app.kernel.application.outbox import OutboxDispatcher
@@ -38,7 +39,11 @@ def request_transaction(database: Database) -> Callable[[], AsyncIterator[None]]
 
     Register it with ``Depends(..., scope="function")``, so the commit happens
     after the handler returns but **before** the response is sent. A failed
-    commit therefore surfaces as an error, never as a false success.
+    commit therefore surfaces as an error, never as a false success. The
+    transaction commits when the handler returns or raises a ``DomainError``
+    (a 4xx or 503 the service chose, whose writes such as a denial's audit
+    entry must persist), and rolls back on any other exception, so a 500
+    never comes with committed writes.
 
     A request-scoped request holds a pooled connection across several
     threadpool hops (dependencies, endpoint, commit). Three measures keep
@@ -49,18 +54,25 @@ def request_transaction(database: Database) -> Callable[[], AsyncIterator[None]]
       Others wait asynchronously, holding neither a thread nor a connection.
       ``release()`` ends the scope and gives the place back at once, so a
       request waiting on an external service never blocks other requests.
-    - **Commit:** runs on its own one-off thread limiter, the pattern FastAPI
-      uses for dependency exits, so it never queues behind the shared
-      threadpool. It is shielded from cancellation, so a client that
+      The gate belongs to the event loop (an ASGI server runs one per
+      process): an AnyIO semaphore cannot wake a waiter on another loop.
+    - **Commit or rollback:** runs on its own one-off thread limiter, the
+      pattern FastAPI uses for dependency exits, so it never queues behind the
+      shared threadpool. It is shielded from cancellation, so a client that
       disconnects cannot leave the transaction open.
     """
-    admission: anyio.Semaphore | None = None
+    admission: RunVar[anyio.Semaphore] = RunVar("request_admission")
+
+    def current_gate() -> anyio.Semaphore:
+        try:
+            return admission.get()
+        except LookupError:
+            gate = anyio.Semaphore(database.api_pool_size)
+            admission.set(gate)
+            return gate
 
     async def dependency() -> AsyncIterator[None]:
-        nonlocal admission
-        if admission is None:
-            admission = anyio.Semaphore(database.api_pool_size)
-        gate = admission
+        gate = current_gate()
         await gate.acquire()
         loop_thread = threading.get_ident()
         given_back = threading.Event()
@@ -79,16 +91,19 @@ def request_transaction(database: Database) -> Callable[[], AsyncIterator[None]]
             given_back.set()
 
         token = database.begin_request_scope(on_release=give_back)
-        completed = False
+        error: BaseException | None = None
         try:
             yield
-            completed = True
+        except BaseException as exc:
+            # FastAPI throws the handler's exception in here; it decides commit or rollback.
+            error = exc
+            raise
         finally:
             try:
-                commit = database.end_request_scope(token, completed=completed)
-                if commit is not None:
+                finish = database.end_request_scope(token, error=error)
+                if finish is not None:
                     with anyio.CancelScope(shield=True):
-                        await anyio.to_thread.run_sync(commit, limiter=anyio.CapacityLimiter(1))
+                        await anyio.to_thread.run_sync(finish, limiter=anyio.CapacityLimiter(1))
             finally:
                 if not given_back.is_set():
                     given_back.set()

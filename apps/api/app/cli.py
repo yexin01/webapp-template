@@ -1,7 +1,8 @@
 """Maintenance commands: ``python -m app.cli <command>``.
 
-Destructive and development-only commands refuse non-local databases
-(ENV-05). Reconciliation is a dry run unless ``--apply`` is given (BILL-19).
+Destructive and development-only commands refuse non-local databases, need
+``APP_ENV`` set to local or test, and need ``--yes`` (ENV-05). Reconciliation
+is a dry run unless ``--apply`` is given (BILL-19).
 ``job <name>`` runs any registered job (the same ones Vercel Cron calls).
 """
 
@@ -34,19 +35,28 @@ def cmd_migrate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _confirmed(args: argparse.Namespace, refusal: str) -> bool:
+    """ENV-05: destructive commands run only with an explicit ``--yes``, checked after the target guards."""
+    if not args.yes:
+        print(refusal, file=sys.stderr)
+    return bool(args.yes)
+
+
 def cmd_seed(args: argparse.Namespace) -> int:
     require_development_environment("seed synthetic data")
-    migrations.seed(_database_url(args))
+    url = _database_url(args)
+    if not _confirmed(args, "Refusing to seed without --yes. This writes synthetic rows into the local database."):
+        return 2
+    migrations.seed(url)
     print(json.dumps({"seeded": True}))
     return 0
 
 
 def cmd_reset(args: argparse.Namespace) -> int:
-    if not args.yes:
-        print("Refusing to reset without --yes. This drops all local application data.", file=sys.stderr)
-        return 2
     require_development_environment("reset the database")
     url = _database_url(args)
+    if not _confirmed(args, "Refusing to reset without --yes. This drops all local application data."):
+        return 2
     migrations.reset(url)
     migrations.migrate(url)
     if args.seed:
@@ -131,10 +141,11 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=cmd_migrate)
 
     p = sub.add_parser("seed", help="Load deterministic synthetic data (local only)")
+    p.add_argument("--yes", action="store_true", help="Confirm writing into the local database")
     p.set_defaults(func=cmd_seed)
 
     p = sub.add_parser("reset", help="Drop and recreate the local schema (local only)")
-    p.add_argument("--yes", action="store_true")
+    p.add_argument("--yes", action="store_true", help="Confirm dropping all local application data")
     p.add_argument("--seed", action="store_true")
     p.set_defaults(func=cmd_reset)
 

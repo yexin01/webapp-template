@@ -8,6 +8,7 @@ path in application code (ENV-08).
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -23,8 +24,8 @@ from app.kernel.http.app import build_fastapi
 from app.kernel.http.request_scope import dispatch_recorded_events, note_recorded_event, request_transaction
 from app.kernel.http.routes import build_health_router, build_jobs_router
 from app.kernel.infrastructure.clock import SystemClock
-from app.kernel.infrastructure.config import Mode
-from app.kernel.infrastructure.db import Database, PgTransactions
+from app.kernel.infrastructure.config import AppEnv, Mode
+from app.kernel.infrastructure.db import REQUEST_THREADS, Database, PgTransactions
 from app.kernel.infrastructure.integrations import describe_analytics, describe_database, describe_error_reporting
 from app.kernel.infrastructure.observability import (
     NoopAnalytics,
@@ -35,7 +36,7 @@ from app.kernel.infrastructure.observability import (
     init_error_reporting,
 )
 from app.kernel.infrastructure.store import PgKernelStore
-from app.kernel.jobs import Job, JobRegistry
+from app.kernel.jobs import TIME_BUDGET_SECONDS, Job, JobRegistry
 from app.kernel.ports import Analytics, Clock, ErrorReporter, KernelStore
 from app.kernel.wiring import Contribution, Kernel, pick
 from app.modules.billing.module import BillingModule, build_billing
@@ -48,8 +49,8 @@ from app.modules.projects.module import ProjectsModule, build_projects
 from app.settings import Settings, load_settings
 
 API_TITLE = "SaaS Template API"
-# Work per scheduled run of an open-ended job; well inside the platform's function duration limit.
-_JOB_TIME_BUDGET_SECONDS = 60.0
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -96,7 +97,11 @@ def build_container(settings: Settings, **overrides: Any) -> Container:
     jobs = JobRegistry()
     rate_limiter = RateLimiter(store, clock)
     outbox = OutboxDispatcher(
-        store, handlers, clock, batch_size=settings.outbox_batch_size, max_attempts=settings.outbox_max_attempts
+        store,
+        handlers,
+        clock,
+        max_attempts=settings.outbox_max_attempts,
+        lease_seconds=settings.outbox_lease_seconds,
     )
     kernel = Kernel(
         database=database,
@@ -120,8 +125,8 @@ def build_container(settings: Settings, **overrides: Any) -> Container:
             "Delete expired rate-limit windows and processed outbox events past retention.",
             "0 5 * * *",
             lambda: {
-                "rate_limit_windows": rate_limiter.prune(_JOB_TIME_BUDGET_SECONDS / 2),
-                "outbox_events": outbox.prune(retention, _JOB_TIME_BUDGET_SECONDS / 2),
+                "rate_limit_windows": rate_limiter.prune(TIME_BUDGET_SECONDS / 2),
+                "outbox_events": outbox.prune(retention, TIME_BUDGET_SECONDS / 2),
             },
         )
     )
@@ -160,11 +165,18 @@ def create_app(container: Container) -> FastAPI:
     for contribution in container.contributions():
         routers += contribution.routers
     routers.append(build_jobs_router(kernel.jobs, cron_secret.get_secret_value() if cron_secret else None))
+    if cron_secret is None and container.settings.app_env is AppEnv.PRODUCTION:
+        # Not an error: jobs can also run from the CLI. But nothing schedules them otherwise.
+        logger.warning(
+            "jobs_endpoint_disabled",
+            extra={"reason": "CRON_SECRET is not set", "jobs": ",".join(j.name for j in kernel.jobs.all())},
+        )
     app = build_fastapi(
         settings=container.settings,
         title=API_TITLE,
         routers=routers,
         dependencies=[Depends(dispatch_recorded_events(kernel.outbox), scope="request")],
+        worker_threads=REQUEST_THREADS,
         on_shutdown=container.close,
     )
     app.state.container = container
@@ -188,6 +200,7 @@ def _database(settings: Settings) -> Database:
         worker_pool_size=settings.database_worker_pool_max_size,
         connect_timeout=settings.database_connect_timeout_seconds,
         statement_timeout_ms=settings.database_statement_timeout_ms,
+        request_threads=REQUEST_THREADS,
     )
 
 
@@ -204,4 +217,4 @@ def _error_reporter(settings: Settings) -> ErrorReporter:
 
 
 def _drain(outbox: OutboxDispatcher) -> Callable[[], dict[str, int]]:
-    return lambda: outbox.drain(time_budget_seconds=_JOB_TIME_BUDGET_SECONDS).summary()
+    return lambda: outbox.drain(time_budget_seconds=TIME_BUDGET_SECONDS).summary()

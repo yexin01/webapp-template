@@ -3,14 +3,16 @@
 Events are leased with ``FOR UPDATE SKIP LOCKED``, so any number of workers
 (after-response dispatch in each request, plus the ``drain-outbox`` job) can
 drain concurrently without double-leasing a row. Events are leased one at a
-time, just before their handlers run, so a lease covers exactly one event. A
-lease that is never completed, because the process died or the platform
-stopped it, expires and the event is retried.
+time, just before their handlers run, so a lease covers exactly one event.
 
-A failed event is retried with exponential backoff and marked ``dead`` after
-``max_attempts``, and so is an event whose lease keeps expiring (its handler
-crashes or outlives the function). A retry re-runs every handler for that
-event, which is why handlers must be idempotent.
+A lease lasts longer than a function may run (``OUTBOX_LEASE_SECONDS``), so it
+expires only once its worker is gone: the process died, or the platform
+stopped it. Every drain first records each expired lease as a failed attempt,
+like a failed handler: the event is retried with exponential backoff, behind
+the events already due, or marked ``dead`` once it has used ``max_attempts``.
+Only pending events with attempts left are leased, so no event runs more than
+``max_attempts`` times. A retry re-runs every handler for that event, which is
+why handlers must be idempotent.
 """
 
 from __future__ import annotations
@@ -29,6 +31,8 @@ logger = logging.getLogger(__name__)
 
 _MAX_BACKOFF_SECONDS = 3_600
 _PRUNE_BATCH = 1_000
+_EXPIRED_BATCH = 100  # expired leases recorded per drain; the next drain continues
+_LEASE_EXPIRED = "lease expired: the worker stopped or timed out"
 
 
 @dataclass(slots=True)
@@ -37,7 +41,7 @@ class DrainReport:
     processed: int = 0
     retried: int = 0
     dead: int = 0
-    # Outcomes not recorded because the lease expired and another worker took the event.
+    # Outcomes not recorded because the lease expired and the event moved on without this worker.
     superseded: int = 0
     failures: list[str] = field(default_factory=list)
 
@@ -58,14 +62,12 @@ class OutboxDispatcher:
         handlers: EventHandlers,
         clock: Clock,
         *,
-        batch_size: int,
         max_attempts: int,
-        lease_seconds: int = 120,
+        lease_seconds: int,
     ) -> None:
         self._tx = tx
         self._handlers = handlers
         self._clock = clock
-        self._batch_size = batch_size
         self._max_attempts = max_attempts
         self._lease_seconds = lease_seconds
 
@@ -84,33 +86,62 @@ class OutboxDispatcher:
         return prune_in_batches(batch, _PRUNE_BATCH, time_budget_seconds)
 
     def drain(self, ids: Sequence[UUID] | None = None, *, time_budget_seconds: float | None = None) -> DrainReport:
-        """Dispatch due events.
+        """Record expired leases, then dispatch due events one at a time.
 
         - With ``ids`` (after-response dispatch): only those events.
-        - Otherwise up to ``batch_size`` events, or, with a time budget (the
-          ``drain-outbox`` job), until no event is due or the budget is spent.
+        - Otherwise until no event is due or, with a time budget (the
+          ``drain-outbox`` job), until the budget is spent. This path also
+          dead-letters pending events that have no attempts left, which only
+          happens after ``OUTBOX_MAX_ATTEMPTS`` was lowered.
+
+        An event's outcome is committed on its own, as soon as its handlers
+        finish, so a failure while leasing the next event cannot undo it.
         """
         report = DrainReport()
         if ids is not None and not ids:
             return report
-        if ids is None:
-            with self._tx.as_system() as t:
-                expired = t.repo.expire_outbox_leases(self._clock.now(), self._max_attempts)
-            if expired:
-                report.dead += expired
-                logger.error("outbox_lease_expired_on_last_attempt", extra={"events": expired})
-        limit = len(ids) if ids is not None else self._batch_size
         deadline = time.monotonic() + time_budget_seconds if time_budget_seconds is not None else None
-        while (deadline is not None and time.monotonic() < deadline) or (deadline is None and report.claimed < limit):
-            with self._tx.as_system() as t:
-                events = t.repo.claim_outbox(limit=1, now=self._clock.now(), lease_seconds=self._lease_seconds, ids=ids)
-            if not events:
-                break
+        with self._tx.as_system() as t:
+            self._expire_leases(t.repo, report)
+            if ids is None:
+                self._dead_letter_exhausted(t.repo, report)
+            event = self._claim(t.repo, ids)
+        while event is not None:
             report.claimed += 1
-            self._dispatch(events[0], report)
+            failed = self._run_handlers(event)
+            with self._tx.as_system() as t:
+                self._record_outcome(t.repo, event, failed, report)
+            if (ids is not None and report.claimed >= len(ids)) or (
+                deadline is not None and time.monotonic() >= deadline
+            ):
+                break
+            with self._tx.as_system() as t:
+                event = self._claim(t.repo, ids)
         return report
 
-    def _dispatch(self, event: StoredEvent, report: DrainReport) -> None:
+    def _claim(self, store: KernelStore, ids: Sequence[UUID] | None) -> StoredEvent | None:
+        events = store.claim_outbox(
+            limit=1,
+            now=self._clock.now(),
+            lease_seconds=self._lease_seconds,
+            max_attempts=self._max_attempts,
+            ids=ids,
+        )
+        return events[0] if events else None
+
+    def _dead_letter_exhausted(self, store: KernelStore, report: DrainReport) -> None:
+        dead = store.dead_letter_exhausted_outbox(self._max_attempts, _EXPIRED_BATCH)
+        if dead:
+            report.dead += dead
+            logger.error("outbox_events_exhausted", extra={"events": dead, "max_attempts": self._max_attempts})
+
+    def _expire_leases(self, store: KernelStore, report: DrainReport) -> None:
+        for event_id, attempt in store.expired_outbox_leases(self._clock.now(), _EXPIRED_BATCH):
+            logger.warning("outbox_lease_expired", extra={"event_id": str(event_id), "attempt": attempt})
+            self._fail(store, event_id, attempt, _LEASE_EXPIRED, report)
+
+    def _run_handlers(self, event: StoredEvent) -> list[str]:
+        """Run every handler for the event; return the names of those that failed."""
         failed: list[str] = []
         for name, handler in self._handlers.for_type(event.event_type):
             try:
@@ -122,29 +153,34 @@ class OutboxDispatcher:
                     extra={"event_id": str(event.id), "event_type": event.event_type, "handler": name},
                 )
                 failed.append(name)
+        return failed
 
-        with self._tx.as_system() as t:
-            if not failed:
-                if t.repo.complete_outbox(event.id, event.attempts, self._clock.now()):
-                    report.processed += 1
-                else:
-                    report.superseded += 1
-                return
-            error = "handlers failed: " + ", ".join(failed)
-            report.failures.append(f"{event.event_type}:{event.id}")
-            if event.attempts >= self._max_attempts:
-                if not t.repo.fail_outbox(event.id, event.attempts, error, retry_at=None):
-                    report.superseded += 1
-                    return
-                report.dead += 1
-                logger.error("outbox_event_dead", extra={"event_id": str(event.id), "event_type": event.event_type})
+    def _record_outcome(self, store: KernelStore, event: StoredEvent, failed: list[str], report: DrainReport) -> None:
+        if not failed:
+            if store.complete_outbox(event.id, event.attempts, self._clock.now()):
+                report.processed += 1
             else:
-                delay = min(2**event.attempts, _MAX_BACKOFF_SECONDS)
-                retry_at = self._clock.now() + timedelta(seconds=delay)
-                if not t.repo.fail_outbox(event.id, event.attempts, error, retry_at=retry_at):
-                    report.superseded += 1
-                    return
-                report.retried += 1
+                report.superseded += 1
+            return
+        if self._fail(store, event.id, event.attempts, "handlers failed: " + ", ".join(failed), report):
+            report.failures.append(f"{event.event_type}:{event.id}")
+
+    def _fail(self, store: KernelStore, event_id: UUID, attempt: int, error: str, report: DrainReport) -> bool:
+        """Record a failed attempt: a retry after backoff, or ``dead`` after the last attempt.
+
+        Returns False if the lease no longer holds the event, so nothing was recorded.
+        """
+        last = attempt >= self._max_attempts
+        retry_at = None if last else self._clock.now() + timedelta(seconds=min(2**attempt, _MAX_BACKOFF_SECONDS))
+        if not store.fail_outbox(event_id, attempt, error, retry_at=retry_at):
+            report.superseded += 1
+            return False
+        if last:
+            report.dead += 1
+            logger.error("outbox_event_dead", extra={"event_id": str(event_id), "attempts": attempt})
+        else:
+            report.retried += 1
+        return True
 
 
 def prune_in_batches(delete_batch: Callable[[], int], batch_size: int, time_budget_seconds: float) -> int:

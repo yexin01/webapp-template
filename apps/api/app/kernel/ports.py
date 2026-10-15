@@ -96,15 +96,22 @@ class KernelStore(Protocol):
         ...
 
     def claim_outbox(
-        self, *, limit: int, now: datetime, lease_seconds: int, ids: Sequence[UUID] | None
-    ) -> list[StoredEvent]: ...
+        self, *, limit: int, now: datetime, lease_seconds: int, max_attempts: int, ids: Sequence[UUID] | None
+    ) -> list[StoredEvent]:
+        """Lease up to ``limit`` pending, due events that have attempts left."""
+        ...
+
     def complete_outbox(self, event_id: UUID, attempt: int, processed_at: datetime) -> bool:
         """Mark processed if this lease (``attempt``) still holds the event."""
         ...
 
     def fail_outbox(self, event_id: UUID, attempt: int, error: str, retry_at: datetime | None) -> bool: ...
-    def expire_outbox_leases(self, now: datetime, max_attempts: int) -> int:
-        """Dead-letter events whose lease expired on their last allowed attempt."""
+    def dead_letter_exhausted_outbox(self, max_attempts: int, limit: int) -> int:
+        """Mark up to ``limit`` pending events that have no attempts left as dead; return how many."""
+        ...
+
+    def expired_outbox_leases(self, now: datetime, limit: int) -> list[tuple[UUID, int]]:
+        """Up to ``limit`` leased events whose lease ran out, as (ID, attempt), locked until the transaction ends."""
         ...
 
     def outbox_counts(self) -> Mapping[str, int]: ...
