@@ -7,10 +7,14 @@ import { CheckoutConfirmation } from "./checkout-confirmation";
 
 const api = vi.hoisted(() => ({ billingStatus: vi.fn() }));
 const auth = vi.hoisted(() => ({ isLoaded: true, userId: "user_1" as string | undefined }));
-// A new client once the user arrives, as useApi does when Clerk finishes loading.
-const clients = vi.hoisted(() => ({ pending: {}, loaded: {} }));
+// One client per signed-in user, and a new one once the user arrives, as useApi does.
+const clients = vi.hoisted(() => new Map<string, object>());
 vi.mock("@/lib/api/use-api", () => ({
-  useApi: () => Object.assign(auth.isLoaded ? clients.loaded : clients.pending, api),
+  useApi: () => {
+    const user = auth.isLoaded ? (auth.userId ?? "signed-out") : "pending";
+    if (!clients.has(user)) clients.set(user, {});
+    return Object.assign(clients.get(user) ?? {}, api);
+  },
 }));
 vi.mock("@clerk/nextjs", () => ({ useAuth: () => auth }));
 
@@ -107,6 +111,52 @@ describe("checkout confirmation", () => {
     const calls = api.billingStatus.mock.calls.length;
     await advance(60_000);
     expect(api.billingStatus).toHaveBeenCalledTimes(calls);
+  });
+
+  it("shows nothing of the previous user's confirmation after a Clerk account switch", async () => {
+    // User A's payment is confirmed; user B is on the Free plan.
+    api.billingStatus.mockImplementation(async () =>
+      auth.userId === "user_a" ? { plan: "pro", state: "active" } : free,
+    );
+    auth.userId = "user_a";
+    const { rerender } = render(<CheckoutConfirmation />);
+    await advance(0);
+    expect(screen.getByText(/You are now on Pro/)).toBeInTheDocument();
+
+    // Another account in the same browser; nothing remounts the page.
+    auth.userId = "user_b";
+    rerender(<CheckoutConfirmation />);
+    expect(screen.queryByText(/You are now on Pro/)).toBeNull();
+    expect(screen.getByText(/Waiting for payment confirmation/)).toBeInTheDocument();
+    await advance(1500 * 2);
+    expect(screen.queryByText(/You are now on Pro/)).toBeNull();
+  });
+
+  it("gives up on time, with a reload, when Clerk never loads", async () => {
+    // clerk-js was blocked or its Frontend API is down: Clerk never reports loaded.
+    auth.isLoaded = false;
+    auth.userId = undefined;
+    render(<CheckoutConfirmation />);
+    await advance(29_000);
+    expect(screen.getByText(/Waiting for payment confirmation/)).toBeInTheDocument();
+    await advance(1_000);
+    expect(screen.getByText(/do not need to pay again/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reload" })).toBeInTheDocument();
+    expect(api.billingStatus).not.toHaveBeenCalled();
+  });
+
+  it("measures its budget from page load when Clerk loads late", async () => {
+    api.billingStatus.mockResolvedValue(free);
+    auth.isLoaded = false;
+    auth.userId = undefined;
+    const { rerender } = render(<CheckoutConfirmation />);
+    await advance(20_000);
+    auth.isLoaded = true;
+    auth.userId = "user_1";
+    rerender(<CheckoutConfirmation />);
+    await advance(10_000);
+    expect(screen.getByText(/do not need to pay again/)).toBeInTheDocument();
+    expect(api.billingStatus).toHaveBeenCalled();
   });
 
   it("gives up on time while a request hangs, and still confirms a late answer", async () => {

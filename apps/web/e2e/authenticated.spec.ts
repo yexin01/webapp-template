@@ -5,7 +5,8 @@ import { expect, test } from "@playwright/test";
 /**
  * Sandbox end-to-end tests: real Clerk development instance, real (test-mode)
  * Stripe checkout initiation. Skipped unless these are set:
- *   E2E_CLERK_USER_EMAIL, E2E_CLERK_USER_PASSWORD (a dedicated test user)
+ *   E2E_SANDBOX=1 (without it, the web app runs with a placeholder Clerk key),
+ *   E2E_CLERK_USER_EMAIL, E2E_CLERK_USER_PASSWORD (a dedicated test user),
  *   plus the normal sandbox keys in the root .env.
  * The integrations test also needs APP_ENV=local, or the test user's Clerk ID
  * in DIAGNOSTICS_OPERATOR_IDS.
@@ -16,8 +17,8 @@ const password = process.env.E2E_CLERK_USER_PASSWORD;
 
 test.describe("signed-in flows (sandbox)", () => {
   test.skip(
-    !email || !password,
-    "Set E2E_CLERK_USER_EMAIL and E2E_CLERK_USER_PASSWORD to run sandbox flows.",
+    !process.env.E2E_SANDBOX || !email || !password,
+    "Set E2E_SANDBOX=1, E2E_CLERK_USER_EMAIL, and E2E_CLERK_USER_PASSWORD to run sandbox flows.",
   );
 
   test.beforeAll(async () => {
@@ -39,16 +40,19 @@ test.describe("signed-in flows (sandbox)", () => {
     const name = `e2e ${Date.now()}`;
     await page.getByLabel("New project name").fill(name);
     await page.getByRole("button", { name: "Create" }).click();
-    await expect(page.getByText(name)).toBeVisible();
+    // The list item, not the status message that announces it.
+    const item = page.getByRole("listitem").filter({ hasText: name });
+    await expect(item).toBeVisible();
     page.once("dialog", (dialog) => void dialog.accept());
     await page.getByRole("button", { name: `Delete ${name}` }).click();
-    await expect(page.getByText(name)).toHaveCount(0);
+    await expect(item).toHaveCount(0);
   });
 
   test("validation errors are announced", async ({ page }) => {
     await page.goto("/dashboard");
     await page.getByRole("button", { name: "Create" }).click();
-    await expect(page.getByRole("alert")).toContainText("Enter a project name");
+    // Next.js's route announcer is also role="alert", so the alert is picked by its message.
+    await expect(page.getByRole("alert").filter({ hasText: "Enter a project name" })).toBeVisible();
   });
 
   test("free user sees the paywall on the Pro feature", async ({ page }) => {
@@ -74,7 +78,8 @@ test.describe("signed-in flows (sandbox)", () => {
   test("integrations page runs the database check and is accessible", async ({ page }) => {
     await page.goto("/integrations");
     await expect(page.getByRole("heading", { name: "Integrations", level: 1 })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Clerk", level: 3 })).toBeVisible();
+    // Exact: a role name otherwise matches as a substring, and "Clerk session" is also a card.
+    await expect(page.getByRole("heading", { name: "Clerk", level: 3, exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Run check for PostgreSQL" }).click();
     const card = page
       .getByRole("listitem")

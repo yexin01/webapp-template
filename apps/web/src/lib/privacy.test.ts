@@ -1,5 +1,13 @@
 import { filterProperties } from "./analytics";
-import { redactDeep, redactText, scrubBreadcrumb, scrubEvent, stripQuery } from "./redact";
+import {
+  redactDeep,
+  redactText,
+  scrubBreadcrumb,
+  scrubEvent,
+  scrubSpan,
+  SENSITIVE_QUERY_PARAMETERS,
+  stripQuery,
+} from "./redact";
 
 describe("analytics allowlist", () => {
   it("drops properties that are not allowlisted for the event", () => {
@@ -23,6 +31,107 @@ describe("redaction", () => {
   it("removes token query parameters and strips URLs", () => {
     expect(redactText("/x?token=abc123&ok=1")).toBe("/x?token=[REDACTED]&ok=1");
     expect(stripQuery("https://a.example/p?session_id=1#frag")).toBe("https://a.example/p");
+  });
+
+  it.each([...SENSITIVE_QUERY_PARAMETERS, "__clerk_unknown_future_param"])(
+    "removes the value of the %s query parameter",
+    (name) => {
+      expect(redactText(`/p?a=1&${name}=CANARY&b=2`)).toBe(`/p?a=1&${name}=[REDACTED]&b=2`);
+    },
+  );
+
+  it.each([
+    ["after a hyphen", "id-", "id-"],
+    ["after a dot", "ref.abc.", "ref.abc."],
+    ["from the first eyJ of a longer run", "abc-eyJxxxx-", "abc-"],
+  ])("removes a JWT %s", (_label, prefix, kept) => {
+    const jwt = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.c2lnbmF0dXJl";
+    expect(redactText(`${prefix}${jwt} end`)).toBe(`${kept}[REDACTED] end`);
+  });
+
+  it("removes an email address whose local part runs on past 64 characters", () => {
+    const text = `x ${"a".repeat(100)}.jane.doe@example.com y`;
+    expect(redactText(text)).not.toMatch(/jane|@example\.com/);
+  });
+});
+
+describe("redaction cost on long strings (OBS-06)", () => {
+  const MB = 1_000_000;
+  const SECRET = "sk_" + "live_CANARY1234567890";
+  const timed = <T>(run: () => T): [T, number] => {
+    const started = performance.now();
+    const result = run();
+    return [result, performance.now() - started];
+  };
+
+  it.each([
+    ["a run of email characters", "a".repeat(50_000)],
+    ["a run of JWT-like segments", "eyJ-".repeat(12_500)],
+    ["a long local part before a dotted domain", `${"a".repeat(25_000)}@${"b.".repeat(12_500)}`],
+  ])("takes linear time on %s, even without the length cap", (_label, text) => {
+    const [, ms] = timed(() => redactText(text, Infinity));
+    expect(ms).toBeLessThan(500);
+  });
+
+  it("keeps the first 4096 characters, without a token cut in half", () => {
+    const filler = "word ".repeat(819); // 4095 characters
+    const redacted = redactText(`${filler}x${SECRET} ${SECRET}`);
+    expect(redacted).toBe(`${filler}[truncated]`);
+    expect(redactText(`${filler}x`)).toBe(`${filler}x`);
+  });
+
+  it("strips URLs with 2 MB of separators in well under 100 ms", () => {
+    const base = "https://app.example.com/billing";
+    const urls = ["#", "?", "?#"].map(
+      (separator) => `${base}${separator.repeat((2 * MB) / separator.length)}`,
+    );
+    const [stripped, ms] = timed(() => urls.map(stripQuery));
+    expect(ms).toBeLessThan(100);
+    expect(stripped).toEqual([base, base, base]);
+  });
+
+  it("scrubs a navigation breadcrumb with a 2 MB fragment in well under 100 ms", () => {
+    const breadcrumb = {
+      category: "navigation",
+      data: { from: `/dashboard#${"a".repeat(2 * MB)}`, to: "/b" },
+    };
+    const [scrubbed, ms] = timed(() => scrubBreadcrumb(breadcrumb));
+    expect(ms).toBeLessThan(100);
+    expect(scrubbed?.data).toEqual({ from: "/dashboard", to: "/b" });
+  });
+
+  it("scrubs a click breadcrumb with a 2 MB attribute value in well under 100 ms", () => {
+    const message = `li.list-item > button.button[aria-label="${'Jane"]['.repeat((2 * MB) / 8)}"][type="button"]`;
+    const [scrubbed, ms] = timed(() => scrubBreadcrumb({ category: "ui.click", message }));
+    expect(ms).toBeLessThan(100);
+    expect(scrubbed?.message).toBe("li.list-item > button.button");
+  });
+
+  it("scrubs a 1 MB console message and argument in well under 100 ms", () => {
+    const line = `Failed to proxy http://127.0.0.1:8000/api/v1/x?token=${"a".repeat(MB)}`;
+    const breadcrumb = {
+      category: "console",
+      message: line,
+      data: { arguments: [line, `${SECRET} ${"b".repeat(MB)}`] },
+    };
+    const [scrubbed, ms] = timed(() => scrubBreadcrumb(breadcrumb));
+    expect(ms).toBeLessThan(100);
+    expect(scrubbed?.message).toBe("Failed to proxy http://127.0.0.1:8000/api/v1/x?[truncated]");
+    expect(JSON.stringify(scrubbed)).not.toContain(SECRET);
+  });
+
+  it("scrubs an event with 1 MB exception, extra, and page URL values in well under 100 ms", () => {
+    const event = {
+      type: undefined,
+      exception: { values: [{ type: "Error", value: "eyJ-".repeat(MB / 4) }] },
+      extra: { blob: `${SECRET} ${"a".repeat(MB)}` },
+      request: { url: `https://app.example.com/billing#${"#".repeat(2 * MB)}` },
+    };
+    const [scrubbed, ms] = timed(() => scrubEvent(event));
+    expect(ms).toBeLessThan(100);
+    expect(scrubbed.exception?.values?.[0]?.value?.length).toBeLessThanOrEqual(4096 + "[truncated]".length);
+    expect(scrubbed.extra).toEqual({ blob: "[REDACTED] [truncated]" });
+    expect(scrubbed.request?.url).toBe("https://app.example.com/billing");
   });
 });
 
@@ -119,5 +228,39 @@ describe("deep redaction for error reports", () => {
     expect(Object.keys(redactedWide)).toHaveLength(1_001);
     expect(redactedGrid).toContain("[Truncated]");
     expect(redactDeep({ [`${SECRET}`]: 1 })).toEqual({ "[REDACTED]": 1 });
+  });
+});
+
+describe("span scrubbing", () => {
+  const span = (attributes: Record<string, unknown>) => ({
+    trace_id: "0123456789abcdef0123456789abcdef",
+    span_id: "0123456789abcdef",
+    start_timestamp: 1,
+    status: "ok" as const,
+    is_segment: true,
+    name: "GET /sign-up?__clerk_ticket=CANARY",
+    attributes,
+  });
+
+  it("drops what it cannot read rather than letting the SDK send the span unmodified", () => {
+    const unreadable = Object.defineProperty({ "http.target": "/sign-up?__clerk_ticket=CANARY" }, "boom", {
+      enumerable: true,
+      get() {
+        throw new Error("getter failed");
+      },
+    });
+    const scrubbed = scrubSpan(span(unreadable));
+    expect(JSON.stringify(scrubbed)).not.toContain("CANARY");
+    expect(scrubbed).toMatchObject({ name: "[Unserializable]", attributes: {}, links: [] });
+  });
+
+  it("leaves text that is not a path or URL alone, apart from redaction", () => {
+    const scrubbed = scrubSpan(span({ "db.system": "postgresql", note: "Is it done? yes", n: 3, ok: true }));
+    expect(scrubbed.attributes).toEqual({
+      "db.system": "postgresql",
+      note: "Is it done? yes",
+      n: 3,
+      ok: true,
+    });
   });
 });

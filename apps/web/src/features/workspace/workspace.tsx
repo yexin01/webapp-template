@@ -8,7 +8,7 @@ import { LlmCheck } from "@/features/llm";
 import { ProjectsPanel } from "@/features/projects";
 import { useApi } from "@/lib/api/use-api";
 import { useResource } from "@/lib/use-resource";
-import { LoadingState } from "@/ui/state-views";
+import { ErrorState, LoadingState } from "@/ui/state-views";
 
 /**
  * The active tenant follows Clerk's organization switcher. The role shown
@@ -26,7 +26,14 @@ export function Workspace() {
   // A failed entitlement lookup is shown as Free; the server still decides access.
   const plan = entitlement.loading ? null : (entitlement.data?.plan ?? "free");
 
-  if (!isLoaded) return <LoadingState label="Loading workspace…" />;
+  if (!isLoaded) {
+    // Until Clerk loads, the only resource error is that it never did.
+    return entitlement.error === undefined ? (
+      <LoadingState label="Loading workspace…" />
+    ) : (
+      <ErrorState error={entitlement.error} onRetry={entitlement.reload} />
+    );
+  }
 
   const canDelete = orgId === null || membership?.role === "org:admin";
 

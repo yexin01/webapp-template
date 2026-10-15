@@ -1,7 +1,7 @@
 import { OrganizationSwitcher, SignInButton, SignUpButton, UserButton } from "@clerk/nextjs";
 import Link from "next/link";
 
-import { SignedInOnly, SignedOutOnly } from "./signed-in-state";
+import { SignedInOnly, SignedOutOnly, SignInUnavailable } from "./signed-in-state";
 
 export function SiteHeader() {
   return (
@@ -46,6 +46,7 @@ export function SiteHeader() {
               </button>
             </SignUpButton>
           </SignedOutOnly>
+          <SignInUnavailable />
         </div>
       </nav>
     </header>

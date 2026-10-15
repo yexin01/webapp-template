@@ -11,7 +11,7 @@ import {
   type Schemas,
 } from "./client";
 import { PROXY_TIMEOUT_MS } from "./deadlines";
-import { ApiError, presentError } from "./errors";
+import { ApiError, isInputError, presentError } from "./errors";
 
 /**
  * jsdom has no fetch, so tests use Node's Request, which rejects the relative
@@ -166,6 +166,22 @@ describe("api client", () => {
       message: "Budget used up.",
       action: "none",
     });
+  });
+
+  it.each([
+    [422, "VALIDATION_FAILED", "Check your input", "none"],
+    // Not about what was typed: the state changed (BILL-07), or the request itself was refused.
+    [409, "CONFLICT", "Could not complete this", "retry"],
+    [400, "INVALID_REQUEST", "Request not accepted", "retry"],
+  ] as const)("presents %i %s as %s", (status, code, title, action) => {
+    const message = "You already have Pro. Manage your plan from the billing page.";
+    expect(presentError(new ApiError(status, code, message, null))).toEqual({ title, message, action });
+  });
+
+  it("still lets forms show every rejected value next to the field", () => {
+    for (const code of ["VALIDATION_FAILED", "INVALID_REQUEST", "CONFLICT"]) {
+      expect(isInputError(new ApiError(400, code, "Name is already taken.", null))).toBe(true);
+    }
   });
 
   it("re-throws an aborted request untouched", async () => {

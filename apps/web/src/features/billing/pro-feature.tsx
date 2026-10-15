@@ -18,13 +18,12 @@ export function ProFeature() {
   const fetchInsight = useCallback(() => api.proInsight(orgId), [api, orgId]);
   const { data, error, reload } = useResource(fetchInsight, `pro:${orgId ?? "personal"}`);
 
-  if (!isLoaded) return <LoadingState />;
-
   if (error instanceof ApiError && error.code === "ENTITLEMENT_REQUIRED") {
     return <Paywall feature="pro_insight" inOrganization={orgId !== null} />;
   }
+  // Checked before isLoaded: until Clerk loads, the only error is that it never did.
   if (error) return <ErrorState error={error} onRetry={reload} />;
-  if (!data) return <LoadingState />;
+  if (!isLoaded || !data) return <LoadingState />;
   return (
     <section className="card" aria-labelledby="pro-title">
       <h1 id="pro-title">Pro insight</h1>

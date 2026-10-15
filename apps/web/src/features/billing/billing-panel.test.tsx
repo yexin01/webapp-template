@@ -2,6 +2,7 @@ import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import type { Schemas } from "@/lib/api/client";
+import { ApiError } from "@/lib/api/errors";
 
 import { BillingPanel } from "./billing-panel";
 
@@ -20,6 +21,14 @@ const free: Schemas["BillingStatus"] = {
   state: "none",
   plan_key: null,
   current_period_end: null,
+  cancels_at: null,
+  available_plans: ["pro_monthly"],
+};
+const pro: Schemas["BillingStatus"] = {
+  plan: "pro",
+  state: "active",
+  plan_key: "pro_monthly",
+  current_period_end: "2026-11-15T00:00:00Z",
   cancels_at: null,
   available_plans: ["pro_monthly"],
 };
@@ -70,8 +79,47 @@ describe("billing panel", () => {
 
     pageShow(false);
     expect(screen.getByRole("button", { name: "Redirecting…" })).toBeDisabled();
-    // The visitor presses Back and the page comes back from the cache.
+    // The visitor presses Back and the page comes back from the cache, with the status fetched again.
     pageShow(true);
-    expect(screen.getByRole("button", { name: "Pro — monthly" })).toBeEnabled();
+    expect(await screen.findByRole("button", { name: "Pro — monthly" })).toBeEnabled();
+    expect(api.billingStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it("shows the current status, not the one from before checkout, when restored from the back/forward cache", async () => {
+    api.billingStatus.mockResolvedValueOnce(free).mockResolvedValue(pro);
+    api.startCheckout.mockResolvedValue({ url: "https://checkout.stripe.com/c/pay/cs_test_1" });
+    vi.spyOn(window, "location", "get").mockReturnValue({
+      ...window.location,
+      assign: vi.fn(),
+      origin: window.location.origin,
+    });
+    render(<BillingPanel />);
+    await userEvent.click(await screen.findByRole("button", { name: "Pro — monthly" }));
+
+    pageShow(false);
+    expect(api.billingStatus).toHaveBeenCalledOnce();
+    // The visitor paid on Stripe, then pressed Back instead of following the return link.
+    pageShow(true);
+    expect(screen.queryByRole("button", { name: /Pro — monthly|Redirecting/ })).toBeNull();
+    expect(await screen.findByText(/Your Pro plan renews on/)).toBeInTheDocument();
+    expect(screen.queryByText(/You are on the Free plan/)).toBeNull();
+    expect(api.billingStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it("shows the current plan when checkout is refused because Pro is already active (BILL-07)", async () => {
+    api.billingStatus.mockResolvedValueOnce(free).mockResolvedValue(pro);
+    api.startCheckout.mockRejectedValue(
+      new ApiError(409, "CONFLICT", "You already have Pro. Manage your plan from the billing page.", null),
+    );
+    render(<BillingPanel />);
+    await userEvent.click(await screen.findByRole("button", { name: "Pro — monthly" }));
+
+    // The stale Free view is replaced by the server's current state, with plan management.
+    expect(await screen.findByRole("button", { name: "Manage billing" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Pro — monthly" })).toBeNull();
+    expect(api.billingStatus).toHaveBeenCalledTimes(2);
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent("You already have Pro. Manage your plan from the billing page.");
+    expect(alert).not.toHaveTextContent("Check your input");
   });
 });

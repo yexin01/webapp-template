@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import type { Schemas } from "@/lib/api/client";
@@ -46,6 +46,130 @@ describe("__path__ panel", () => {
     expect(api.create__Entity__).toHaveBeenCalledWith(null, "First");
     expect(await screen.findByText("First")).toBeInTheDocument();
     expect(screen.getByLabelText("Name")).toHaveValue("");
+    expect(screen.getByText("Created “First”.")).toHaveAttribute("role", "status");
+  });
+
+  it("lists an item created while the first page loads only once", async () => {
+    let answer: (page: Schemas["__Entity__Page"]) => void = () => undefined;
+    api.list__Module__.mockReturnValueOnce(new Promise((resolve) => (answer = resolve)));
+    render(<__Module__Panel orgId={null} canDelete />);
+    await userEvent.type(screen.getByLabelText("Name"), "First");
+    await userEvent.click(screen.getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(api.create__Entity__).toHaveBeenCalledOnce());
+    // The list query ran after the insert committed, so the first page has it too.
+    await act(async () => answer({ items: [item, older], next_cursor: null }));
+    expect(screen.getAllByRole("listitem")).toHaveLength(2);
+  });
+
+  it("counts characters as the server does: 120 emoji fit, 121 characters do not", async () => {
+    render(<__Module__Panel orgId={null} canDelete />);
+    const input = await screen.findByLabelText("Name");
+    const fits = "\u{1F600}".repeat(120);
+    await userEvent.click(input);
+    await userEvent.paste(fits);
+    expect(input).toHaveValue(fits);
+    await userEvent.click(screen.getByRole("button", { name: "Create" }));
+    expect(api.create__Entity__).toHaveBeenCalledWith(null, fits);
+    await userEvent.click(input);
+    await userEvent.paste("a".repeat(121));
+    await userEvent.click(screen.getByRole("button", { name: "Create" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("1 to 120 characters");
+    expect(api.create__Entity__).toHaveBeenCalledOnce();
+  });
+
+  it("disables Delete while it runs, and removes an item already deleted elsewhere", async () => {
+    api.list__Module__.mockResolvedValue({ items: [item, older], next_cursor: null });
+    let finish: () => void = () => undefined;
+    api.delete__Entity__
+      .mockReturnValueOnce(new Promise<void>((resolve) => (finish = resolve)))
+      .mockRejectedValueOnce(new ApiError(404, "NOT_FOUND", "Not found.", null));
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<__Module__Panel orgId="org_1" canDelete />);
+    const remove = await screen.findByRole("button", { name: "Delete First" });
+    await userEvent.click(remove);
+    expect(remove).toBeDisabled();
+    await userEvent.click(remove);
+    expect(api.delete__Entity__).toHaveBeenCalledOnce();
+    await act(async () => finish());
+    expect(screen.queryByText("First")).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: "Delete Older" }));
+    expect(await screen.findByText("Nothing here yet")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("keeps keyboard focus and announces each delete", async () => {
+    api.list__Module__.mockResolvedValue({ items: [item, older], next_cursor: null });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<__Module__Panel orgId="org_1" canDelete />);
+    (await screen.findByRole("button", { name: "Delete First" })).focus();
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => expect(screen.queryByText("First")).toBeNull());
+    expect(screen.getByRole("button", { name: "Delete Older" })).toHaveFocus();
+    expect(screen.getByText("Deleted “First”.")).toHaveAttribute("role", "status");
+    await userEvent.keyboard("{Enter}");
+    expect(await screen.findByText("Nothing here yet")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "__Module__" })).toHaveFocus();
+  });
+
+  it("leaves focus where the user moved it while a delete or Load more ran", async () => {
+    let finish: () => void = () => undefined;
+    let answer: (page: Schemas["__Entity__Page"]) => void = () => undefined;
+    api.list__Module__
+      .mockResolvedValueOnce({ items: [item, older], next_cursor: "cursor-1" })
+      .mockReturnValueOnce(new Promise((resolve) => (answer = resolve)));
+    api.delete__Entity__.mockReturnValueOnce(new Promise<void>((resolve) => (finish = resolve)));
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<__Module__Panel orgId="org_1" canDelete />);
+    const input = await screen.findByLabelText("Name");
+    /** The user moves on to the name field and types while the request runs. */
+    const typeAName = async () => {
+      await userEvent.click(input);
+      await userEvent.keyboard("Next");
+      expect(input).toHaveFocus();
+    };
+
+    (await screen.findByRole("button", { name: "Delete First" })).focus();
+    await userEvent.keyboard("{Enter}");
+    await typeAName();
+    await act(async () => finish());
+    expect(screen.queryByText("First")).toBeNull();
+    expect(input).toHaveFocus();
+
+    screen.getByRole("button", { name: "Load more" }).focus();
+    await userEvent.keyboard("{Enter}");
+    await typeAName();
+    const third = { ...item, id: "00000000-0000-4000-8000-000000000003", name: "Third" };
+    await act(async () => answer({ items: [third], next_cursor: null }));
+    expect(screen.getByText("Third")).toBeInTheDocument();
+    expect(input).toHaveFocus();
+  });
+
+  it("keeps keyboard focus when a failed first page is retried and when the last page loads", async () => {
+    api.list__Module__
+      .mockRejectedValueOnce(ApiError.network())
+      .mockResolvedValueOnce({ items: [item], next_cursor: "cursor-1" })
+      .mockResolvedValueOnce({ items: [older], next_cursor: null });
+    render(<__Module__Panel orgId="org_1" canDelete />);
+    (await screen.findByRole("button", { name: "Try again" })).focus();
+    await userEvent.keyboard("{Enter}");
+    expect(await screen.findByText("First")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "__Module__" })).toHaveFocus();
+
+    screen.getByRole("button", { name: "Load more" }).focus();
+    await userEvent.keyboard("{Enter}");
+    expect(await screen.findByText("Older")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Delete Older" })).toHaveFocus();
+  });
+
+  it("shows a name the server rejects next to the field", async () => {
+    api.create__Entity__.mockRejectedValue(new ApiError(400, "INVALID_REQUEST", "Name must not contain NUL characters.", null));
+    render(<__Module__Panel orgId={null} canDelete />);
+    await userEvent.type(await screen.findByLabelText("Name"), "First");
+    await userEvent.click(screen.getByRole("button", { name: "Create" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Name must not contain NUL characters.");
+    expect(screen.getByLabelText("Name")).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByLabelText("Name")).toHaveValue("First");
   });
 
   it("rejects an empty name without calling the API", async () => {
@@ -75,11 +199,31 @@ describe("__path__ panel", () => {
     expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
   });
 
+  it("starts over from the first page when the server rejects the Load more cursor", async () => {
+    api.list__Module__
+      .mockResolvedValueOnce({ items: [item], next_cursor: "cursor-1" })
+      .mockRejectedValueOnce(new ApiError(400, "INVALID_REQUEST", "The pagination cursor is invalid.", null))
+      .mockResolvedValueOnce({ items: [item, older], next_cursor: null });
+    render(<__Module__Panel orgId="org_1" canDelete={false} />);
+    await userEvent.click(await screen.findByRole("button", { name: "Load more" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Request not accepted");
+    // Sending the same cursor again would fail the same way, so Load more is gone until the list starts over.
+    expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
+    expect(within(alert).getByRole("button", { name: "Try again" })).toHaveFocus();
+    await userEvent.click(within(alert).getByRole("button", { name: "Try again" }));
+    expect(await screen.findByText("Older")).toBeInTheDocument();
+    expect(api.list__Module__).toHaveBeenLastCalledWith("org_1");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("deletes only after confirmation", async () => {
     api.list__Module__.mockResolvedValue({ items: [item], next_cursor: null });
     const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
     render(<__Module__Panel orgId="org_1" canDelete />);
     const remove = await screen.findByRole("button", { name: "Delete First" });
+    // Error reports copy element attributes into click breadcrumbs, so the name stays out of them.
+    expect([...remove.attributes].map((attribute) => attribute.value).join(" ")).not.toContain("First");
     await userEvent.click(remove);
     expect(confirm).toHaveBeenCalledWith(expect.stringContaining("First"));
     expect(api.delete__Entity__).not.toHaveBeenCalled();

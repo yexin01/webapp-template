@@ -34,6 +34,10 @@ const serverOnlyModules = {
   group: ["**/env.server", "**/env.server.*", "**/env-files", "**/env-files.*"],
   message: serverOnlyMessage,
 };
+// createRequire() builds a require function that the require() selectors below cannot see.
+const moduleLoaderMessage =
+  "Load modules with import; createRequire would bypass the import guards (ENV-03).";
+const moduleLoaders = ["module", "node:module"].map((name) => ({ name, message: moduleLoaderMessage }));
 
 /** The banned package names as one esquery regular expression, for import() and require(). */
 function packagePattern() {
@@ -72,12 +76,26 @@ const serverOnlyLoads = loadsOf(
   "/(?:^|\\x2F)env(?:\\.server|-files)(?:\\.[cm]?[jt]sx?)?$/",
   serverOnlyMessage,
 );
+// The module loader (moduleLoaders), loaded dynamically.
+const moduleLoaderLoads = loadsOf("/^(?:node:)?module$/", moduleLoaderMessage);
 
 // ENV-07: application code may read only NEXT_PUBLIC_* (inlined by Next.js at
-// build time) and NODE_ENV, and only as `process.env.NAME`. Every other way to
-// reach the environment is rejected: it could read a server-only value, or
-// read a public one in a form the build cannot inline.
+// build time) and NODE_ENV, and only as `process.env.NAME`. The other ways to
+// reach the environment written out in source are rejected below: they could
+// read a server-only value, or read a public one in a form the build cannot
+// inline. Lint cannot follow a key computed at run time; the bundle scan
+// (scripts/check-bundle-secrets.mjs) remains the backstop.
 const envMessage = "Only NEXT_PUBLIC_* variables may be read in application code (ENV-07).";
+/** The names of the global object, through which process can be reached. */
+const globalObjects = "/^(?:globalThis|global|window|self)$/";
+/**
+ * Attribute selectors for a string literal, or a template literal without substitutions, whose
+ * text is `name`, on the node itself or on its `field` (for example "property.").
+ */
+const stringNamed = (name, field = "") => [
+  `[${field}value='${name}']`,
+  `[${field}type='TemplateLiteral'][${field}expressions.length=0][${field}quasis.0.value.cooked='${name}']`,
+];
 const environmentReads = [
   {
     selector:
@@ -95,9 +113,78 @@ const environmentReads = [
   },
   { selector: "MemberExpression[object.name='process'][computed=true]", message: envMessage },
   {
-    selector: "MemberExpression[object.name=/^(?:globalThis|global|window|self)$/][property.name='process']",
+    selector: `MemberExpression[object.name=${globalObjects}][property.name='process']`,
     message: envMessage,
   },
+  {
+    // globalThis["process"], window[key]: a computed key can name process.
+    selector: `MemberExpression[object.name=${globalObjects}][computed=true]`,
+    message: `${envMessage} Write globalThis.name, not a computed key.`,
+  },
+  {
+    // globalThis.globalThis, window.self: the global object reached through itself.
+    selector: `MemberExpression[computed=false][object.name=${globalObjects}][property.name=${globalObjects}]`,
+    message: `${envMessage} Name the global object directly, not through itself.`,
+  },
+  {
+    selector: `:matches(VariableDeclarator[init.name=${globalObjects}], AssignmentExpression[right.name=${globalObjects}]) > ObjectPattern > Property:matches([key.name='process'], [key.value='process'])`,
+    message: `${envMessage} Do not destructure process from the global object.`,
+  },
+  // Reflect.get(window, "process"), Reflect.get(self, `process`), and the other Reflect lookups.
+  ...stringNamed("process").map((key) => ({
+    selector: `CallExpression[callee.object.name='Reflect'] > .arguments${key}`,
+    message: envMessage,
+  })),
+];
+
+// The global object itself anywhere but in `globalThis.name`: aliased (`const g = globalThis`),
+// destructured, or passed (`Reflect.get(globalThis, "process")`). That is globalThis, Node's
+// global, or self, the global object of the edge runtime, whose process.env holds the server's
+// variables. Not window: it exists only in the browser, where process.env has only public values.
+// Type positions (`typeof globalThis`, `declare global`) and `typeof self` checks expose nothing.
+const globalObjectReferences = [
+  {
+    selector: [
+      "Identifier[name=/^(?:globalThis|global|self)$/]",
+      ":not(MemberExpression > Identifier.object)",
+      ":not(MemberExpression[computed=false] > Identifier.property)",
+      ":not(Property[computed=false] > Identifier.key)",
+      ":not(TSTypeQuery > Identifier.exprName)",
+      ":not(TSQualifiedName > Identifier.left)",
+      ":not(TSModuleDeclaration > Identifier.id)",
+      ":not(UnaryExpression[operator='typeof'] > Identifier.argument)",
+    ].join(""),
+    message: `${envMessage} Use the global object only as globalThis.name; do not alias, destructure, or pass it.`,
+  },
+];
+
+// Function runs code in strings, which no rule here can read. no-new-func sees only
+// `Function(…)` and `new Function(…)`, not Function by other names: aliased or passed on
+// (no-restricted-globals below), through the global object, or as a function's constructor
+// (`(() => 0).constructor`). Reading a constructor's name, comparing constructors, and a
+// class constructing its own kind (`new this.constructor()`) expose nothing.
+const functionMessage = "Do not use Function or a function's constructor: they run code in strings (ENV-07).";
+const functionReferences = [
+  {
+    selector: `MemberExpression[object.name=${globalObjects}][property.name='Function']`,
+    message: functionMessage,
+  },
+  {
+    selector: [
+      `MemberExpression:matches(${[
+        "[computed=false][property.name='constructor']",
+        ...stringNamed("constructor", "property.").map((key) => `[computed=true]${key}`),
+      ].join(", ")})`,
+      ":not([object.type='ThisExpression'])",
+      ":not(MemberExpression[computed=false][property.name='name'] > MemberExpression.object)",
+      ":not(BinaryExpression > MemberExpression)",
+    ].join(""),
+    message: functionMessage,
+  },
+  ...stringNamed("constructor").map((key) => ({
+    selector: `CallExpression[callee.object.name='Reflect'] > .arguments${key}`,
+    message: functionMessage,
+  })),
 ];
 
 // `process` itself anywhere but in `process.env.NAME` (checked above): aliased or destructured
@@ -119,6 +206,7 @@ const processReferences = [
 export const serverFiles = [
   "next.config.ts",
   "playwright.config.ts",
+  "eslint.*.mjs",
   "src/instrumentation.ts",
   "src/sentry.*.ts",
   "e2e/**",
@@ -157,21 +245,35 @@ export function guardConfigs(root) {
       rules: {
         "no-restricted-imports": [
           "error",
-          { paths: processModules, patterns: [...bannedPackages, serverOnlyModules] },
+          { paths: [...processModules, ...moduleLoaders], patterns: [...bannedPackages, serverOnlyModules] },
         ],
         "no-restricted-syntax": [
           "error",
           ...environmentReads,
           ...processReferences,
+          ...globalObjectReferences,
+          ...functionReferences,
           ...serverOnlyLoads,
+          ...moduleLoaderLoads,
           ...dynamicImports,
         ],
+        // Code in strings is invisible to every rule above.
+        "no-eval": "error",
+        "no-implied-eval": "error",
+        "no-new-func": "error",
+        "no-restricted-globals": ["error", { name: "Function", message: functionMessage }],
       },
     },
     {
       files: testFiles,
       rules: {
-        "no-restricted-syntax": ["error", ...environmentReads, ...serverOnlyLoads, ...dynamicImports],
+        "no-restricted-syntax": [
+          "error",
+          ...environmentReads,
+          ...serverOnlyLoads,
+          ...moduleLoaderLoads,
+          ...dynamicImports,
+        ],
       },
     },
     {

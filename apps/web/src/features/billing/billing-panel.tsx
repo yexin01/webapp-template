@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { track } from "@/lib/analytics";
 import { isAllowedRedirect, type Schemas } from "@/lib/api/client";
+import { ApiError } from "@/lib/api/errors";
 import { useApi } from "@/lib/api/use-api";
 import { useResource } from "@/lib/use-resource";
 import { ErrorState, LoadingState } from "@/ui/state-views";
@@ -51,14 +52,18 @@ export function BillingPanel() {
   const { data: status, error, reload } = useResource(fetchStatus, "billing-status");
 
   // Back from Stripe, the browser may restore this page from its back/forward
-  // cache exactly as it was left: mid-redirect, with every button disabled.
+  // cache exactly as it was left: mid-redirect, with every button disabled, and
+  // with the status from before checkout or the portal changed it. The status
+  // is fetched again, and shown as loading until it arrives (BILL-20).
   useEffect(() => {
     const onPageShow = (event: PageTransitionEvent) => {
-      if (event.persisted) setPending(null);
+      if (!event.persisted) return;
+      setPending(null);
+      reload();
     };
     window.addEventListener("pageshow", onPageShow);
     return () => window.removeEventListener("pageshow", onPageShow);
-  }, []);
+  }, [reload]);
 
   async function go(action: "portal" | PlanKey) {
     setPending(action);
@@ -77,6 +82,8 @@ export function BillingPanel() {
     } catch (e) {
       setActionError(e);
       setPending(null);
+      // The plan changed since this page loaded (BILL-07): show the current one and its plan management.
+      if (e instanceof ApiError && e.code === "CONFLICT") reload();
     }
   }
 

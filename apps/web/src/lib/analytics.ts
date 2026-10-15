@@ -3,7 +3,7 @@
 import posthog, { type CaptureResult, type Properties } from "posthog-js";
 
 import { publicEnv } from "./env";
-import { stripQuery } from "./redact";
+import { SENSITIVE_QUERY_PARAMETERS, stripQuery } from "./redact";
 
 /**
  * Product analytics with an explicit allowlist (OBS-03). Events and
@@ -94,6 +94,42 @@ export function scrubEvent(event: CaptureResult): CaptureResult {
   };
 }
 
+/** A copy of a stored `{ r, u }` record with only the origin and path of its referrer `r`, if that differs. */
+function withPlainReferrer(info: unknown): Record<string, unknown> | undefined {
+  if (!isPlainObject(info) || typeof info.r !== "string" || stripQuery(info.r) === info.r) return undefined;
+  return { ...info, r: stripQuery(info.r) };
+}
+
+/**
+ * The SDK also stores referrers, where before_send never reaches and which
+ * mask_personal_data_properties leaves as they are: the first-seen and each
+ * session's entry referrer (localStorage) and the session's $referrer
+ * (sessionStorage). A page reached from another page of this site has that
+ * page's full URL as its referrer, query and fragment included, so each keeps
+ * only its origin and path, as in what is sent. The SDK writes them at the
+ * start of a capture, before before_send runs, and when a session starts.
+ */
+function scrubStoredReferrers(): void {
+  try {
+    const { persistence, sessionPersistence } = posthog;
+    const firstSeen = withPlainReferrer(persistence?.props.$initial_person_info);
+    if (firstSeen) persistence?.register({ $initial_person_info: firstSeen });
+    const sessionProps: unknown = persistence?.props.$client_session_props;
+    if (isPlainObject(sessionProps)) {
+      const sessionEntry = withPlainReferrer(sessionProps.props);
+      if (sessionEntry) {
+        persistence?.register({ $client_session_props: { ...sessionProps, props: sessionEntry } });
+      }
+    }
+    const referrer: unknown = sessionPersistence?.props.$referrer;
+    if (typeof referrer === "string" && stripQuery(referrer) !== referrer) {
+      sessionPersistence?.register({ $referrer: stripQuery(referrer) });
+    }
+  } catch {
+    /* ignored */
+  }
+}
+
 export function startAnalytics(): void {
   if (started || !analyticsEnabled() || typeof window === "undefined") return;
   try {
@@ -106,10 +142,20 @@ export function startAnalytics(): void {
       mask_all_text: true,
       mask_all_element_attributes: true,
       persistence: "localStorage",
+      // The SDK keeps the first-seen URL and each session's entry URL in storage, where
+      // before_send never reaches: token parameters (and ad click IDs) are masked there.
+      // The referrers stored with them are not masked; scrubStoredReferrers strips them.
+      mask_personal_data_properties: true,
+      custom_personal_data_properties: [...SENSITIVE_QUERY_PARAMETERS],
+      disable_capture_url_hashes: true,
       property_denylist: DENYLIST,
-      before_send: scrubEvent,
+      before_send: (event) => {
+        scrubStoredReferrers();
+        return scrubEvent(event);
+      },
     });
     started = true;
+    posthog.onSessionId(scrubStoredReferrers);
   } catch {
     // Analytics must never break the application (OBS-06).
   }

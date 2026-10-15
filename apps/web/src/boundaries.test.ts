@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -175,8 +176,110 @@ describe("FE-02, ENV-03, and ENV-07 guards", { timeout: 30_000 }, () => {
       "require of the server configuration as a template literal",
       "export const c = require(`./env.server`);\n",
     ],
+    ['globalThis["process"]', 'export const key = globalThis["process"].env.STRIPE_SECRET_KEY;\n'],
+    ['window["process"]', 'export const key = window["process"].env.STRIPE_SECRET_KEY;\n'],
+    ["a computed key on self", 'const k = "process";\nexport const key = self[k].env.STRIPE_SECRET_KEY;\n'],
+    ["aliasing globalThis", "const g = globalThis;\nexport const key = g.process.env.STRIPE_SECRET_KEY;\n"],
+    ["aliasing global", "const g = global;\nexport const key = g.process.env.STRIPE_SECRET_KEY;\n"],
+    [
+      "destructuring process from globalThis",
+      "const { process: p } = globalThis;\nexport const key = p.env.STRIPE_SECRET_KEY;\n",
+    ],
+    [
+      "destructuring process from window",
+      "const { process: p } = window;\nexport const key = p.env.STRIPE_SECRET_KEY;\n",
+    ],
+    [
+      "Reflect.get on globalThis",
+      'export const key = Reflect.get(globalThis, "process").env.STRIPE_SECRET_KEY;\n',
+    ],
+    ["Reflect.get on window", 'export const key = Reflect.get(window, "process").env.STRIPE_SECRET_KEY;\n'],
+    ["dynamic import of node:module", 'export const m = import("node:module");\n'],
+    [
+      "globalThis reached through itself",
+      "export const key = globalThis.globalThis.process.env.STRIPE_SECRET_KEY;\n",
+    ],
+    [
+      "global reached through globalThis",
+      "export const key = globalThis.global.process.env.STRIPE_SECRET_KEY;\n",
+    ],
+    ["self reached through window", "export const key = window.self.process.env.STRIPE_SECRET_KEY;\n"],
+    // self is the global object in the edge runtime, where process.env holds server-only values.
+    ["aliasing self", "const s = self;\nexport const key = s.process.env.STRIPE_SECRET_KEY;\n"],
+    ["self in a sequence", "export const key = (0, self).process.env.STRIPE_SECRET_KEY;\n"],
+    ["self in an object shorthand", "export const scope = { self };\n"],
+    [
+      "Reflect.get on self with a template literal",
+      "export const key = Reflect.get(self, `process`).env.STRIPE_SECRET_KEY;\n",
+    ],
+    [
+      "Reflect.get on window with a template literal",
+      "export const key = Reflect.get(window, `process`).env.STRIPE_SECRET_KEY;\n",
+    ],
+    [
+      "Function reached through a function's constructor",
+      'export const key = (() => 0).constructor("return process.env.STRIPE_SECRET_KEY")();\n',
+    ],
+    [
+      "Function reached through computed constructor keys",
+      'export const key = []["constructor"]["constructor"]("return process.env.STRIPE_SECRET_KEY")();\n',
+    ],
+    [
+      "an async Function constructed through a constructor",
+      'export const f = new (async () => undefined).constructor("return process.env.STRIPE_SECRET_KEY");\n',
+    ],
+    [
+      "an aliased function constructor",
+      'const C = (() => 0).constructor;\nexport const key = C("return process.env.STRIPE_SECRET_KEY")();\n',
+    ],
+    [
+      "a function constructor passed on",
+      'export const key = Reflect.apply((() => 0).constructor, null, ["return process.env.X"])();\n',
+    ],
+    [
+      "Reflect.get of a constructor",
+      'export const key = Reflect.get(() => 0, "constructor")("return process.env.STRIPE_SECRET_KEY")();\n',
+    ],
+    [
+      "Function reached through the global object",
+      'export const key = globalThis.Function("return process.env.STRIPE_SECRET_KEY")();\n',
+    ],
   ])("rejects %s with no-restricted-syntax", async (_case, code) => {
     expect(await guardErrors(app, code)).toContain("no-restricted-syntax");
+  });
+
+  it.each([
+    ["eval", 'export const key = eval("process.env.STRIPE_SECRET_KEY");\n', "no-eval"],
+    ["indirect eval", 'export const key = globalThis.eval("process.env.STRIPE_SECRET_KEY");\n', "no-eval"],
+    [
+      "new Function",
+      'export const key = new Function("return process.env.STRIPE_SECRET_KEY")();\n',
+      "no-new-func",
+    ],
+    ["Function()", 'export const key = Function("return process.env.STRIPE_SECRET_KEY")();\n', "no-new-func"],
+    [
+      "an aliased Function",
+      'const F = Function;\nexport const key = F("return process.env.STRIPE_SECRET_KEY")();\n',
+      "no-restricted-globals",
+    ],
+    [
+      "Function passed to Reflect.construct",
+      'export const key = Reflect.construct(Function, ["return process.env.STRIPE_SECRET_KEY"])();\n',
+      "no-restricted-globals",
+    ],
+    [
+      "code in a string timer",
+      'setTimeout("globalThis.leak = process.env.STRIPE_SECRET_KEY", 0);\n',
+      "no-implied-eval",
+    ],
+    [
+      "createRequire",
+      'import { createRequire } from "node:module";\nexport const c = createRequire(import.meta.url)("./lib/env.server");\n',
+      "no-restricted-imports",
+    ],
+    ["the module namespace", 'import * as m from "module";\nexport default m;\n', "no-restricted-imports"],
+  ])("rejects %s", async (_case, code, rule) => {
+    expect(await guardErrors(app, code)).toContain(rule);
   });
 
   it.each([
@@ -214,8 +317,37 @@ describe("FE-02, ENV-03, and ENV-07 guards", { timeout: 30_000 }, () => {
       "a module whose name only ends like the configuration",
       'export const m = import("./my-env.server-docs");\n',
     ],
+    ["a property of globalThis", "export const f = globalThis.fetch;\n"],
+    ["a property of window", "export const timer = window.setTimeout(() => undefined, 0);\n"],
+    ["the type of globalThis", "export type Global = typeof globalThis;\n"],
+    ["a property named self", "export const node = { self: 1 }.self;\n"],
+    ["the type of a property of globalThis", "export type Fetch = typeof globalThis.fetch;\n"],
+    ["checking whether self exists", 'export const worker = typeof self !== "undefined";\n'],
+    ["checking whether global exists", 'export const node = typeof global !== "undefined";\n'],
+    ["the name of a constructor", 'export const name = new Error("x").constructor.name;\n'],
+    [
+      "comparing constructors",
+      "export const same = (a: object, b: object) => a.constructor === b.constructor;\n",
+    ],
+    [
+      "a class constructing its own kind",
+      "export class Box {\n  copy(): unknown {\n    return new this.constructor();\n  }\n}\n",
+    ],
   ])("allows %s", async (_case, code) => {
     expect(await guardErrors(app, code)).toEqual([]);
+  });
+
+  it.each(["src/types/global.d.ts", "src/app/layout.tsx"])(
+    "allows a global declaration in %s",
+    async (file) => {
+      const code = "declare global {\n  interface Window {\n    dataLayer: unknown[];\n  }\n}\nexport {};\n";
+      expect(await guardErrors(file, code)).toEqual([]);
+    },
+  );
+
+  it("lets the guard module itself load modules with createRequire", async () => {
+    const code = readFileSync(path.join(webRoot, "eslint.guards.mjs"), "utf8");
+    expect(await guardErrors("eslint.guards.mjs", code)).toEqual([]);
   });
 
   it("lets tests use process for tooling, but still not read server-only variables", async () => {

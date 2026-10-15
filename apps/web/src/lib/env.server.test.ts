@@ -95,6 +95,41 @@ describe("web server configuration (ENV-03)", () => {
     expect(loadServerEnv({ ...base, API_ORIGIN: value }, serving).apiOrigin).toBe(origin);
   });
 
+  describe("API_ORIGIN in production", () => {
+    // Every request's session token is forwarded to this origin by the /api/v1 rewrite.
+    const production = {
+      APP_ENV: "production",
+      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: livePublishable,
+      CLERK_SECRET_KEY: "sk_live_not_a_real_secret",
+    };
+
+    it.each([
+      "http://api.example.com",
+      "http://10.0.0.5:8000",
+      "http://127.evil.example",
+      "http://localhost.:8000",
+    ])("refuses plain http to %s", (origin) => {
+      expect(problems({ ...production, API_ORIGIN: origin })).toEqual([
+        "API_ORIGIN must use https in production",
+      ]);
+    });
+
+    it.each([
+      ["https://api.example.com", "https://api.example.com"],
+      ["http://127.0.0.1:8000", "http://127.0.0.1:8000"],
+      ["http://127.1:8000", "http://127.0.0.1:8000"],
+      ["http://localhost:8000", "http://localhost:8000"],
+      ["http://[::1]:8000", "http://[::1]:8000"],
+      [undefined, "http://127.0.0.1:8000"],
+    ])("accepts %s, as %s", (origin, expected) => {
+      expect(loadServerEnv({ ...production, API_ORIGIN: origin }, serving).apiOrigin).toBe(expected);
+    });
+
+    it.each(["preview", "local"])("still accepts plain http when APP_ENV=%s", (appEnv) => {
+      expect(problems({ ...base, APP_ENV: appEnv, API_ORIGIN: "http://api.example.com" })).toEqual([]);
+    });
+  });
+
   it("names variables but never echoes their values", () => {
     const secret = "sk_live_" + "CANARY0123456789abcdef";
     const env = {

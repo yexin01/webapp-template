@@ -11,10 +11,12 @@ const api = {
   runIntegrationCheck: vi.fn<(key: Schemas["IntegrationKey"]) => Promise<Schemas["IntegrationCheck"]>>(),
 };
 
+const auth = vi.hoisted(() => ({ isLoaded: true, isSignedIn: true, sessionId: "sess_1", userId: "user_a" }));
+
 vi.mock("@/lib/api/use-api", () => ({ useApi: () => api }));
 vi.mock("next/navigation", () => ({ usePathname: () => "/integrations" }));
 vi.mock("@clerk/nextjs", () => ({
-  useAuth: () => ({ isLoaded: true, isSignedIn: true, sessionId: "sess_1" }),
+  useAuth: () => auth,
   useOrganization: () => ({ organization: null }),
 }));
 vi.mock("@sentry/nextjs", () => ({ getClient: () => undefined, captureException: vi.fn(), flush: vi.fn() }));
@@ -42,6 +44,7 @@ function result(key: Schemas["IntegrationKey"], patch: Partial<Schemas["Integrat
 }
 
 beforeEach(() => {
+  auth.userId = "user_a";
   api.integrations.mockReset().mockResolvedValue(report);
   api.runIntegrationCheck.mockReset().mockImplementation(async (key) => result(key));
 });
@@ -88,6 +91,23 @@ describe("integrations panel", () => {
     render(<IntegrationsPanel />);
     await userEvent.click(await screen.findByRole("button", { name: "Run check for PostgreSQL" }));
     expect(within(card("PostgreSQL")).getByRole("alert")).toHaveTextContent("Slow down");
+  });
+
+  it("shows none of the previous user's check results after a Clerk account switch", async () => {
+    // Results can be per user, such as the Clerk check's organization-membership count.
+    api.runIntegrationCheck.mockImplementation(async (key) =>
+      result(key, { summary: `${auth.userId}: ${key} ok` }),
+    );
+    const { rerender } = render(<IntegrationsPanel />);
+    await userEvent.click(await screen.findByRole("button", { name: "Run check for PostgreSQL" }));
+    expect(within(card("PostgreSQL")).getByText("user_a: database ok")).toBeInTheDocument();
+
+    // Another account in the same browser; nothing remounts the page.
+    auth.userId = "user_b";
+    rerender(<IntegrationsPanel />);
+    expect(await screen.findByRole("heading", { name: "PostgreSQL", level: 3 })).toBeInTheDocument();
+    expect(api.integrations).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText(/user_a/)).toBeNull();
   });
 
   it("explains when diagnostics are unavailable without naming internal configuration", async () => {

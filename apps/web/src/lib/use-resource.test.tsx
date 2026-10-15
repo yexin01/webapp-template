@@ -1,5 +1,7 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 
+import { REQUEST_TIMEOUT_MS } from "./api/deadlines";
+import { presentError } from "./api/errors";
 import { useResource } from "./use-resource";
 
 const auth = vi.hoisted(() => ({ isLoaded: true, userId: "user_a" as string | null | undefined }));
@@ -60,6 +62,57 @@ describe("useResource", () => {
     await waitFor(() => expect(result.current.data).toBe("data"));
     expect(fetcher).not.toHaveBeenCalled();
     expect(loadedFetcher).toHaveBeenCalledOnce();
+  });
+
+  it("reports sign-in as unavailable, with a page reload, when Clerk never loads", () => {
+    vi.useFakeTimers();
+    try {
+      // clerk-js was blocked or its Frontend API is down: Clerk never reports loaded.
+      auth.isLoaded = false;
+      auth.userId = undefined;
+      const reloadPage = vi.fn();
+      vi.spyOn(window, "location", "get").mockReturnValue({ ...window.location, reload: reloadPage });
+      const fetcher = vi.fn().mockResolvedValue("data");
+      const { result } = renderHook(() => useResource(fetcher, "k"));
+
+      act(() => vi.advanceTimersByTime(REQUEST_TIMEOUT_MS - 1));
+      expect(result.current).toMatchObject({ loading: true, error: undefined });
+      act(() => vi.advanceTimersByTime(1));
+      expect(result.current).toMatchObject({ loading: false, data: undefined });
+      expect(presentError(result.current.error)).toMatchObject({
+        title: "Sign-in unavailable",
+        action: "retry",
+      });
+
+      result.current.reload();
+      expect(reloadPage).toHaveBeenCalledOnce();
+      expect(fetcher).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("recovers when Clerk loads after the deadline after all", async () => {
+    auth.isLoaded = false;
+    auth.userId = undefined;
+    const fetcher = vi.fn().mockResolvedValue("data");
+    vi.useFakeTimers();
+    const { result, rerender } = renderHook(() => useResource(fetcher, "k"));
+    try {
+      act(() => vi.advanceTimersByTime(REQUEST_TIMEOUT_MS));
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(result.current.error).toBeDefined();
+
+    // A very slow network: the script arrives late, and the data loads without a reload.
+    auth.isLoaded = true;
+    auth.userId = "user_a";
+    rerender();
+    await waitFor(() => expect(result.current.data).toBe("data"));
+    expect(result.current.error).toBeUndefined();
+    expect(fetcher).toHaveBeenCalledOnce();
   });
 
   it("exposes errors and reloads on demand", async () => {

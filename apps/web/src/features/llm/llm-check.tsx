@@ -15,6 +15,7 @@ export function LlmCheck() {
   async function run() {
     setBusy(true);
     setError(null);
+    setResult(null);
     try {
       setResult(await api.llmCheck());
     } catch (e) {

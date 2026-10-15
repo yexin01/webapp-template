@@ -1,7 +1,7 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import type { Schemas } from "@/lib/api/client";
+import { REQUEST_TIMEOUT_MS, type Schemas } from "@/lib/api/client";
 
 import { Workspace } from "./workspace";
 
@@ -93,6 +93,27 @@ describe("workspace", () => {
     await waitFor(() => expect(server.listCalls).toEqual(["user_a", "user_b"]));
     expect(screen.queryByText("A's secret project")).toBeNull();
     expect(screen.queryByText("A's new project")).toBeNull();
+  });
+
+  it("offers a reload instead of loading forever when Clerk never loads (§16.4)", () => {
+    vi.useFakeTimers();
+    try {
+      auth.isLoaded = false;
+      auth.userId = undefined;
+      const reloadPage = vi.fn();
+      vi.spyOn(window, "location", "get").mockReturnValue({ ...window.location, reload: reloadPage });
+      render(<Workspace />);
+      expect(screen.getByText("Loading workspace…")).toBeInTheDocument();
+
+      act(() => vi.advanceTimersByTime(REQUEST_TIMEOUT_MS));
+      expect(screen.getByRole("alert")).toHaveTextContent("Sign-in unavailable");
+      act(() => screen.getByRole("button", { name: "Try again" }).click());
+      expect(reloadPage).toHaveBeenCalledOnce();
+      expect(server.entitlementCalls).toBe(0);
+    } finally {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    }
   });
 
   it("requests each resource once on a fresh page load", async () => {

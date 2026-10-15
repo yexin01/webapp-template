@@ -81,6 +81,12 @@ function httpOrigin(value: string): string | null {
   }
 }
 
+/** This machine (localhost, 127.0.0.0/8, or [::1]), where plain http never crosses a network. */
+function isLoopbackOrigin(origin: string): boolean {
+  const { hostname } = new URL(origin);
+  return hostname === "localhost" || hostname === "[::1]" || /^127(?:\.\d{1,3}){3}$/.test(hostname);
+}
+
 /** A Sentry DSN is an http(s) URL whose user part is the project's public key. */
 function isSentryDsn(value: string): boolean {
   return isHttpUrl(value) && new URL(value).username.length > 0;
@@ -158,6 +164,9 @@ export function loadServerEnv(env: Source, options: LoadOptions): ServerEnv {
   const apiOrigin = httpOrigin(source("API_ORIGIN") ?? "http://127.0.0.1:8000");
   if (!apiOrigin) {
     problems.push("API_ORIGIN must be an http(s) origin, with no path, query, fragment, or credentials");
+  } else if (appEnv === "production" && apiOrigin.startsWith("http:") && !isLoopbackOrigin(apiOrigin)) {
+    // The /api/v1 rewrite forwards every session token there (the API's APP_BASE_URL has the same rule).
+    problems.push("API_ORIGIN must use https in production");
   }
 
   problems.push(...clerkProblems(source, appEnv, options));

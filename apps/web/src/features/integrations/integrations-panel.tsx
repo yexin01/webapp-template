@@ -1,5 +1,6 @@
 "use client";
 
+import { useAuth } from "@clerk/nextjs";
 import { useCallback, useState } from "react";
 
 import { ApiError } from "@/lib/api/errors";
@@ -18,8 +19,15 @@ type Run = { result?: Schemas["IntegrationCheck"]; error?: unknown };
  * One page to see how every integration is configured and to exercise each
  * one with the keys in `.env`. All checks run on the server; the browser only
  * renders results. Mocked or disabled integrations are reported as skipped.
+ * Remounts per signed-in user: check results can be about the user (their
+ * Clerk memberships), so none survive an account switch.
  */
 export function IntegrationsPanel() {
+  const { userId } = useAuth();
+  return <Integrations key={userId ?? "signed-out"} />;
+}
+
+function Integrations() {
   const api = useApi();
   const fetchReport = useCallback(() => api.integrations(), [api]);
   const { data: report, error, reload } = useResource(fetchReport, "integrations");

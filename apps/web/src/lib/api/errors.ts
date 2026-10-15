@@ -33,11 +33,25 @@ export class ApiError extends Error {
   static unexpectedResponse(status: number): ApiError {
     return new ApiError(status, "HTTP_ERROR", "The server returned an unexpected response.", null);
   }
+
+  /** clerk-js never loaded (a blocked script, or its CDN or Frontend API is down), so no session exists. */
+  static authUnavailable(): ApiError {
+    return new ApiError(
+      0,
+      "AUTH_UNAVAILABLE",
+      "Sign-in could not be loaded. Check your connection, then reload the page.",
+      null,
+    );
+  }
 }
 
 const INPUT_ERRORS = new Set(["VALIDATION_FAILED", "INVALID_REQUEST", "CONFLICT"]);
 
-/** True when the server rejected what the user entered, so the message belongs next to the field. */
+/**
+ * For a form submission: true when the server rejected what the user entered,
+ * so the message belongs next to the field. Outside a form, the same codes
+ * describe the request or the current state, and presentError titles them so.
+ */
 export function isInputError(error: unknown): boolean {
   return error instanceof ApiError && INPUT_ERRORS.has(error.code);
 }
@@ -53,10 +67,18 @@ export function presentError(error: unknown): ErrorPresentation {
   if (!(error instanceof ApiError)) {
     return { title: "Something went wrong", message: "An unexpected error occurred.", action: "retry" };
   }
-  if (isInputError(error)) return { title: "Check your input", message: error.message, action: "none" };
   switch (error.code) {
+    case "VALIDATION_FAILED":
+      return { title: "Check your input", message: error.message, action: "none" };
+    case "CONFLICT":
+      // The current state does not allow it, for example Pro is already active (BILL-07).
+      return { title: "Could not complete this", message: error.message, action: "retry" };
+    case "INVALID_REQUEST":
+      return { title: "Request not accepted", message: error.message, action: "retry" };
     case "UNAUTHENTICATED":
       return { title: "Your session has ended", message: "Sign in again to continue.", action: "sign-in" };
+    case "AUTH_UNAVAILABLE":
+      return { title: "Sign-in unavailable", message: error.message, action: "retry" };
     case "ENTITLEMENT_REQUIRED":
       return { title: "Pro feature", message: error.message, action: "upgrade" };
     case "FORBIDDEN":
