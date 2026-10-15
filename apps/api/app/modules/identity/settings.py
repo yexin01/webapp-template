@@ -25,7 +25,8 @@ class IdentitySettings(BaseModel):
     clerk_authorized_parties: Annotated[list[str], NoDecode] = Field(default_factory=list)
     clerk_webhook_signing_secret: SecretStr | None = None
     clerk_api_url: str = "https://api.clerk.com"
-    membership_max_staleness_seconds: int = Field(default=300, ge=0, le=86_400)
+    # TEN-07: at most the owner-approved bound of 300 s (DEC-009, ADR-0002); lower is allowed.
+    membership_max_staleness_seconds: int = Field(default=300, ge=0, le=300)
     membership_reconcile_batch_size: int = Field(default=50, ge=1, le=1_000)
 
     @field_validator("clerk_authorized_parties", mode="before")

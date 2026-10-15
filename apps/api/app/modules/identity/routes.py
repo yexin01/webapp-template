@@ -47,7 +47,11 @@ def build_auth(verifier: IdentityVerifier, resolver: ContextResolver) -> AuthDep
 
 
 def build_account_router(auth: AuthDeps, request_transaction: Any) -> APIRouter:
-    router = APIRouter(tags=["account"], dependencies=[Depends(request_transaction, scope="function")])
+    # Authenticate first: a bad token is rejected before it takes an admission place.
+    router = APIRouter(
+        tags=["account"],
+        dependencies=[Depends(auth.authenticate), Depends(request_transaction, scope="function")],
+    )
     Personal = Annotated[TenantContext, Depends(auth.personal)]
 
     @router.get("/me", response_model=Me)

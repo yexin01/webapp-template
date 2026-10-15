@@ -50,8 +50,8 @@ def build_identity(
         ),
     )
 
-    resolver = ContextResolver(tx, directory, kernel.clock, staleness)
-    sync = IdentitySyncService(tx, webhooks, resolver)
+    resolver = ContextResolver(tx, directory, kernel.clock, staleness, kernel.rate_limiter)
+    sync = IdentitySyncService(tx, webhooks, resolver, kernel.clock)
     reconciler = MembershipReconciler(tx, resolver, kernel.clock, staleness, settings.membership_reconcile_batch_size)
     auth = build_auth(verifier, resolver)
 

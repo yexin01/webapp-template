@@ -51,7 +51,10 @@ class ProjectCreate(StrictInput):
 
 def build_router(projects: ProjectService, auth: AuthDeps, request_transaction: Any) -> APIRouter:
     # Database-only: each request is one request-scoped transaction.
-    router = APIRouter(tags=["projects"], dependencies=[Depends(request_transaction, scope="function")])
+    router = APIRouter(
+        tags=["projects"],
+        dependencies=[Depends(auth.authenticate), Depends(request_transaction, scope="function")],
+    )
     Personal = Annotated[TenantContext, Depends(auth.personal)]
     Organization = Annotated[TenantContext, Depends(auth.organization)]
 

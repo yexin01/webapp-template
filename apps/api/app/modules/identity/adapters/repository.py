@@ -91,11 +91,18 @@ class PgIdentityRepository:
 
         The user row lock serializes concurrent refreshes for one user, so a
         slow, older read can never overwrite (or resurrect) what a newer read
-        applied.
+        applied. It is ``FOR NO KEY UPDATE``: a privileged write that holds its
+        membership lock and then inserts a row referencing the user (an audit
+        entry) takes ``FOR KEY SHARE`` on this row, and must not deadlock with
+        a refresh waiting for that membership.
+
+        Organizations are written in a fixed order, so two users' refreshes
+        that create the same new organizations cannot deadlock each other.
         """
-        row = self._one("SELECT memberships_verified_at FROM app.users WHERE id = %s FOR UPDATE", (user_id,))
+        row = self._one("SELECT memberships_verified_at FROM app.users WHERE id = %s FOR NO KEY UPDATE", (user_id,))
         if row is None or (row["memberships_verified_at"] is not None and row["memberships_verified_at"] > verified_at):
             return False
+        memberships = sorted(memberships, key=lambda m: m.external_org_id)
         external_ids = [m.external_org_id for m in memberships]
         for m in memberships:
             self._exec(
@@ -142,7 +149,19 @@ class PgIdentityRepository:
             (external_org_id,),
         )
 
-    def remove_user_memberships(self, user_id: UUID) -> None:
+    def remove_user_memberships(self, user_id: UUID, verified_at: datetime) -> None:
+        """Remove every membership, stamped like a read at ``verified_at`` that found none.
+
+        Unlike ``replace_user_memberships``, this is never refused: a deleted
+        user has no memberships, whatever an earlier read applied. The
+        watermark only moves forward, so a slower read taken before
+        ``verified_at`` is refused afterwards. The user row is locked first,
+        in the same order as a refresh.
+        """
+        self._exec(
+            "UPDATE app.users SET memberships_verified_at = GREATEST(memberships_verified_at, %s) WHERE id = %s",
+            (verified_at, user_id),
+        )
         self._exec("DELETE FROM app.organization_memberships WHERE user_id = %s", (user_id,))
 
     def list_users_with_stale_memberships(self, older_than: datetime, limit: int) -> list[tuple[UUID, str]]:

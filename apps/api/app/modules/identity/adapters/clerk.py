@@ -7,12 +7,15 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Mapping, Sequence
+import threading
+import time
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
 import jwt
-from jwt import PyJWKClient
+from jwt import PyJWKSet
 from svix.webhooks import Webhook, WebhookVerificationError
 
 from app.kernel.errors import AuthenticationError, DependencyUnavailableError, WebhookSignatureError
@@ -28,7 +31,155 @@ _MAX_TOKEN_LENGTH = 8_192
 # How long a fetched key set is trusted. A key Clerk removes (rotation or
 # revocation) stops verifying within this time (AUTH-04); verification also
 # keeps working this long through a Clerk outage (§16.4).
-_JWKS_LIFESPAN_SECONDS = 3_600
+_JWKS_LIFESPAN_SECONDS = 3_600.0
+# Past this age, one request refreshes the key set while every request keeps
+# using it, so a healthy instance never reaches the hard expiry.
+_JWKS_REFRESH_AHEAD_SECONDS = _JWKS_LIFESPAN_SECONDS * 3 / 4
+# At most one fetch per interval, successful or not: neither a flood of tokens
+# with unknown key IDs nor a Clerk outage turns into one fetch per request.
+_JWKS_MIN_REFRESH_INTERVAL_SECONDS = 5.0
+_JWKS_TIMEOUT_SECONDS = 3.0
+_AUTH_UNAVAILABLE = "Authentication service is unavailable."
+
+_DIRECTORY_UNAVAILABLE = "Organization directory is unavailable."
+# After a failed directory read, reads fail fast for this long instead of each
+# one waiting out the timeout during an outage (§16.4).
+_DIRECTORY_COOLDOWN_SECONDS = 5.0
+
+
+def fetch_jwks(url: str, *, transport: httpx.BaseTransport | None = None) -> object:
+    """GET the key set document: short timeout, no redirects."""
+    with httpx.Client(timeout=_JWKS_TIMEOUT_SECONDS, follow_redirects=False, transport=transport) as client:
+        response = client.get(url)
+        response.raise_for_status()
+        return response.json()
+
+
+@dataclass(frozen=True, slots=True)
+class _KeySnapshot:
+    keys: Mapping[str, Any]  # key ID -> public key
+    fetched_at: float  # monotonic; taken before the fetch, so a slow fetch never looks fresher
+
+
+class JwksKeySet:
+    """The issuer's signing keys, cached with a bounded lifetime (AUTH-04).
+
+    The cache is one immutable snapshot, read without a lock: a request whose
+    key is cached never waits on Clerk (§16.4). Fetches are single-flight and
+    throttled, and a failed or unusable fetch never replaces a good snapshot.
+    The refresh ahead of expiry runs on its own thread. Once the snapshot
+    expires without a successful refresh, verification fails closed.
+    """
+
+    def __init__(
+        self,
+        url: str,
+        *,
+        fetch: Callable[[], object] | None = None,
+        clock: Callable[[], float] = time.monotonic,
+        in_background: Callable[[Callable[[], None]], None] | None = None,
+    ) -> None:
+        self._fetch = fetch or (lambda: fetch_jwks(url))
+        self._clock = clock
+        self._in_background = in_background or _start_daemon_thread
+        self._lock = threading.Lock()
+        self._snapshot: _KeySnapshot | None = None
+        self._last_attempt: float | None = None  # guarded by _lock
+        self._last_attempt_failed = False  # written under _lock
+
+    def signing_key(self, kid: str) -> Any:
+        snapshot = self._snapshot
+        if snapshot is not None and self._age(snapshot) < _JWKS_LIFESPAN_SECONDS:
+            key = snapshot.keys.get(kid)
+            if key is not None:
+                if self._age(snapshot) >= _JWKS_REFRESH_AHEAD_SECONDS:
+                    self._refresh_in_background()
+                return key
+        # An unknown key ID (Clerk may have rotated its keys), or no valid set.
+        if self._lock.acquire(timeout=_JWKS_TIMEOUT_SECONDS):
+            self._refresh_holding_lock()
+        snapshot = self._snapshot
+        if snapshot is None or self._age(snapshot) >= _JWKS_LIFESPAN_SECONDS:
+            raise DependencyUnavailableError(_AUTH_UNAVAILABLE)
+        key = snapshot.keys.get(kid)
+        if key is None:
+            if self._last_attempt_failed:
+                # The key may be one Clerk rotated in while its key set cannot
+                # be read: an outage, not proof that the token is bad.
+                raise DependencyUnavailableError(_AUTH_UNAVAILABLE)
+            raise AuthenticationError()
+        return key
+
+    def _age(self, snapshot: _KeySnapshot) -> float:
+        return self._clock() - snapshot.fetched_at
+
+    def _throttled(self, now: float) -> bool:
+        return self._last_attempt is not None and now - self._last_attempt < _JWKS_MIN_REFRESH_INTERVAL_SECONDS
+
+    def _refresh_in_background(self) -> None:
+        """Start a refresh on its own thread, unless one is running or was attempted just now."""
+        if not self._lock.acquire(blocking=False):
+            return
+        if self._throttled(self._clock()):
+            self._lock.release()
+            return
+        handed_off = False
+
+        def refresh() -> None:
+            nonlocal handed_off
+            handed_off = True  # from here on, the refresh releases the lock
+            self._refresh_holding_lock()
+
+        try:
+            self._in_background(refresh)
+        except BaseException:
+            if not handed_off:  # the thread never started
+                self._lock.release()
+            raise
+
+    def _refresh_holding_lock(self) -> None:
+        """Fetch the key set unless a fetch was attempted just now, then release the lock.
+
+        A thread that waited for the lock while another fetched finds that
+        attempt within the interval, and uses its result instead of fetching.
+        """
+        try:
+            started = self._clock()
+            if self._throttled(started):
+                return
+            self._last_attempt = started
+            keys = self._load()
+            self._last_attempt_failed = not keys
+            if keys:
+                self._snapshot = _KeySnapshot(keys, started)
+        finally:
+            self._lock.release()
+
+    def _load(self) -> dict[str, Any]:
+        try:
+            document = self._fetch()
+            if not isinstance(document, dict):
+                raise TypeError("the key set is not a JSON object")
+            jwk_set = PyJWKSet.from_dict(document)
+        except (httpx.HTTPError, ValueError, TypeError, jwt.PyJWTError) as exc:
+            logger.warning("clerk_jwks_refresh_failed", extra={"error": type(exc).__name__})
+            return {}
+        keys = {
+            jwk.key_id: jwk.key
+            for jwk in jwk_set.keys
+            # RS256 is the only accepted algorithm (AUTH-02), so only RSA keys can verify.
+            if isinstance(jwk.key_id, str)
+            and jwk.key_id
+            and jwk.key_type == "RSA"
+            and jwk.public_key_use in ("sig", None)
+        }
+        if not keys:
+            logger.warning("clerk_jwks_refresh_failed", extra={"error": "no signing keys"})
+        return keys
+
+
+def _start_daemon_thread(work: Callable[[], None]) -> None:
+    threading.Thread(target=work, name="jwks-refresh", daemon=True).start()
 
 
 class ClerkTokenVerifier:
@@ -40,23 +191,14 @@ class ClerkTokenVerifier:
         issuer: str,
         authorized_parties: Sequence[str],
         jwt_public_key: str | None = None,
-        jwks_client: PyJWKClient | None = None,
+        key_set: JwksKeySet | None = None,
     ) -> None:
         if not authorized_parties:
             raise ValueError("at least one authorized party is required")
         self._issuer = issuer
         self._authorized_parties = frozenset(p.rstrip("/") for p in authorized_parties)
         self._public_key = jwt_public_key
-        # Only the key set is cached, with a lifespan. ``cache_keys`` would keep
-        # every key ever seen for the life of the process, even after Clerk
-        # removes it from the set.
-        self._jwks = jwks_client or PyJWKClient(
-            f"{issuer}/.well-known/jwks.json",
-            cache_jwk_set=True,
-            cache_keys=False,
-            lifespan=_JWKS_LIFESPAN_SECONDS,
-            timeout=5,
-        )
+        self._key_set = key_set or JwksKeySet(f"{issuer}/.well-known/jwks.json")
 
     def verify(self, token: str) -> VerifiedIdentity:
         if not token or len(token) > _MAX_TOKEN_LENGTH:
@@ -68,7 +210,7 @@ class ClerkTokenVerifier:
         if header.get("alg") not in _ALGORITHMS:
             raise AuthenticationError()
 
-        key = self._signing_key(token)
+        key = self._signing_key(header)
         try:
             claims = jwt.decode(
                 token,
@@ -87,32 +229,62 @@ class ClerkTokenVerifier:
         sub = claims.get("sub")
         if not isinstance(sub, str) or not sub:
             raise AuthenticationError()
+        if claims.get("sts") == "pending":
+            # A session with an unfinished required step (for example, choosing
+            # an organization). Clerk's SDKs treat it as signed out by default.
+            raise AuthenticationError()
         sid = claims.get("sid")
-        return VerifiedIdentity(external_user_id=sub, session_id=sid if isinstance(sid, str) else None)
+        return VerifiedIdentity(
+            external_user_id=sub,
+            session_id=sid if isinstance(sid, str) else None,
+            active_org_id=_active_org_id(claims),
+        )
 
-    def _signing_key(self, token: str) -> Any:
+    def _signing_key(self, header: Mapping[str, Any]) -> Any:
         if self._public_key:
             return self._public_key
-        try:
-            return self._jwks.get_signing_key_from_jwt(token).key
-        except jwt.PyJWKClientConnectionError as exc:
-            # AUTH-04: fail closed when keys cannot be fetched.
-            raise DependencyUnavailableError("Authentication service is unavailable.") from exc
-        except jwt.PyJWTError as exc:
-            raise AuthenticationError() from exc
+        kid = header.get("kid")
+        if not isinstance(kid, str) or not kid:
+            raise AuthenticationError()
+        return self._key_set.signing_key(kid)
+
+
+def _active_org_id(claims: Mapping[str, Any]) -> str | None:
+    """The session's active organization: ``o.id`` in Clerk's v2 session token, ``org_id`` in v1."""
+    org = claims.get("o")
+    value = org.get("id") if isinstance(org, dict) else claims.get("org_id")
+    return value if isinstance(value, str) and value else None
 
 
 class ClerkMembershipDirectory:
     """Reads a user's organization memberships from the Clerk Backend API."""
 
-    def __init__(self, *, secret_key: str, api_url: str, timeout_seconds: float = 10.0) -> None:
+    def __init__(
+        self,
+        *,
+        secret_key: str,
+        api_url: str,
+        timeout_seconds: float = 5.0,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self._client = httpx.Client(
             base_url=api_url.rstrip("/"),
             headers={"Authorization": f"Bearer {secret_key}"},
             timeout=timeout_seconds,
         )
+        self._clock = clock
+        self._unavailable_until = float("-inf")
 
     def list_user_memberships(self, external_user_id: str) -> list[ExternalMembership]:
+        if self._clock() < self._unavailable_until:
+            raise DependencyUnavailableError(_DIRECTORY_UNAVAILABLE)
+        try:
+            return self._read(external_user_id)
+        except DependencyUnavailableError:
+            self._unavailable_until = self._clock() + _DIRECTORY_COOLDOWN_SECONDS
+            raise
+
+    def _read(self, external_user_id: str) -> list[ExternalMembership]:
         memberships: list[ExternalMembership] = []
         offset = 0
         limit = 100
@@ -123,26 +295,38 @@ class ClerkMembershipDirectory:
                     params={"limit": limit, "offset": offset},
                 )
             except httpx.HTTPError as exc:
-                raise DependencyUnavailableError("Organization directory is unavailable.") from exc
+                raise DependencyUnavailableError(_DIRECTORY_UNAVAILABLE) from exc
             if response.status_code == 404:
                 return []
             if response.status_code >= 400:
                 logger.warning("clerk_directory_error", extra={"status_code": response.status_code})
-                raise DependencyUnavailableError("Organization directory is unavailable.")
-            body = response.json()
-            items = body.get("data", []) if isinstance(body, dict) else body
-            for item in items:
-                org = item.get("organization") or {}
-                org_id = org.get("id")
-                if isinstance(org_id, str) and org_id:
-                    memberships.append(ExternalMembership(org_id, role_from_external(str(item.get("role", "")))))
-            if len(items) < limit:
+                raise DependencyUnavailableError(_DIRECTORY_UNAVAILABLE)
+            try:
+                body = response.json()
+                items: Any = body.get("data") if isinstance(body, dict) else body
+                page = [_membership(item) for item in items]
+            except (ValueError, TypeError, AttributeError) as exc:
+                # A malformed answer is an outage: never a 500, and never a
+                # partial read that would remove the memberships it lacks.
+                logger.warning("clerk_directory_malformed", extra={"status_code": response.status_code})
+                raise DependencyUnavailableError(_DIRECTORY_UNAVAILABLE) from exc
+            memberships += page
+            if len(page) < limit:
                 break
             offset += limit
         return memberships
 
     def close(self) -> None:
         self._client.close()
+
+
+def _membership(item: Any) -> ExternalMembership:
+    org_id = (
+        item["organization"]["id"] if isinstance(item, dict) and isinstance(item.get("organization"), dict) else None
+    )
+    if not isinstance(org_id, str) or not org_id:
+        raise ValueError("a membership without an organization ID")
+    return ExternalMembership(org_id, role_from_external(str(item.get("role", ""))))
 
 
 class ClerkWebhookVerifier:

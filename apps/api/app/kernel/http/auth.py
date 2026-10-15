@@ -5,6 +5,11 @@ composition and build their routes from it, so they never import the
 identity module. Every protected route depends on ``AuthDeps.authenticate``,
 directly or through a context dependency; a route-manifest test enforces this
 (TEN-02).
+
+A router that uses the request-scoped transaction lists
+``Depends(auth.authenticate)`` before it, so a bad token is rejected before it
+takes an admission place. FastAPI caches the result for the request, so the
+token is still verified once.
 """
 
 from __future__ import annotations

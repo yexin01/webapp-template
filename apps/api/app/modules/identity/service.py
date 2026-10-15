@@ -17,10 +17,11 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from datetime import timedelta
+from datetime import datetime, timedelta
 from uuid import UUID
 
-from app.kernel.errors import DomainError, NotConfiguredError, NotFoundError
+from app.kernel.application.rate_limit import RateLimiter
+from app.kernel.errors import NotConfiguredError, NotFoundError, RateLimitedError
 from app.kernel.jobs import JobSummary
 from app.kernel.ports import Clock, Transactions
 from app.kernel.tenancy import ContextKind, TenantContext, VerifiedIdentity
@@ -46,6 +47,10 @@ _MEMBERSHIP_EVENTS = frozenset(
 
 # How long after a full membership read a miss is answered from the mirror.
 _MISS_REFRESH_COOLDOWN = timedelta(seconds=30)
+# The window in which at most one miss per user calls the provider. It is
+# short: a successful read already starts the cooldown above, so this window
+# only spaces out retries after a failed read, and concurrent misses.
+_MISS_REFRESH_CLAIM = timedelta(seconds=5)
 
 
 class ContextResolver:
@@ -55,11 +60,15 @@ class ContextResolver:
         directory: MembershipDirectory,
         clock: Clock,
         max_staleness: timedelta,
+        rate_limiter: RateLimiter,
     ) -> None:
         self._tx = tx
         self._directory = directory
         self._clock = clock
         self._max_staleness = max_staleness
+        self._rate_limiter = rate_limiter
+        self._miss_cooldown = min(_MISS_REFRESH_COOLDOWN, max_staleness)
+        self._miss_claim_seconds = int(min(_MISS_REFRESH_CLAIM, max_staleness).total_seconds())
 
     def personal(self, identity: VerifiedIdentity) -> TenantContext:
         user_id = self._ensure_user(identity.external_user_id)
@@ -72,12 +81,9 @@ class ContextResolver:
         personal = self.personal(identity)
 
         membership = self._read_membership(personal, external_org_id)
+        if membership is None and not self._may_refresh_on_miss(personal, identity, external_org_id):
+            raise NotFoundError()
         if membership is None or self._is_stale(membership):
-            if membership is None and self._recently_verified(personal):
-                # A full read moments ago did not include this organization.
-                # Answering from the mirror keeps a caller probing organization
-                # IDs from turning each request into a provider call.
-                raise NotFoundError()
             # Never hold a request transaction open across a provider call.
             self._tx.release()
             self.refresh_memberships(personal.user_id, identity.external_user_id)
@@ -119,11 +125,37 @@ class ContextResolver:
     def _is_stale(self, membership: MembershipRecord) -> bool:
         return self._clock.now() - membership.verified_at > self._max_staleness
 
+    def _may_refresh_on_miss(self, personal: TenantContext, identity: VerifiedIdentity, external_org_id: str) -> bool:
+        """Whether a miss on this organization may call the provider.
+
+        Answering misses from the mirror keeps a caller probing organization
+        IDs from turning each request into a provider call. The exception is
+        the organization the signed session names as active (for example, one
+        the user just created): it is always re-checked. The claim only
+        triggers the re-check; access still requires the refreshed mirror row.
+        """
+        if identity.active_org_id == external_org_id:
+            return True
+        if self._recently_verified(personal):
+            return False  # a full read moments ago did not include this organization
+        if self._miss_claim_seconds <= 0:
+            return True
+        # The claim is a worker transaction: end the request transaction first,
+        # so this request never holds a request connection while it waits for
+        # a worker connection.
+        self._tx.release()
+        try:
+            # At most one miss-triggered refresh per user per window, across
+            # instances: concurrent misses do not each call the provider.
+            self._rate_limiter.hit(f"identity:miss-refresh:{personal.user_id}", 1, self._miss_claim_seconds)
+        except RateLimitedError:
+            return False
+        return True
+
     def _recently_verified(self, personal: TenantContext) -> bool:
         with self._tx.as_tenant(personal) as t:
             verified_at = t.repo.get_my_memberships_verified_at()
-        cooldown = min(_MISS_REFRESH_COOLDOWN, self._max_staleness)
-        return verified_at is not None and self._clock.now() - verified_at < cooldown
+        return verified_at is not None and self._clock.now() - verified_at < self._miss_cooldown
 
 
 class IdentitySyncService:
@@ -132,10 +164,12 @@ class IdentitySyncService:
         tx: Transactions[IdentityRepository],
         verifier: IdentityWebhookVerifier | None,
         resolver: ContextResolver,
+        clock: Clock,
     ) -> None:
         self._tx = tx
         self._verifier = verifier
         self._resolver = resolver
+        self._clock = clock
 
     def handle_webhook(self, payload: bytes, headers: Mapping[str, str]) -> EventStatus:
         if self._verifier is None:
@@ -146,7 +180,7 @@ class IdentitySyncService:
             status = t.repo.claim_identity_event(event)
             if status in (EventStatus.PROCESSED, EventStatus.IGNORED):
                 return status
-            result, refresh = self._apply(t.repo, event)
+            result, refresh = self._apply(t.repo, event, self._clock.now())
 
         # The provider call happens after the user row is committed and
         # outside any transaction. If it fails, the event stays "received",
@@ -159,7 +193,9 @@ class IdentitySyncService:
         return result
 
     @staticmethod
-    def _apply(repo: IdentityRepository, event: IdentityWebhookEvent) -> tuple[EventStatus, tuple[UUID, str] | None]:
+    def _apply(
+        repo: IdentityRepository, event: IdentityWebhookEvent, now: datetime
+    ) -> tuple[EventStatus, tuple[UUID, str] | None]:
         if event.event_type in _MEMBERSHIP_EVENTS:
             external_user_id = _membership_user_id(event.data)
             if external_user_id is None:
@@ -177,9 +213,11 @@ class IdentitySyncService:
             external_user_id = _str(event.data.get("id"))
             user_id = repo.find_user_id(external_user_id) if external_user_id else None
             if user_id is not None:
-                # Access is revoked; retention of the user's data is an
-                # adopter decision (DEC-004, ADR-0002) and is not decided here.
-                repo.remove_user_memberships(user_id)
+                # Access is revoked, and stamped like a membership read, so a
+                # slower read taken before the deletion cannot bring it back.
+                # Retention of the user's data is an adopter decision
+                # (DEC-004, ADR-0002) and is not decided here.
+                repo.remove_user_memberships(user_id, now)
             return EventStatus.PROCESSED, None
 
         return EventStatus.IGNORED, None
@@ -210,9 +248,10 @@ class MembershipReconciler:
             try:
                 self._resolver.refresh_memberships(user_id, external_user_id)
                 refreshed += 1
-            except DomainError:
+            except Exception:
+                # One user's failure never stops the run; the rest are still re-verified.
                 failed += 1
-                logger.warning("membership_reconcile_failed", extra={"user_id": str(user_id)})
+                logger.warning("membership_reconcile_failed", extra={"user_id": str(user_id)}, exc_info=True)
         return {"checked": len(users), "refreshed": refreshed, "failed": failed}
 
 

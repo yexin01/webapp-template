@@ -19,10 +19,15 @@ class ContextKind(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class VerifiedIdentity:
-    """Identity established by server-side token verification."""
+    """Identity established by server-side token verification.
+
+    ``active_org_id`` is the organization the signed session names as active.
+    It may prompt a membership re-check, but never grants access by itself.
+    """
 
     external_user_id: str
     session_id: str | None = None
+    active_org_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
