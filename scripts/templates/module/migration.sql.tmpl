@@ -21,20 +21,29 @@ CREATE INDEX __module___owner_page_idx ON app.__module__ (owner_user_id, created
 ALTER TABLE app.__module__ ENABLE ROW LEVEL SECURITY;
 ALTER TABLE app.__module__ FORCE ROW LEVEL SECURITY;
 
+-- The policy picks its branch with CASE on the context, so it stays a plain
+-- filter and the queries' own tenant predicates drive the page indexes: a list
+-- page reads one page of rows (DB-02). Written as an OR of the two branches, it
+-- would let the planner build index conditions from them and read the whole
+-- tenant on every page. Every query on this table must keep its own tenant
+-- predicate, as the generated adapter does.
 GRANT SELECT, INSERT, DELETE ON app.__module__ TO app_api;
 CREATE POLICY __module___api_access ON app.__module__ FOR ALL TO app_api
   USING (
-    (org_id IS NULL AND app.ctx_org_id() IS NULL AND owner_user_id = app.ctx_user_id())
-    OR (org_id IS NOT NULL AND org_id = app.ctx_org_id() AND EXISTS (
-          SELECT 1 FROM app.organization_memberships membership
-          WHERE membership.org_id = app.__module__.org_id AND membership.user_id = app.ctx_user_id()))
+    CASE WHEN app.ctx_org_id() IS NULL
+      THEN org_id IS NULL AND owner_user_id = app.ctx_user_id()
+      ELSE org_id = app.ctx_org_id() AND EXISTS (
+        SELECT 1 FROM app.organization_memberships membership
+        WHERE membership.org_id = app.__module__.org_id AND membership.user_id = app.ctx_user_id())
+    END
   )
   WITH CHECK (
-    created_by = app.ctx_user_id() AND (
-      (org_id IS NULL AND app.ctx_org_id() IS NULL AND owner_user_id = app.ctx_user_id())
-      OR (org_id IS NOT NULL AND org_id = app.ctx_org_id() AND EXISTS (
-            SELECT 1 FROM app.organization_memberships membership
-            WHERE membership.org_id = app.__module__.org_id AND membership.user_id = app.ctx_user_id())))
+    created_by = app.ctx_user_id() AND CASE WHEN app.ctx_org_id() IS NULL
+      THEN org_id IS NULL AND owner_user_id = app.ctx_user_id()
+      ELSE org_id = app.ctx_org_id() AND EXISTS (
+        SELECT 1 FROM app.organization_memberships membership
+        WHERE membership.org_id = app.__module__.org_id AND membership.user_id = app.ctx_user_id())
+    END
   );
 
 GRANT SELECT ON app.__module__ TO app_worker;

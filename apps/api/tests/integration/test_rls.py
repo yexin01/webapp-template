@@ -29,6 +29,22 @@ def seeded(db: str) -> str:
     return db
 
 
+@pytest.fixture
+def billed(seeded: str) -> str:
+    """The seed plus a customer and an active subscription for each of Alice and Bob (the seed has none)."""
+    with psycopg.connect(seeded) as conn, conn.transaction():
+        for user, name in ((ALICE, "alice"), (BOB, "bob")):
+            conn.execute(
+                "INSERT INTO app.billing_customers (user_id, stripe_customer_id) VALUES (%s, %s)", (user, f"cus_{name}")
+            )
+            conn.execute(
+                "INSERT INTO app.subscriptions (stripe_subscription_id, user_id, stripe_customer_id, status, plan_key) "
+                "VALUES (%s, %s, %s, 'active', 'pro_monthly')",
+                (f"sub_{name}", user, f"cus_{name}"),
+            )
+    return seeded
+
+
 @contextmanager
 def as_role(url: str, role: str, **ctx: str) -> Iterator[psycopg.Connection]:
     with psycopg.connect(url) as conn, conn.transaction():
@@ -42,17 +58,38 @@ def names(conn: psycopg.Connection, sql: str = "SELECT name FROM app.projects OR
     return [r[0] for r in conn.execute(sql).fetchall()]
 
 
-def test_api_role_without_context_sees_nothing(seeded: str) -> None:
-    with as_role(seeded, "app_api") as conn:
-        for table in (
-            "users",
-            "organizations",
-            "organization_memberships",
-            "projects",
-            "billing_customers",
-            "subscriptions",
-        ):
+def test_api_role_without_context_sees_nothing(billed: str) -> None:
+    tables = ("users", "organizations", "organization_memberships", "projects", "billing_customers", "subscriptions")
+    with psycopg.connect(billed) as conn:  # every table has rows, so the zero counts below come from RLS
+        empty = [table for table in tables if conn.execute(f"SELECT count(*) FROM app.{table}").fetchone() == (0,)]
+    assert empty == []
+    with as_role(billed, "app_api") as conn:
+        for table in tables:
             assert conn.execute(f"SELECT count(*) FROM app.{table}").fetchone() == (0,), table
+        assert conn.execute("DELETE FROM app.projects").rowcount == 0
+
+
+@pytest.mark.parametrize(
+    ("sql", "alices", "bobs"),
+    [
+        ("SELECT stripe_subscription_id FROM app.subscriptions", [("sub_alice",)], [("sub_bob",)]),
+        ("SELECT stripe_customer_id FROM app.billing_customers", [("cus_alice",)], [("cus_bob",)]),
+        ("SELECT id::text FROM app.organizations", [(ACME,)], [(ACME,), (GLOBEX,)]),
+        (
+            "SELECT org_id::text, user_id::text, role FROM app.organization_memberships",
+            [(ACME, ALICE, "admin")],
+            [(ACME, BOB, "member"), (GLOBEX, BOB, "admin")],
+        ),
+    ],
+    ids=["subscriptions", "billing_customers", "organizations", "organization_memberships"],
+)
+def test_reads_return_only_the_callers_rows(
+    billed: str, sql: str, alices: list[tuple[str, ...]], bobs: list[tuple[str, ...]]
+) -> None:
+    """DB-07: each user's context reads its own rows (permitted) and never the other user's (wrong context)."""
+    for user, expected in ((ALICE, alices), (BOB, bobs)):
+        with as_role(billed, "app_api", user_id=user) as conn:
+            assert sorted(conn.execute(sql).fetchall()) == sorted(expected), user
 
 
 def test_personal_context_sees_only_own_personal_projects(seeded: str) -> None:
@@ -76,6 +113,17 @@ def test_cannot_insert_into_other_tenant(seeded: str) -> None:
         as_role(seeded, "app_api", user_id=ALICE, org_id=GLOBEX) as conn,
     ):
         conn.execute("INSERT INTO app.projects (org_id, created_by, name) VALUES (%s, %s, 'x')", (GLOBEX, ALICE))
+
+
+def test_cannot_insert_rows_created_by_someone_else(seeded: str) -> None:
+    """DB-07: in both branches of the projects policy, the creator is the caller."""
+    with pytest.raises(psycopg.errors.InsufficientPrivilege), as_role(seeded, "app_api", user_id=ALICE) as conn:
+        conn.execute("INSERT INTO app.projects (owner_user_id, created_by, name) VALUES (%s, %s, 'x')", (ALICE, BOB))
+    with (
+        pytest.raises(psycopg.errors.InsufficientPrivilege),
+        as_role(seeded, "app_api", user_id=ALICE, org_id=ACME) as conn,
+    ):
+        conn.execute("INSERT INTO app.projects (org_id, created_by, name) VALUES (%s, %s, 'x')", (ACME, BOB))
 
 
 def test_cannot_delete_other_tenant_rows(seeded: str) -> None:
@@ -178,6 +226,46 @@ def test_insert_policies_reject_wrong_context(seeded: str, sql: str, params: tup
         conn.execute(sql, params)
 
 
+@pytest.mark.parametrize(
+    ("context", "sql", "params"),
+    [
+        ({"clerk_user_id": "user_new"}, "INSERT INTO app.users (clerk_user_id) VALUES ('user_new')", ()),
+        (
+            {"user_id": ALICE},
+            "INSERT INTO app.projects (owner_user_id, created_by, name) VALUES (%s, %s, 'x')",
+            (ALICE, ALICE),
+        ),
+        (
+            {"user_id": ALICE, "org_id": ACME},
+            "INSERT INTO app.projects (org_id, created_by, name) VALUES (%s, %s, 'x')",
+            (ACME, ALICE),
+        ),
+        (
+            {"user_id": ALICE},
+            "INSERT INTO app.billing_customers (user_id, stripe_customer_id) VALUES (%s, 'cus_own')",
+            (ALICE,),
+        ),
+        (
+            {"user_id": ALICE},
+            "INSERT INTO app.audit_log (actor_user_id, action, target_type, outcome) VALUES (%s, 'x', 'p', 'allowed')",
+            (ALICE,),
+        ),
+        (
+            {"user_id": ALICE},
+            "INSERT INTO app.outbox (id, event_type) VALUES (gen_random_uuid(), 'projects.created')",
+            (),
+        ),
+    ],
+    ids=["users", "projects_personal", "projects_organization", "billing_customers", "audit_log", "outbox"],
+)
+def test_insert_policies_permit_the_callers_own_rows(
+    seeded: str, context: dict[str, str], sql: str, params: tuple[Any, ...]
+) -> None:
+    """DB-07: the permitted case, so the denials around it are not just a policy that refuses everything."""
+    with as_role(seeded, "app_api", **context) as conn:
+        assert conn.execute(sql, params).rowcount == 1
+
+
 def test_insert_policies_reject_missing_context(seeded: str) -> None:
     for sql, params in (
         (
@@ -186,6 +274,9 @@ def test_insert_policies_reject_missing_context(seeded: str) -> None:
         ),
         ("INSERT INTO app.outbox (id, event_type) VALUES (gen_random_uuid(), 'projects.created')", ()),
         ("INSERT INTO app.billing_customers (user_id, stripe_customer_id) VALUES (%s, 'cus_noctx')", (ALICE,)),
+        ("INSERT INTO app.users (clerk_user_id) VALUES ('user_noctx')", ()),
+        ("INSERT INTO app.projects (owner_user_id, created_by, name) VALUES (%s, %s, 'x')", (ALICE, ALICE)),
+        ("INSERT INTO app.projects (org_id, created_by, name) VALUES (%s, %s, 'x')", (ACME, ALICE)),
     ):
         with pytest.raises(psycopg.errors.InsufficientPrivilege), as_role(seeded, "app_api") as conn:
             conn.execute(sql, params)

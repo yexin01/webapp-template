@@ -1,17 +1,25 @@
-"""__Module__ module: tenancy, authorization, audit, events, and RLS (generated)."""
+"""__Module__ module: tenancy, authorization, audit, events, RLS, and list plans (generated)."""
 
 from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from typing import Any
 
 import psycopg
 import pytest
 
+from app.kernel.authorization import ALL_ROLES
+from app.kernel.pagination import DEFAULT_PAGE_SIZE
 from app.kernel.tenancy import Role
+from app.modules.__module__ import service
+from app.modules.__module__.adapters import Pg__Module__Repository
+from app.modules.__module__.domain import __ENTITY___DELETE
 from app.modules.identity.domain import ExternalMembership
 from tests.conftest import Harness, superuser_query
+from tests.membership_races import DOWNGRADE, REMOVE, change_after_resolution
+from tests.query_plans import ORG_CONTEXT, PERSONAL_CONTEXT, halfway_cursor, page_plan, seed_tenants
 
 pytestmark = pytest.mark.db
 
@@ -76,6 +84,50 @@ def test_non_members_cannot_see_the_organization(harness: Harness, people: dict[
     assert harness.client.get(IN_ORG, headers=people["outsider"]).status_code == 404
 
 
+def test_member_removed_after_context_resolution_cannot_create(
+    harness: Harness, people: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """TEN-05, TEN-07: a removal that commits after the context was resolved is a 404, not a 500."""
+    assert harness.client.get(IN_ORG, headers=people["member"]).status_code == 200  # mirrors the membership
+    change_after_resolution(harness, monkeypatch, REMOVE)
+    assert harness.client.post(IN_ORG, json={"name": "after removal"}, headers=people["member"]).status_code == 404
+    assert superuser_query(harness.database_url, "SELECT count(*) FROM app.__module__") == [(0,)]
+
+
+def test_denial_by_the_role_recheck_is_audited(
+    harness: Harness, people: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """NT-06, NT-07: an admin downgraded after the context was resolved gets 403, audited, and nothing changes."""
+    item = harness.client.post(IN_ORG, json={"name": "shared"}, headers=people["admin"]).json()
+    change_after_resolution(harness, monkeypatch, DOWNGRADE)
+    assert harness.client.delete(f"{IN_ORG}/{item['id']}", headers=people["admin"]).status_code == 403
+    audit = superuser_query(harness.database_url, "SELECT action, target_id, outcome FROM app.audit_log")
+    assert audit == [("__entity__:delete", item["id"], "denied")]
+    assert superuser_query(harness.database_url, "SELECT count(*) FROM app.__module__") == [(1,)]
+
+
+def test_admin_removed_after_context_resolution_cannot_delete(
+    harness: Harness, people: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """TEN-05, ADM-01: an admin removed after the context was resolved is a non-member: 404, audited, nothing changes."""
+    item = harness.client.post(IN_ORG, json={"name": "shared"}, headers=people["admin"]).json()
+    change_after_resolution(harness, monkeypatch, REMOVE)
+    assert harness.client.delete(f"{IN_ORG}/{item['id']}", headers=people["admin"]).status_code == 404
+    audit = superuser_query(harness.database_url, "SELECT action, target_id, outcome FROM app.audit_log")
+    assert audit == [("__entity__:delete", item["id"], "denied")]
+    assert superuser_query(harness.database_url, "SELECT count(*) FROM app.__module__") == [(1,)]
+
+
+def test_the_role_recheck_applies_the_declared_permission(
+    harness: Harness, people: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Granting delete to members in __ENTITY___DELETE is enough: the locked re-check applies that same permission."""
+    monkeypatch.setattr(service, "__ENTITY___DELETE", replace(__ENTITY___DELETE, org_roles=ALL_ROLES))
+    item = harness.client.post(IN_ORG, json={"name": "shared"}, headers=people["member"]).json()
+    assert harness.client.delete(f"{IN_ORG}/{item['id']}", headers=people["member"]).status_code == 204
+    assert superuser_query(harness.database_url, "SELECT count(*) FROM app.__module__") == [(0,)]
+
+
 def test_create_records_an_event(harness: Harness, people: dict[str, Any]) -> None:
     harness.client.post(PERSONAL, json={"name": "evented"}, headers=people["admin"])
     rows = superuser_query(harness.database_url, "SELECT event_type, status FROM app.outbox")
@@ -122,3 +174,37 @@ def test_database_requires_membership_of_the_context_organization(harness: Harne
     # Without an organization context, organization rows stay out of reach too.
     with pytest.raises(psycopg.errors.InsufficientPrivilege), api_role(url, user_id=rival) as conn:
         conn.execute("INSERT INTO app.__module__ (org_id, created_by, name) VALUES (%s, %s, 'x')", (org, rival))
+
+
+def test_database_keeps_personal_items_to_their_owner(harness: Harness, people: dict[str, Any]) -> None:
+    """DB-07, personal branch: another user, or the owner in an organization context, sees and changes nothing."""
+    item = harness.client.post(PERSONAL, json={"name": "personal secret"}, headers=people["admin"]).json()
+    assert harness.client.get(PERSONAL, headers=people["outsider"]).status_code == 200  # provisions the outsider
+    assert harness.client.get(IN_ORG, headers=people["admin"]).status_code == 200  # provisions the organization
+    url = harness.database_url
+    admin = one_id(url, "SELECT id FROM app.users WHERE clerk_user_id = %s", "user_admin")
+    outsider = one_id(url, "SELECT id FROM app.users WHERE clerk_user_id = %s", "user_outsider")
+    org = one_id(url, "SELECT id FROM app.organizations WHERE clerk_org_id = %s", ORG)
+    for context in ({"user_id": outsider}, {"user_id": admin, "org_id": org}):
+        with api_role(url, **context) as conn:
+            assert conn.execute("SELECT count(*) FROM app.__module__").fetchone() == (0,), context
+            assert conn.execute("DELETE FROM app.__module__ WHERE id = %s", (item["id"],)).rowcount == 0, context
+    insert = "INSERT INTO app.__module__ (owner_user_id, created_by, name) VALUES (%s, %s, 'x')"
+    for context in ({"user_id": outsider}, {"user_id": admin}):  # someone else's row; a forged creator
+        with pytest.raises(psycopg.errors.InsufficientPrivilege), api_role(url, **context) as conn:
+            conn.execute(insert, (admin, outsider))
+    with api_role(url, user_id=admin) as conn:  # permitted, and nothing above changed it
+        assert conn.execute("SELECT id::text FROM app.__module__").fetchall() == [(item["id"],)]
+
+
+def test_list_reads_one_page_through_the_page_index(harness: Harness) -> None:
+    """DB-02: the first page, and one halfway through a tenant, walk the page index and stop at the page size."""
+    seed_tenants(harness.database_url, "__module__")
+    transactions = harness.container.kernel.transactions(lambda conn: conn)
+    for ctx, index in ((ORG_CONTEXT, "__module___org_page_idx"), (PERSONAL_CONTEXT, "__module___owner_page_idx")):
+        for after in (None, halfway_cursor(transactions, Pg__Module__Repository, ctx)):
+            path = page_plan(transactions, Pg__Module__Repository, ctx, after)
+            shape = [(node["Node Type"], node.get("Index Name")) for node in path]
+            assert shape == [("Limit", None), ("Index Scan", index)], (ctx.kind, after, path[0])
+            # The scan stopped at the page: nothing read beyond it, nothing discarded by the policy or the cursor.
+            assert (path[1]["Actual Rows"], path[1].get("Rows Removed by Filter", 0)) == (DEFAULT_PAGE_SIZE, 0), path[0]

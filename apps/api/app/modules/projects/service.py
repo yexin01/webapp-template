@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from uuid import UUID
 
 from app.kernel.authorization import authorize, is_allowed
-from app.kernel.errors import ForbiddenError, NotFoundError
+from app.kernel.errors import DomainError, ForbiddenError, NotFoundError
 from app.kernel.events import StoredEvent
 from app.kernel.pagination import PageCursor, bounded_limit
-from app.kernel.ports import Analytics, AuditEntry, Transactions
+from app.kernel.ports import Analytics, AuditEntry, Transactions, Tx
 from app.kernel.tenancy import ContextKind, Role, TenantContext
 from app.modules.projects.domain import (
     PROJECT_CREATE,
@@ -35,34 +36,50 @@ class ProjectService:
         authorize(ctx, PROJECT_CREATE)
         clean = clean_name(name)
         with self._tx.as_tenant(ctx) as t:
+            # A removal since the context was resolved is a 404, not an RLS error (TEN-05, TEN-07).
+            if ctx.kind is ContextKind.ORGANIZATION and _my_locked_role(t, ctx) is None:
+                raise NotFoundError()
             project = t.repo.create(ctx, clean)
             t.record(ProjectCreated(project_id=project.id, user_id=ctx.user_id, org_id=ctx.org_id, context=ctx.kind))
         return project
 
     def delete(self, ctx: TenantContext, project_id: UUID, request_id: str | None) -> None:
-        if not is_allowed(ctx, PROJECT_DELETE):
-            with self._tx.as_tenant(ctx) as t:
-                t.audit(_audit(ctx, project_id, "denied", request_id))
-            raise ForbiddenError()
-
         with self._tx.as_tenant(ctx) as t:
-            # Re-check the role inside the writing transaction and lock the
-            # membership row, so a concurrent downgrade cannot commit before
-            # this privileged write (TEN-07, NT-06).
-            if ctx.kind is ContextKind.ORGANIZATION and (
-                ctx.org_id is None or t.lock_my_role(ctx.org_id) is not Role.ADMIN
-            ):
-                raise ForbiddenError()
-            if not t.repo.delete(ctx, project_id):
-                raise NotFoundError()
-            if ctx.kind is ContextKind.ORGANIZATION:
-                t.audit(_audit(ctx, project_id, "succeeded", request_id))
+            refusal = _delete_refusal(t, ctx)
+            if refusal is None:
+                if not t.repo.delete(ctx, project_id):
+                    raise NotFoundError()
+                if ctx.kind is ContextKind.ORGANIZATION:
+                    t.audit(_audit(ctx, project_id, "succeeded", request_id))
+            else:
+                # The block ends normally so the denial's audit entry commits (ADM-01, NT-07).
+                t.audit(_audit(ctx, project_id, "denied", request_id))
+        if refusal is not None:
+            raise refusal
 
     def capture_created(self, event: StoredEvent) -> None:
         """Outbox handler: product analytics, after commit."""
         self._analytics.capture(
             UUID(str(event.payload["user_id"])), "project_created", {"context": str(event.payload["context"])}
         )
+
+
+def _delete_refusal(t: Tx[ProjectRepository], ctx: TenantContext) -> DomainError | None:
+    """Why the caller may not delete, decided inside the writing transaction."""
+    if not is_allowed(ctx, PROJECT_DELETE):
+        return ForbiddenError()
+    if ctx.kind is not ContextKind.ORGANIZATION:
+        return None
+    # Re-read under a row lock, so a concurrent downgrade cannot commit first (TEN-07, NT-06).
+    role = _my_locked_role(t, ctx)
+    if role is None:
+        return NotFoundError()  # removed since the context was resolved: a non-member (TEN-05)
+    return None if is_allowed(replace(ctx, role=role), PROJECT_DELETE) else ForbiddenError()
+
+
+def _my_locked_role(t: Tx[ProjectRepository], ctx: TenantContext) -> Role | None:
+    """The caller's current role in the context organization, locked until the transaction ends."""
+    return None if ctx.org_id is None else t.lock_my_role(ctx.org_id)
 
 
 def _audit(ctx: TenantContext, project_id: UUID, outcome: str, request_id: str | None) -> AuditEntry:

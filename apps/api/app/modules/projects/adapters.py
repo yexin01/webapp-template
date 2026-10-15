@@ -2,7 +2,10 @@
 
 Row-level security filters every statement by the transaction's role and
 context; the explicit tenant filters below are a second, independent guard.
-All SQL uses bound parameters only.
+They are also what lets a list page walk the page index and stop at the
+limit: the access policy only filters the rows a query reads (migration
+20261015000004), so every query must keep them (DB-02). All SQL uses bound
+parameters only.
 """
 
 from __future__ import annotations
