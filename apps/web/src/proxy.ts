@@ -2,11 +2,17 @@ import { clerkMiddleware } from "@clerk/nextjs/server";
 
 import { isPublicPage } from "@/lib/page-access";
 
+// The origins a session token may have been issued for (its azp claim), derived by next.config.ts from
+// CLERK_AUTHORIZED_PARTIES and APP_BASE_URL with the API's rules. Empty only under APP_ENV=test.
+const authorizedParties = (process.env.NEXT_PUBLIC_CLERK_AUTHORIZED_PARTIES ?? "").split(",").filter(Boolean);
+
 /**
  * Page access for presentation only (FE-05): a signed-out visitor is sent to
  * sign-in from every page except the ones listed in lib/page-access.ts, so a
  * new page requires sign-in by default. Every API operation is authorized
- * independently by the Python backend; this never replaces it.
+ * independently by the Python backend; this never replaces it. The browser
+ * half is the page gate (ui/page-gate.tsx), for a deployment where this does
+ * not run.
  */
 export default clerkMiddleware(
   async (auth, request) => {
@@ -14,7 +20,11 @@ export default clerkMiddleware(
       await auth.protect();
     }
   },
-  { signInUrl: "/sign-in", signUpUrl: "/sign-up" },
+  {
+    signInUrl: "/sign-in",
+    signUpUrl: "/sign-up",
+    authorizedParties: authorizedParties.length > 0 ? authorizedParties : undefined,
+  },
 );
 
 export const config = {
