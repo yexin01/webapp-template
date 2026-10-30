@@ -6,7 +6,8 @@ import { ApiError, type Problem } from "./errors";
 import type { components, paths } from "./schema";
 
 export type Schemas = components["schemas"];
-export type TokenGetter = () => Promise<string | null>;
+/** `skipCache` asks Clerk for a new token from its Frontend API instead of the cached one. */
+export type TokenGetter = (options?: { skipCache?: boolean }) => Promise<string | null>;
 
 /** The typed client generated from the OpenAPI contract. Paths include the `/api/v1` prefix. */
 export type ApiFetchClient = Client<paths>;
@@ -68,20 +69,38 @@ function untilAborted<T>(pending: Promise<T>, signal: AbortSignal): Promise<T> {
 /**
  * Gets a session token, then sends one request and reads its body, all under
  * one deadline: a session token that never arrives (Clerk unreachable) times
- * out like a stalled API. Network failures, a failed token lookup, and
- * timeouts become safe errors, a success response whose body is not JSON is
- * an error rather than data, and a caller's abort is re-thrown untouched.
+ * out like a stalled API. A 401 for a request that carried a token is retried
+ * once with a fresh token from Clerk (AUTH-06's silent refresh): the cached
+ * token may have expired in the browser just now, and the API answers 401
+ * before any handler runs, so sending the request again repeats no effect. If
+ * Clerk has no newer token, the 401 stands and the screen offers sign-in.
+ * Network failures, a failed token lookup, and timeouts become safe errors, a
+ * success response whose body is not JSON is an error rather than data, and a
+ * caller's abort is re-thrown untouched.
  */
 function transport(timeoutMs: number, getToken: TokenGetter) {
   return async (request: Request): Promise<Response> => {
     const deadline = withDeadline(request.signal, timeoutMs);
     try {
+      // A body can be read once, so the copy for the retry is taken before the first send.
+      const retry = request.clone();
       const token = await untilAborted(
         getToken().catch(() => Promise.reject(ApiError.network())),
         deadline.signal,
       );
       if (token) request.headers.set("Authorization", `Bearer ${token}`);
-      const response = await globalThis.fetch(request, { signal: deadline.signal });
+      let response = await globalThis.fetch(request, { signal: deadline.signal });
+      if (response.status === 401 && token) {
+        const fresh = await untilAborted(
+          getToken({ skipCache: true }).catch(() => null),
+          deadline.signal,
+        );
+        if (fresh && fresh !== token) {
+          void response.body?.cancel();
+          retry.headers.set("Authorization", `Bearer ${fresh}`);
+          response = await globalThis.fetch(retry, { signal: deadline.signal });
+        }
+      }
       if (NO_BODY.has(response.status)) return response;
       const text = await response.text();
       if (response.ok && !isJson(text)) throw ApiError.unexpectedResponse(response.status);

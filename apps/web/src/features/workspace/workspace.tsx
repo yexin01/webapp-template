@@ -8,6 +8,7 @@ import { LlmCheck } from "@/features/llm";
 import { ProjectsPanel } from "@/features/projects";
 import { useApi } from "@/lib/api/use-api";
 import { useResource } from "@/lib/use-resource";
+import { OperatorOnly } from "@/ui/operator-only";
 import { ErrorState, LoadingState } from "@/ui/state-views";
 
 /**
@@ -44,7 +45,9 @@ export function Workspace() {
         {plan && <PlanBadge plan={plan} />}
       </div>
       <ProjectsPanel key={`${userId}:${orgId ?? "personal"}`} orgId={orgId} canDelete={canDelete} />
-      <LlmCheck />
+      <OperatorOnly>
+        <LlmCheck />
+      </OperatorOnly>
     </div>
   );
 }

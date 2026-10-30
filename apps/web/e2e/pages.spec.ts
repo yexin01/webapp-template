@@ -29,11 +29,8 @@ test("skip link moves focus to the main content", async ({ page, browserName }) 
   await expect(page.locator("#main")).toBeFocused();
 });
 
-test("unknown routes show the 404 page", async ({ page }) => {
-  const response = await page.goto("/definitely-not-a-page");
-  expect(response?.status()).toBe(404);
-  await expect(page.getByRole("heading", { name: "Page not found" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Go home" })).toHaveAttribute("href", "/");
-  const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa"]).analyze();
-  expect(results.violations).toEqual([]);
+// Default deny: the 404 page itself is shown to signed-in users (authenticated.spec.ts).
+test("unknown routes ask a signed-out visitor to sign in", async ({ page }) => {
+  await page.goto("/definitely-not-a-page");
+  await expect(page).toHaveURL(/\/sign-in\?redirect_url=/);
 });

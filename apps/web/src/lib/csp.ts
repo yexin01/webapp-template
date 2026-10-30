@@ -2,8 +2,12 @@
  * Content Security Policy for the web app (SEC-02).
  *
  * Allows only the origins the template actually uses: the Clerk Frontend API
- * (derived from the publishable key), Clerk's image CDN and bot protection,
- * and — when enabled — PostHog and Sentry ingestion. Next.js requires inline
+ * (derived from the publishable key), Clerk's image CDN, its bot protection
+ * (Cloudflare Turnstile) and abuse and fraud protection (Clerk Protect, whose
+ * hosts are served on ports other than 443, hence the port wildcard), and,
+ * when enabled, PostHog and Sentry ingestion. Clerk's required sources:
+ * https://clerk.com/docs/guides/secure/best-practices/csp-headers (recheck on
+ * each @clerk/nextjs upgrade; csp.test.ts pins them). Next.js requires inline
  * scripts without a nonce setup, and development additionally needs eval.
  */
 
@@ -70,6 +74,9 @@ export function posthogOrigins(host: string | undefined): PostHogOrigins {
   return { connect: [...new Set(connect)], script: [assets] };
 }
 
+/** Clerk's abuse and fraud protection (Clerk Protect) challenges, which sign-in and sign-up load mid-flow. */
+const CLERK_PROTECT = "https://*.protect.clerk.com";
+
 export function buildContentSecurityPolicy(input: CspInput): string {
   const clerk = clerkFrontendApiOrigin(input.clerkPublishableKey);
   const posthog = posthogOrigins(input.posthogHost);
@@ -84,11 +91,13 @@ export function buildContentSecurityPolicy(input: CspInput): string {
       input.isDev && "'unsafe-eval'",
       clerk,
       "https://challenges.cloudflare.com",
+      CLERK_PROTECT,
       ...posthog.script,
     ),
     "connect-src": list(
       "'self'",
       clerk,
+      `${CLERK_PROTECT}:*`,
       "https://clerk-telemetry.com",
       ...posthog.connect,
       sentry,
@@ -97,7 +106,7 @@ export function buildContentSecurityPolicy(input: CspInput): string {
     "img-src": list("'self'", "data:", "https://img.clerk.com"),
     "style-src": "'self' 'unsafe-inline'",
     "font-src": "'self' data:",
-    "frame-src": list("https://challenges.cloudflare.com"),
+    "frame-src": list("https://challenges.cloudflare.com", CLERK_PROTECT),
     "worker-src": "'self' blob:",
     "form-action": "'self'",
     "base-uri": "'self'",

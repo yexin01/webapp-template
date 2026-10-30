@@ -16,7 +16,7 @@ const search = vi.hoisted(() => ({ query: "" }));
 vi.mock("@/lib/api/use-api", () => ({ useApi: () => api }));
 vi.mock("@/lib/analytics", () => ({ track: vi.fn() }));
 const auth = vi.hoisted(() => ({ isLoaded: true, userId: "user_1" as string | undefined }));
-vi.mock("@clerk/nextjs", () => ({ useAuth: () => auth }));
+vi.mock("@clerk/nextjs", () => ({ useAuth: () => auth, useClerk: () => ({ status: "ready" }) }));
 vi.mock("next/navigation", () => ({
   usePathname: () => "/billing",
   useSearchParams: () => new URLSearchParams(search.query),

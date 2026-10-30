@@ -1,6 +1,7 @@
 import { SignUpButton } from "@clerk/nextjs";
 import Link from "next/link";
 
+import { OperatorOnly } from "@/ui/operator-only";
 import { SignedInOnly, SignedOutOnly } from "@/ui/signed-in-state";
 
 export default function HomePage() {
@@ -16,9 +17,11 @@ export default function HomePage() {
           <Link className="button button-primary" href="/dashboard">
             Open dashboard
           </Link>
-          <Link className="button" href="/integrations">
-            Check integrations
-          </Link>
+          <OperatorOnly>
+            <Link className="button" href="/integrations">
+              Check integrations
+            </Link>
+          </OperatorOnly>
         </SignedInOnly>
         <SignedOutOnly>
           <SignUpButton>

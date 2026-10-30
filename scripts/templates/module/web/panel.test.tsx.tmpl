@@ -16,7 +16,7 @@ const auth = vi.hoisted(() => ({ isLoaded: true, userId: "user_a" }));
 
 vi.mock("@/lib/api/use-api", () => ({ useApi: () => api }));
 vi.mock("next/navigation", () => ({ usePathname: () => "/dashboard" }));
-vi.mock("@clerk/nextjs", () => ({ useAuth: () => auth }));
+vi.mock("@clerk/nextjs", () => ({ useAuth: () => auth, useClerk: () => ({ status: "ready" }) }));
 
 const item: Schemas["__Entity__"] = {
   id: "00000000-0000-4000-8000-000000000001",

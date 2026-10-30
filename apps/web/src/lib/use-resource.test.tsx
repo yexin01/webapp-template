@@ -1,15 +1,16 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 
-import { REQUEST_TIMEOUT_MS } from "./api/deadlines";
 import { presentError } from "./api/errors";
-import { useResource } from "./use-resource";
+import { CLERK_LOAD_BACKSTOP_MS, useResource } from "./use-resource";
 
 const auth = vi.hoisted(() => ({ isLoaded: true, userId: "user_a" as string | null | undefined }));
-vi.mock("@clerk/nextjs", () => ({ useAuth: () => auth }));
+const clerk = vi.hoisted(() => ({ status: "loading" as "loading" | "ready" | "degraded" | "error" }));
+vi.mock("@clerk/nextjs", () => ({ useAuth: () => auth, useClerk: () => clerk }));
 
 beforeEach(() => {
   auth.isLoaded = true;
   auth.userId = "user_a";
+  clerk.status = "loading";
 });
 
 describe("useResource", () => {
@@ -64,7 +65,44 @@ describe("useResource", () => {
     expect(loadedFetcher).toHaveBeenCalledOnce();
   });
 
-  it("reports sign-in as unavailable, with a page reload, when Clerk never loads", () => {
+  it("reports sign-in as unavailable at once when the SDK reports that Clerk failed to load", () => {
+    auth.isLoaded = false;
+    auth.userId = undefined;
+    clerk.status = "error";
+    const reloadPage = vi.fn();
+    vi.spyOn(window, "location", "get").mockReturnValue({ ...window.location, reload: reloadPage });
+    const fetcher = vi.fn().mockResolvedValue("data");
+    try {
+      const { result } = renderHook(() => useResource(fetcher, "k"));
+      expect(result.current).toMatchObject({ loading: false, data: undefined });
+      expect(presentError(result.current.error)).toMatchObject({
+        title: "Sign-in unavailable",
+        action: "retry",
+      });
+      result.current.reload();
+      expect(reloadPage).toHaveBeenCalledOnce();
+      expect(fetcher).not.toHaveBeenCalled();
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("loads the data when Clerk is degraded: it has loaded, only its Frontend API is down", async () => {
+    clerk.status = "degraded";
+    const fetcher = vi.fn().mockResolvedValue("data");
+    const { result } = renderHook(() => useResource(fetcher, "k"));
+    await waitFor(() => expect(result.current.data).toBe("data"));
+    expect(result.current.error).toBeUndefined();
+  });
+
+  it("does not report a failure for a Clerk that is still loading", () => {
+    auth.isLoaded = false;
+    auth.userId = undefined;
+    const { result } = renderHook(() => useResource(vi.fn(), "k"));
+    expect(result.current).toMatchObject({ loading: true, error: undefined });
+  });
+
+  it("reports sign-in as unavailable, with a page reload, when Clerk never loads or fails", () => {
     vi.useFakeTimers();
     try {
       // clerk-js was blocked or its Frontend API is down: Clerk never reports loaded.
@@ -75,7 +113,7 @@ describe("useResource", () => {
       const fetcher = vi.fn().mockResolvedValue("data");
       const { result } = renderHook(() => useResource(fetcher, "k"));
 
-      act(() => vi.advanceTimersByTime(REQUEST_TIMEOUT_MS - 1));
+      act(() => vi.advanceTimersByTime(CLERK_LOAD_BACKSTOP_MS - 1));
       expect(result.current).toMatchObject({ loading: true, error: undefined });
       act(() => vi.advanceTimersByTime(1));
       expect(result.current).toMatchObject({ loading: false, data: undefined });
@@ -100,7 +138,7 @@ describe("useResource", () => {
     vi.useFakeTimers();
     const { result, rerender } = renderHook(() => useResource(fetcher, "k"));
     try {
-      act(() => vi.advanceTimersByTime(REQUEST_TIMEOUT_MS));
+      act(() => vi.advanceTimersByTime(CLERK_LOAD_BACKSTOP_MS));
     } finally {
       vi.useRealTimers();
     }

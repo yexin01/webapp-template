@@ -268,6 +268,101 @@ describe("api client", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  describe("silent session refresh (AUTH-06)", () => {
+    const problem = (code: string, status: number) =>
+      new Response(JSON.stringify({ type: "about:blank", title: "x", status, code, detail: "d" }), {
+        status,
+        headers: { "content-type": "application/problem+json" },
+      });
+    const ok = (body: unknown) =>
+      new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+    const unauthenticated = () => problem("UNAUTHENTICATED", 401);
+    /** A getToken that hands out `first` normally and `refreshed` when asked to skip its cache. */
+    const tokens = (first: string | null, refreshed: string | null) =>
+      vi.fn(async (options?: { skipCache?: boolean }) => (options?.skipCache ? refreshed : first));
+    const answers = (...responses: (() => Response)[]) => {
+      const fn = vi.fn<(request: Request) => Promise<Response>>();
+      for (const response of responses) fn.mockImplementationOnce(async () => response());
+      vi.stubGlobal("fetch", fn);
+      return fn;
+    };
+
+    it("asks Clerk for a fresh token after a 401 and sends the request again with it", async () => {
+      const getToken = tokens("old", "new");
+      const fetchMock = answers(unauthenticated, () => ok({ user_id: "u1" }));
+      await expect(createApiClient(getToken).me()).resolves.toEqual({ user_id: "u1" });
+      expect(getToken.mock.calls.map(([options]) => options)).toEqual([undefined, { skipCache: true }]);
+      expect(sentRequest(fetchMock, 0).headers.get("Authorization")).toBe("Bearer old");
+      expect(sentRequest(fetchMock, 1).headers.get("Authorization")).toBe("Bearer new");
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("sends the same body and idempotency key again for a write", async () => {
+      const fetchMock = answers(unauthenticated, () => ok({ url: "https://checkout.stripe.com/x" }));
+      await createApiClient(tokens("old", "new")).startCheckout("pro_yearly", "key-12345678");
+      const [first, second] = [sentRequest(fetchMock, 0), sentRequest(fetchMock, 1)];
+      expect(second.method).toBe("POST");
+      expect(second.headers.get("Idempotency-Key")).toBe("key-12345678");
+      expect(await first.text()).toBe(JSON.stringify({ plan: "pro_yearly" }));
+      expect(await second.text()).toBe(JSON.stringify({ plan: "pro_yearly" }));
+    });
+
+    it("gives up after one retry: a second 401 is the sign-in error", async () => {
+      const fetchMock = answers(unauthenticated, unauthenticated);
+      const error = await createApiClient(tokens("old", "new"))
+        .me()
+        .catch((e: unknown) => e);
+      expect(error).toMatchObject({ status: 401, code: "UNAUTHENTICATED" });
+      expect(presentError(error).action).toBe("sign-in");
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it.each([
+      ["there was no session token", null, "new"],
+      ["Clerk has no newer token", "old", null],
+      ["Clerk returns the same token", "old", "old"],
+    ])("does not retry when %s", async (_label, first, refreshed) => {
+      const fetchMock = answers(unauthenticated);
+      const error = await createApiClient(tokens(first, refreshed))
+        .me()
+        .catch((e: unknown) => e);
+      expect(error).toMatchObject({ status: 401, code: "UNAUTHENTICATED" });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("treats a failed refresh as no newer token", async () => {
+      const getToken = vi.fn(async (options?: { skipCache?: boolean }) => {
+        if (options?.skipCache) throw new Error("clerk-js failed: internal detail");
+        return "old";
+      });
+      const fetchMock = answers(unauthenticated);
+      const error = await createApiClient(getToken)
+        .me()
+        .catch((e: unknown) => e);
+      expect(error).toMatchObject({ status: 401, code: "UNAUTHENTICATED" });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not retry other failures", async () => {
+      const fetchMock = answers(() => problem("FORBIDDEN", 403));
+      const getToken = tokens("old", "new");
+      await expect(createApiClient(getToken).me()).rejects.toMatchObject({ code: "FORBIDDEN" });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(getToken).toHaveBeenCalledTimes(1);
+    });
+
+    it("still times out when the refresh never answers", async () => {
+      answers(unauthenticated);
+      const getToken = vi.fn((options?: { skipCache?: boolean }) =>
+        options?.skipCache ? new Promise<string | null>(() => undefined) : Promise.resolve("old"),
+      );
+      const error = await createApiClient(getToken, { timeoutMs: 20 })
+        .me()
+        .catch((e: unknown) => e);
+      expect(error).toMatchObject({ code: "TIMEOUT" });
+    });
+  });
+
   it("sizes the dev/start rewrite proxy beyond the longest client deadline", () => {
     expect(PROXY_TIMEOUT_MS).toBeGreaterThan(PROVIDER_TIMEOUT_MS);
     expect(PROVIDER_TIMEOUT_MS).toBeGreaterThan(REQUEST_TIMEOUT_MS);
