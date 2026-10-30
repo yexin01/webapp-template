@@ -96,32 +96,37 @@ class PgIdentityRepository:
         entry) takes ``FOR KEY SHARE`` on this row, and must not deadlock with
         a refresh waiting for that membership.
 
-        Organizations are written in a fixed order, so two users' refreshes
-        that create the same new organizations cannot deadlock each other.
+        Organizations and memberships are written in two statements, however
+        many there are, in a fixed order, so two users' refreshes that create
+        the same new organizations cannot deadlock each other.
         """
         row = self._one("SELECT memberships_verified_at FROM app.users WHERE id = %s FOR NO KEY UPDATE", (user_id,))
         if row is None or (row["memberships_verified_at"] is not None and row["memberships_verified_at"] > verified_at):
             return False
-        memberships = sorted(memberships, key=lambda m: m.external_org_id)
-        external_ids = [m.external_org_id for m in memberships]
-        for m in memberships:
-            self._exec(
-                """
-                INSERT INTO app.organizations (clerk_org_id) VALUES (%s)
-                ON CONFLICT (clerk_org_id) DO NOTHING
-                """,
-                (m.external_org_id,),
-            )
-            self._exec(
-                """
-                INSERT INTO app.organization_memberships (org_id, user_id, role, verified_at)
-                SELECT o.id, %s, %s, %s FROM app.organizations o
-                WHERE o.clerk_org_id = %s AND o.deleted_at IS NULL
-                ON CONFLICT (org_id, user_id)
-                DO UPDATE SET role = EXCLUDED.role, verified_at = EXCLUDED.verified_at
-                """,
-                (user_id, m.role.value, verified_at, m.external_org_id),
-            )
+        # One row per organization: a paged read can list one twice, and the last listing wins.
+        role_by_org = {m.external_org_id: m.role.value for m in memberships}
+        external_ids, roles = list(role_by_org), list(role_by_org.values())
+        self._exec(
+            """
+            INSERT INTO app.organizations (clerk_org_id)
+            SELECT clerk_org_id FROM unnest(%s::text[]) AS listed(clerk_org_id)
+            ORDER BY clerk_org_id
+            ON CONFLICT (clerk_org_id) DO NOTHING
+            """,
+            (external_ids,),
+        )
+        self._exec(
+            """
+            INSERT INTO app.organization_memberships (org_id, user_id, role, verified_at)
+            SELECT o.id, %s, listed.role, %s
+            FROM unnest(%s::text[], %s::text[]) AS listed(clerk_org_id, role)
+            JOIN app.organizations o ON o.clerk_org_id = listed.clerk_org_id AND o.deleted_at IS NULL
+            ORDER BY listed.clerk_org_id
+            ON CONFLICT (org_id, user_id)
+            DO UPDATE SET role = EXCLUDED.role, verified_at = EXCLUDED.verified_at
+            """,
+            (user_id, verified_at, external_ids, roles),
+        )
         self._exec(
             """
             DELETE FROM app.organization_memberships m

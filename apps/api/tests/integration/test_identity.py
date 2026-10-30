@@ -26,7 +26,7 @@ from app.kernel.errors import DependencyUnavailableError, DomainError, NotFoundE
 from app.kernel.ports import AuditEntry
 from app.kernel.tenancy import Role, VerifiedIdentity
 from app.modules.identity import service as identity_service
-from app.modules.identity.adapters import clerk, repository
+from app.modules.identity.adapters import clerk
 from app.modules.identity.adapters.clerk import ClerkMembershipDirectory, ClerkTokenVerifier, ClerkWebhookVerifier
 from app.modules.identity.domain import ExternalMembership
 from tests.conftest import Harness, TokenTableVerifier, superuser_query
@@ -1089,9 +1089,34 @@ def test_a_refresh_does_not_deadlock_with_a_privileged_write(harness: Harness) -
     assert superuser_query(h.database_url, "SELECT role FROM app.organization_memberships") == [("member",)]
 
 
-def test_refreshes_creating_the_same_organizations_do_not_deadlock(
-    harness: Harness, monkeypatch: pytest.MonkeyPatch
-) -> None:
+# Each refresh writes its new organizations in one statement, so the race between two refreshes
+# happens inside it: this trigger holds a transaction's second new organization back until another
+# session is blocked on a lock (as in wait_for_lock_wait), or for 5 s. A row that is already
+# committed is not held back, so the refresh that waited behind the other does not wait again.
+_HOLD_SECOND_ORGANIZATION = """
+CREATE FUNCTION app.test_hold_second_organization() RETURNS trigger LANGUAGE plpgsql
+SECURITY DEFINER SET search_path = pg_catalog, app AS $$
+DECLARE polls integer := 0;
+BEGIN
+  IF current_setting('test.organization_rows', true) = '1' THEN
+    WHILE polls < 250
+      AND NOT EXISTS (SELECT 1 FROM app.organizations WHERE clerk_org_id = NEW.clerk_org_id)
+      AND NOT EXISTS (SELECT 1 FROM pg_stat_activity
+                      WHERE datname = current_database() AND wait_event_type = 'Lock' AND pid <> pg_backend_pid())
+    LOOP
+      PERFORM pg_sleep(0.02);
+      polls := polls + 1;
+    END LOOP;
+  END IF;
+  PERFORM set_config('test.organization_rows', '1', true);
+  RETURN NEW;
+END $$;
+CREATE TRIGGER test_hold_second_organization BEFORE INSERT ON app.organizations
+  FOR EACH ROW EXECUTE FUNCTION app.test_hold_second_organization();
+"""
+
+
+def test_refreshes_creating_the_same_organizations_do_not_deadlock(harness: Harness) -> None:
     h = harness
     resolver = h.container.identity.resolver
     one = resolver.personal(VerifiedIdentity("user_1")).user_id
@@ -1099,39 +1124,34 @@ def test_refreshes_creating_the_same_organizations_do_not_deadlock(
     # Clerk lists the same two new organizations in opposite orders.
     h.directory.set("user_1", [ExternalMembership("org_a", Role.MEMBER), ExternalMembership("org_b", Role.MEMBER)])
     h.directory.set("user_2", [ExternalMembership("org_b", Role.MEMBER), ExternalMembership("org_a", Role.MEMBER)])
-    original = repository.PgIdentityRepository._exec
-    inserted = {"user_1": threading.Event(), "user_2": threading.Event()}
-
-    def exec_then_hold(self: Any, query: str, params: Any = ()) -> int:
-        count = original(self, query, params)
-        me = threading.current_thread().name
-        if "INSERT INTO app.organizations" in query and me in inserted and not inserted[me].is_set():
-            inserted[me].set()
-            other = inserted["user_2" if me == "user_1" else "user_1"]
-            # Keep the first new organization uncommitted until the other refresh has one too, or waits on it.
-            wait_for_lock_wait(h.database_url, or_until=other)
-        return count
-
-    monkeypatch.setattr(repository.PgIdentityRepository, "_exec", exec_then_hold)
     outcome: dict[str, str] = {}
+    start = threading.Barrier(2)
 
     def run(external_user_id: str, user_id: Any) -> None:
         try:
+            start.wait(5)
             resolver.refresh_memberships(user_id, external_user_id)
             outcome[external_user_id] = "ok"
-        except (DomainError, pytest.fail.Exception) as exc:  # a deadlock, or a wait that timed out
+        except (DomainError, threading.BrokenBarrierError) as exc:  # a deadlock surfaces as a 503
             outcome[external_user_id] = repr(exc.__cause__ or exc)
 
-    threads = [
-        threading.Thread(target=run, args=(name, user), name=name) for name, user in (("user_1", one), ("user_2", two))
-    ]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(10)
+    superuser_query(h.database_url, _HOLD_SECOND_ORGANIZATION)
+    try:
+        threads = [
+            threading.Thread(target=run, args=(name, user), name=name)
+            for name, user in (("user_1", one), ("user_2", two))
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(15)
+    finally:
+        superuser_query(
+            h.database_url,
+            "DROP TRIGGER test_hold_second_organization ON app.organizations; "
+            "DROP FUNCTION app.test_hold_second_organization()",
+        )
     assert outcome == {"user_1": "ok", "user_2": "ok"}
-    # Both refreshes held their first insert, so the race above was exercised.
-    assert {name: event.is_set() for name, event in inserted.items()} == {"user_1": True, "user_2": True}
     assert _memberships(h) == 4
 
 

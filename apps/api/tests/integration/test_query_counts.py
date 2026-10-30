@@ -25,7 +25,7 @@ from app.kernel.infrastructure.db import API_ROLE, WORKER_ROLE, Database
 from app.kernel.tenancy import Role
 from app.modules.billing.domain import SubscriptionStatus
 from app.modules.identity.domain import ExternalMembership
-from tests.conftest import Harness
+from tests.conftest import Harness, superuser_query
 from tests.integration.test_billing import event_payload, make_pro, send_webhook, snapshot
 
 pytestmark = pytest.mark.db
@@ -124,6 +124,40 @@ def test_organization_entitlement_query_count_is_independent_of_membership_count
     large = round_trips_for(harness, lambda: harness.client.get(url, headers=headers))
     assert large == small
     assert 0 < small <= MAX_ROUND_TRIPS_PER_REQUEST
+
+
+def test_membership_refresh_query_count_is_independent_of_membership_count(harness: Harness) -> None:
+    """The refresh runs on the request path whenever a mirror is stale, holding a worker connection and the
+    user's row lock throughout, so it takes a fixed number of round trips (ARCH-08, PERF-07)."""
+    resolver = harness.container.identity.resolver
+    user_id = resolver.personal(harness.verifier.verify(harness.login("user_a")["Authorization"][7:])).user_id
+    one = [ExternalMembership("org_0", Role.MEMBER)]
+    fifty = [ExternalMembership(f"org_{i}", Role.MEMBER) for i in range(50)]
+    promoted = [ExternalMembership(f"org_{i}", Role.ADMIN) for i in range(50)]
+
+    def refresh(memberships: list[ExternalMembership]) -> int:
+        harness.directory.set("user_a", memberships)
+        with counting_round_trips() as trips:
+            resolver.refresh_memberships(user_id, "user_a")
+        return trips.total
+
+    refresh(one)  # opens the worker connection the next refreshes reuse
+    totals = [refresh(one), refresh(fifty), refresh(promoted), refresh(one)]
+    assert len(set(totals)) == 1, totals
+    assert 0 < totals[0] <= MAX_ROUND_TRIPS_PER_REQUEST
+
+
+def test_a_read_listing_an_organization_twice_is_applied_once(harness: Harness) -> None:
+    """A paged directory read can repeat an organization; the last listing wins, as with one write per listing."""
+    resolver = harness.container.identity.resolver
+    user_id = resolver.personal(harness.verifier.verify(harness.login("user_a")["Authorization"][7:])).user_id
+    harness.directory.set("user_a", [ExternalMembership("org_q", Role.MEMBER), ExternalMembership("org_q", Role.ADMIN)])
+    resolver.refresh_memberships(user_id, "user_a")
+    rows = superuser_query(
+        harness.database_url,
+        "SELECT o.clerk_org_id, m.role FROM app.organization_memberships m JOIN app.organizations o ON o.id = m.org_id",
+    )
+    assert rows == [("org_q", "admin")]
 
 
 def test_transaction_setup_is_one_statement_and_takes_effect(db: str) -> None:
