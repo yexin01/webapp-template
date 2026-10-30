@@ -1,43 +1,43 @@
 import AxeBuilder from "@axe-core/playwright";
-import { clerk, clerkSetup, setupClerkTestingToken } from "@clerk/testing/playwright";
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
+
+import { signInTestUser } from "./support/clerk-session";
+import { isSandboxRun, testUserEmail } from "./support/sandbox";
 
 /**
- * Sandbox end-to-end tests: real Clerk development instance, real (test-mode)
- * Stripe checkout initiation. Skipped unless these are set:
- *   E2E_SANDBOX=1 (without it, the web app runs with a placeholder Clerk key),
- *   E2E_CLERK_USER_EMAIL, E2E_CLERK_USER_PASSWORD (a dedicated test user),
- *   plus the normal sandbox keys in the root .env.
- * The integrations test also needs APP_ENV=local, or the test user's Clerk ID
- * in DIAGNOSTICS_OPERATOR_IDS.
+ * Sandbox end-to-end tests: a real Clerk development instance and real (test-mode) Stripe checkout
+ * initiation. They run only with E2E_SANDBOX=1 (on the command line, never from .env) and the Clerk
+ * development keys in the root .env; playwright.config.ts refuses to start without them, naming what is
+ * missing, and the clerk-setup project (clerk.setup.ts) creates the test user and proves one sign-in
+ * before any of these runs. Every test signs that user in with a sign-in token (support/clerk-session.ts).
+ * The integrations test also needs the API to let the user run diagnostics: APP_ENV=local (the .env
+ * default) or the user's Clerk ID in DIAGNOSTICS_OPERATOR_IDS.
  * Results from this file are "sandbox" evidence, never "live" evidence.
  */
-const email = process.env.E2E_CLERK_USER_EMAIL;
-const password = process.env.E2E_CLERK_USER_PASSWORD;
+const email = testUserEmail(process.env);
+
+/** The status the API gives this signed-in user for a GET, asked the way the pages ask. */
+async function apiStatus(page: Page, path: string): Promise<number> {
+  return page.evaluate(async (target) => {
+    const token = await window.Clerk.session?.getToken();
+    return (await fetch(target, { headers: { Authorization: `Bearer ${token}` } })).status;
+  }, path);
+}
 
 test.describe("signed-in flows (sandbox)", () => {
   test.skip(
-    !process.env.E2E_SANDBOX || !email || !password,
-    "Set E2E_SANDBOX=1, E2E_CLERK_USER_EMAIL, and E2E_CLERK_USER_PASSWORD to run sandbox flows.",
+    !isSandboxRun(process.env),
+    "Set E2E_SANDBOX=1, with the Clerk development keys in the root .env, to run the signed-in flows.",
   );
 
-  test.beforeAll(async () => {
-    await clerkSetup();
-  });
-
   test.beforeEach(async ({ page }) => {
-    await setupClerkTestingToken({ page });
-    await page.goto("/");
-    await clerk.signIn({
-      page,
-      signInParams: { strategy: "password", identifier: email ?? "", password: password ?? "" },
-    });
+    await signInTestUser(page, email);
   });
 
-  test("dashboard: create and delete a personal project", async ({ page }) => {
+  test("dashboard: create and delete a personal project", async ({ page }, testInfo) => {
     await page.goto("/dashboard");
     await expect(page.getByRole("heading", { name: "Personal workspace" })).toBeVisible();
-    const name = `e2e ${Date.now()}`;
+    const name = `e2e ${testInfo.project.name} ${Date.now()}`;
     await page.getByLabel("New project name").fill(name);
     await page.getByRole("button", { name: "Create" }).click();
     // The list item, not the status message that announces it.
@@ -85,6 +85,11 @@ test.describe("signed-in flows (sandbox)", () => {
   });
 
   test("integrations page runs the database check and is accessible", async ({ page }) => {
+    await page.goto("/");
+    expect(
+      await apiStatus(page, "/api/v1/diagnostics/integrations"),
+      "diagnostics are not open to the test user: run the API with APP_ENV=local (the .env default), or list the test user's Clerk ID in DIAGNOSTICS_OPERATOR_IDS",
+    ).toBe(200);
     await page.goto("/integrations");
     await expect(page.getByRole("heading", { name: "Integrations", level: 1 })).toBeVisible();
     // Exact: a role name otherwise matches as a substring, and "Clerk session" is also a card.
