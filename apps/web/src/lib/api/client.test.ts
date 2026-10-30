@@ -67,6 +67,14 @@ describe("api client", () => {
     expect(me).toEqual({ user_id: "u1" });
   });
 
+  it("asks whether the operator tools are the user's with a plain GET that a customer gets a 200 for", async () => {
+    const fetchMock = mockFetch(200, { available: false });
+    const access = await createApiClient(async () => "tok_123").diagnosticsAccess();
+    expect(requestedUrls).toEqual(["/api/v1/diagnostics/access"]);
+    expect(sentRequest(fetchMock).method).toBe("GET");
+    expect(access).toEqual({ available: false });
+  });
+
   it("omits the Authorization header when there is no session token", async () => {
     const fetchMock = mockFetch(200, { user_id: "u1" });
     await createApiClient(async () => null).me();
@@ -438,6 +446,7 @@ describe("compile-time contract (enforced by `pnpm typecheck`)", () => {
     expectTypeOf<Result<"openPortal">>().toEqualTypeOf<Schemas["Redirect"]>();
     expectTypeOf<Result<"proInsight">>().toEqualTypeOf<Schemas["ProInsight"]>();
     expectTypeOf<Result<"llmCheck">>().toEqualTypeOf<Schemas["LLMCheck"]>();
+    expectTypeOf<Result<"diagnosticsAccess">>().toEqualTypeOf<Schemas["DiagnosticsAccess"]>();
     expectTypeOf<Result<"integrations">>().toEqualTypeOf<Schemas["IntegrationsReport"]>();
     expectTypeOf<Result<"runIntegrationCheck">>().toEqualTypeOf<Schemas["IntegrationCheck"]>();
   });
