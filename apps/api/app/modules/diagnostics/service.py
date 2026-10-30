@@ -50,10 +50,14 @@ class DiagnosticsService:
         self._monotonic = monotonic
 
     def integrations(self, ctx: TenantContext) -> list[IntegrationInfo]:
-        self._require_available(ctx)
-        if not self._operators.permits(ctx.external_user_id):
+        if not self.may_use(ctx):
             raise NotFoundError()
         return [self._probes[key].info for key in IntegrationKey if key in self._probes]
+
+    def may_use(self, ctx: TenantContext) -> bool:
+        """Whether the diagnostics routes answer this caller: the one policy they all apply, asked without
+        effect (no audit entry, no rate-limit counter)."""
+        return self._available(ctx) and self._operators.permits(ctx.external_user_id)
 
     def run(self, ctx: TenantContext, key: IntegrationKey, request_id: str | None) -> CheckResult:
         """Run one check (ADM-01). Each run is audited once it is over, in its own short
@@ -79,11 +83,15 @@ class DiagnosticsService:
     def _check(self, ctx: TenantContext, key: IntegrationKey, probe: IntegrationProbe) -> CheckResult:
         return run_probe(probe, ctx, self._monotonic)
 
+    def _available(self, ctx: TenantContext) -> bool:
+        # Disabled diagnostics, other contexts, and a session someone else started (an impersonator
+        # is no operator) are unavailable to everyone.
+        return self._enabled and ctx.kind is ContextKind.PERSONAL and ctx.actor_external_id is None
+
     def _require_available(self, ctx: TenantContext) -> None:
-        # Disabled diagnostics, other contexts, a session someone else started (an impersonator
-        # is no operator), and (checked next) non-operators all get the answer a missing route
+        # What is unavailable, and (checked next) non-operators, get the answer a missing route
         # gets (deny by default).
-        if not self._enabled or ctx.kind is not ContextKind.PERSONAL or ctx.actor_external_id is not None:
+        if not self._available(ctx):
             raise NotFoundError()
 
     def _audit_refusal(self, ctx: TenantContext, key: IntegrationKey, request_id: str | None) -> None:
