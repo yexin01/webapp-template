@@ -404,6 +404,24 @@ def test_forged_webhook_rejected_without_side_effects(harness: Harness) -> None:
     assert harness.client.get("/api/v1/billing/status", headers=harness.login("user_a")).json()["plan"] == "pro"
 
 
+def test_a_signed_thin_delivery_is_answered_with_the_payload_style_to_choose_and_writes_nothing(
+    harness: Harness, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A Thin event destination (Stripe's recommended default) is not forgery: the response names the fix."""
+    thin = json.dumps(
+        {"id": "evt_thin", "object": "v2.core.event", "type": "v1.customer.subscription.updated", "created": "2026"}
+    ).encode()
+    with caplog.at_level("WARNING"):
+        r = send_webhook(harness, thin)
+    assert r.status_code == 400
+    assert r.json()["code"] == "INVALID_REQUEST"
+    assert "Snapshot" in r.json()["detail"]
+    assert [rec.levelname for rec in caplog.records if rec.getMessage() == "stripe_webhook_unsupported_payload"] == [
+        "ERROR"
+    ]
+    assert superuser_query(harness.database_url, "SELECT count(*) FROM app.billing_events") == [(0,)]
+
+
 def test_replayed_old_signature_rejected(harness: Harness) -> None:
     payload = event_payload("cus_any")
     r = send_webhook(harness, payload, sign(payload, ts=int(time.time()) - 3600))

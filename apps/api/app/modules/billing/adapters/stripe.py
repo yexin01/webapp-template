@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import UTC, datetime
 from typing import Any
@@ -199,22 +200,46 @@ class StripeWebhookVerifier:
 
     def verify(self, payload: bytes, signature_header: str | None) -> BillingWebhookEvent:
         if not signature_header:
+            logger.warning("stripe_webhook_rejected", extra={"reason": "missing_signature"})
             raise WebhookSignatureError()
         try:
-            event = stripe.Webhook.construct_event(
+            stripe.WebhookSignature.verify_header(
                 payload,
                 signature_header,
                 self._secret,
-                tolerance=_SIGNATURE_TOLERANCE_SECONDS,  # gitleaks:allow (variable reference, not a secret)
+                _SIGNATURE_TOLERANCE_SECONDS,  # gitleaks:allow (variable reference, not a secret)
             )
         except (stripe.SignatureVerificationError, ValueError) as exc:
+            # Never the body or the header (BILL-08).
+            logger.warning("stripe_webhook_rejected", extra={"reason": type(exc).__name__})
             raise WebhookSignatureError() from exc
 
-        obj = _get(_get(event, "data"), "object")
+        # Signed by Stripe, so a body this API cannot read is a setup mistake, not a forgery.
+        try:
+            body = json.loads(payload)
+        except ValueError:
+            body = None
+        if not isinstance(body, dict) or body.get("object") != "event":
+            found = body if isinstance(body, dict) else {}
+            logger.error(
+                "stripe_webhook_unsupported_payload",
+                extra={"object": _short(found.get("object")), "event_type": _short(found.get("type"))},
+            )
+            raise InvalidRequestError(
+                "This endpoint accepts Stripe snapshot events only. "
+                "Create the Stripe event destination with the payload format Snapshot (docs/integrations.md)."
+            )
+
+        obj = _get(_get(body, "data"), "object")
         customer_id = _id(obj) if _get(obj, "object") == "customer" else _id(_get(obj, "customer"))
         return BillingWebhookEvent(
-            event_id=str(_get(event, "id")),
-            event_type=str(_get(event, "type")),
-            created_at=_ts(_get(event, "created")) or datetime.now(UTC),
+            event_id=str(_get(body, "id")),
+            event_type=str(_get(body, "type")),
+            created_at=_ts(_get(body, "created")) or datetime.now(UTC),
             customer_id=customer_id,
         )
+
+
+def _short(value: Any) -> str:
+    """A value from a signed body, bounded for the logs."""
+    return value[:64] if isinstance(value, str) else type(value).__name__
