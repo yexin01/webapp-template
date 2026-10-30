@@ -306,6 +306,46 @@ describe("FE-02, ENV-03, and ENV-07 guards", { timeout: 30_000 }, () => {
   });
 
   it.each([
+    ["posthog-js", 'import posthog from "posthog-js";\nexport default posthog;\n'],
+    [
+      "a posthog-js subpath",
+      'import { PostHog } from "posthog-js/dist/module.full";\nexport default PostHog;\n',
+    ],
+    ["a re-export of posthog-js", 'export { default } from "posthog-js";\n'],
+  ])("rejects importing %s outside the analytics module (OBS-03)", async (_case, code) => {
+    for (const file of [app, "src/lib/probe.ts", "src/ui/probe.tsx", "src/lib/analytics-provider.tsx"]) {
+      expect(await guardErrors(file, code)).toContain("no-restricted-imports");
+    }
+    // A test that is not about analytics gets no exception either.
+    expect(await guardErrors("src/lib/probe.test.ts", code)).toContain("no-restricted-imports");
+  });
+
+  it.each([
+    ["import()", 'export const sdk = import("posthog-js");\n'],
+    ["a template literal import()", "export const sdk = import(`posthog-js`);\n"],
+    ["import() of a subpath", 'export const sdk = import("posthog-js/dist/module.full");\n'],
+    ["require()", 'export const sdk = require("posthog-js");\n'],
+  ])("rejects loading posthog-js with %s outside the analytics module (OBS-03)", async (_case, code) => {
+    expect(await guardErrors(app, code)).toContain("no-restricted-syntax");
+  });
+
+  it("lets the analytics module and its real-SDK tests use posthog-js", async () => {
+    const code = 'import posthog from "posthog-js";\nexport default posthog;\n';
+    const lazily = 'export const sdk = import("posthog-js");\n';
+    expect(await guardErrors("src/lib/analytics.ts", code)).toEqual([]);
+    expect(await guardErrors("src/lib/analytics-canary.test.ts", code)).toEqual([]);
+    expect(await guardErrors("src/lib/analytics.test.tsx", code)).toEqual([]);
+    expect(await guardErrors("src/lib/analytics-pending.test.tsx", lazily)).toEqual([]);
+    // Everything else the analytics module is held to stays in force.
+    expect(
+      await guardErrors("src/lib/analytics.ts", 'import Stripe from "stripe";\nexport default Stripe;\n'),
+    ).toContain("no-restricted-imports");
+    expect(
+      await guardErrors("src/lib/analytics.ts", "export const key = process.env.STRIPE_SECRET_KEY;\n"),
+    ).toContain("no-restricted-syntax");
+  });
+
+  it.each([
     ["a public variable", "export const key = process.env.NEXT_PUBLIC_POSTHOG_KEY;\n"],
     ["NODE_ENV", "export const dev = process.env.NODE_ENV !== 'production';\n"],
     ["the public configuration", 'import { publicEnv } from "@/lib/env";\nexport default publicEnv;\n'],

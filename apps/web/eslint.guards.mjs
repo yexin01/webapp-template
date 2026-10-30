@@ -22,6 +22,12 @@ export const bannedPackages = [
   },
 ];
 
+// OBS-03: product analytics goes through src/lib/analytics.ts, which pins the SDK's remotely controlled
+// features off and keeps its events to the allowlist. before_send enforces the allowlist at runtime too.
+const analyticsMessage =
+  "Track events through @/lib/analytics, which holds the analytics allowlist (OBS-03).";
+const analyticsOnly = { group: ["posthog-js", "posthog-js/*"], message: analyticsMessage };
+
 // ENV-03: configuration is read through src/lib/env.ts (public) and
 // src/lib/env.server.ts (server-only), never through node:process.
 const processModules = ["process", "node:process"].map((name) => ({
@@ -78,6 +84,8 @@ const serverOnlyLoads = loadsOf(
 );
 // The module loader (moduleLoaders), loaded dynamically.
 const moduleLoaderLoads = loadsOf("/^(?:node:)?module$/", moduleLoaderMessage);
+// The analytics SDK (analyticsOnly), loaded dynamically.
+const analyticsLoads = loadsOf("/^posthog-js(?:\\x2F|$)/", analyticsMessage);
 
 // ENV-07: application code may read only NEXT_PUBLIC_* (inlined by Next.js at
 // build time) and NODE_ENV, and only as `process.env.NAME`. The other ways to
@@ -213,6 +221,9 @@ export const serverFiles = [
   "scripts/**",
 ];
 
+/** The one module that may use the analytics SDK, and the tests that drive it with the real SDK. */
+const analyticsFiles = ["src/lib/analytics.ts", "src/lib/analytics*.test.ts", "src/lib/analytics*.test.tsx"];
+
 /** Tests of the server-only configuration modules may import them. */
 const serverConfigTests = ["src/lib/env.server.test.ts", "src/lib/env-files.test.ts"];
 
@@ -245,7 +256,10 @@ export function guardConfigs(root) {
       rules: {
         "no-restricted-imports": [
           "error",
-          { paths: [...processModules, ...moduleLoaders], patterns: [...bannedPackages, serverOnlyModules] },
+          {
+            paths: [...processModules, ...moduleLoaders],
+            patterns: [...bannedPackages, serverOnlyModules, analyticsOnly],
+          },
         ],
         "no-restricted-syntax": [
           "error",
@@ -256,12 +270,23 @@ export function guardConfigs(root) {
           ...serverOnlyLoads,
           ...moduleLoaderLoads,
           ...dynamicImports,
+          ...analyticsLoads,
         ],
         // Code in strings is invisible to every rule above.
         "no-eval": "error",
         "no-implied-eval": "error",
         "no-new-func": "error",
         "no-restricted-globals": ["error", { name: "Function", message: functionMessage }],
+      },
+    },
+    {
+      // Flat config does not merge rule options: the other import restrictions are stated again.
+      files: analyticsFiles,
+      rules: {
+        "no-restricted-imports": [
+          "error",
+          { paths: [...processModules, ...moduleLoaders], patterns: [...bannedPackages, serverOnlyModules] },
+        ],
       },
     },
     {
