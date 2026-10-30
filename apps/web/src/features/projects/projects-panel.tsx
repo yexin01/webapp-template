@@ -1,22 +1,42 @@
 "use client";
 
+import { useAuth } from "@clerk/nextjs";
 import { useCallback, useId, useRef, useState, type FormEvent } from "react";
 
 import type { Schemas } from "@/lib/api/client";
 import { ApiError, isInputError, presentError } from "@/lib/api/errors";
 import { useApi } from "@/lib/api/use-api";
-import { useResource } from "@/lib/use-resource";
+import { useActiveTenant } from "@/lib/use-active-tenant";
+import { reloadPage, useClerkUnavailable, useResource } from "@/lib/use-resource";
 import { EmptyState, ErrorState, LoadingState } from "@/ui/state-views";
 import { focusIn, useFocusAfterRender } from "@/ui/use-focus-after-render";
 
-type Props = { orgId: string | null; canDelete: boolean };
 type Project = Schemas["Project"];
 /** A failed action, shown through the shared error view (FE-10) rather than on the name field. */
 type ActionError = { error: unknown; retry?: () => void };
 
 const MAX_NAME = 120;
 
-export function ProjectsPanel({ orgId, canDelete }: Props) {
+/**
+ * Projects in the active tenant. The create form and Delete are shown from the list's `can`, the API's
+ * decision; no role is read here (ARCH-03). Remounts per signed-in user and tenant, so nothing the
+ * previous user or tenant loaded or created stays on screen after a switch.
+ */
+export function ProjectsPanel() {
+  const { userId } = useAuth();
+  const { isLoaded, orgId } = useActiveTenant();
+  const clerkUnavailable = useClerkUnavailable();
+  if (!isLoaded) {
+    return clerkUnavailable ? (
+      <ErrorState error={ApiError.authUnavailable()} onRetry={reloadPage} />
+    ) : (
+      <LoadingState label="Loading projects…" />
+    );
+  }
+  return <ProjectList key={`${userId}:${orgId ?? "personal"}`} orgId={orgId} />;
+}
+
+function ProjectList({ orgId }: { orgId: string | null }) {
   const api = useApi();
   const inputId = useId();
   const errorId = useId();
@@ -42,7 +62,9 @@ export function ProjectsPanel({ orgId, canDelete }: Props) {
   const deleteButtons = useRef(new Map<string, HTMLButtonElement>());
   const focusAfterRender = useFocusAfterRender();
 
-  // A project created while the first page loads can be on that page too: list it once.
+  // The first page's decision holds for the pages after it; with no answer yet, nothing is offered.
+  const can = first.data?.can;
+  // A project created here can come back on a later page: list it once.
   const listed = new Set<string>();
   const items = [...added, ...(first.data?.items ?? []), ...more].filter((p) => {
     const show = !removed.has(p.id) && !listed.has(p.id);
@@ -179,29 +201,31 @@ export function ProjectsPanel({ orgId, canDelete }: Props) {
       <h2 id="projects-title" ref={headingRef} tabIndex={-1}>
         Projects
       </h2>
-      <form className="inline-form" onSubmit={onCreate} noValidate>
-        <label htmlFor={inputId}>New project name</label>
-        <div className="inline-form-row">
-          <input
-            id={inputId}
-            value={name}
-            // In UTF-16 units: room for MAX_NAME characters of any kind; onCreate checks the count.
-            maxLength={MAX_NAME * 2}
-            onChange={(e) => setName(e.target.value)}
-            aria-invalid={formError ? true : undefined}
-            aria-describedby={formError ? errorId : undefined}
-            autoComplete="off"
-          />
-          <button type="submit" className="button button-primary" disabled={busy}>
-            {busy ? "Creating…" : "Create"}
-          </button>
-        </div>
-        {formError && (
-          <p id={errorId} className="field-error" role="alert">
-            {formError}
-          </p>
-        )}
-      </form>
+      {can?.create && (
+        <form className="inline-form" onSubmit={onCreate} noValidate>
+          <label htmlFor={inputId}>New project name</label>
+          <div className="inline-form-row">
+            <input
+              id={inputId}
+              value={name}
+              // In UTF-16 units: room for MAX_NAME characters of any kind; onCreate checks the count.
+              maxLength={MAX_NAME * 2}
+              onChange={(e) => setName(e.target.value)}
+              aria-invalid={formError ? true : undefined}
+              aria-describedby={formError ? errorId : undefined}
+              autoComplete="off"
+            />
+            <button type="submit" className="button button-primary" disabled={busy}>
+              {busy ? "Creating…" : "Create"}
+            </button>
+          </div>
+          {formError && (
+            <p id={errorId} className="field-error" role="alert">
+              {formError}
+            </p>
+          )}
+        </form>
+      )}
       <p className="visually-hidden" role="status" aria-live="polite">
         {announcement}
       </p>
@@ -215,7 +239,7 @@ export function ProjectsPanel({ orgId, canDelete }: Props) {
       {first.error !== undefined && <ErrorState error={first.error} onRetry={retry} />}
       {first.data && items.length === 0 && (
         <EmptyState title="No projects yet">
-          <p>Create your first project above.</p>
+          {can?.create && <p>Create your first project above.</p>}
         </EmptyState>
       )}
       {first.data && items.length > 0 && (
@@ -224,7 +248,7 @@ export function ProjectsPanel({ orgId, canDelete }: Props) {
             <li key={project.id} className="list-item">
               <span id={`${rowId}-name-${index}`}>{project.name}</span>
               <span className="muted">{new Date(project.created_at).toLocaleDateString()}</span>
-              {canDelete && (
+              {can?.delete && (
                 // Named "Delete <name>" through aria-labelledby: error reports copy aria-label, never text.
                 <button
                   ref={(button) => {

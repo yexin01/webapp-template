@@ -1,10 +1,10 @@
 "use client";
 
-import { useOrganization } from "@clerk/nextjs";
 import { useCallback } from "react";
 
 import { ApiError } from "@/lib/api/errors";
 import { useApi } from "@/lib/api/use-api";
+import { useActiveTenant } from "@/lib/use-active-tenant";
 import { useResource } from "@/lib/use-resource";
 import { ErrorState, LoadingState } from "@/ui/state-views";
 
@@ -13,8 +13,7 @@ import { Paywall } from "./paywall";
 /** Example Pro-gated feature. Access is decided by the server only. */
 export function ProFeature() {
   const api = useApi();
-  const { organization, isLoaded } = useOrganization();
-  const orgId = organization?.id ?? null;
+  const { isLoaded, orgId } = useActiveTenant();
   const fetchInsight = useCallback(() => api.proInsight(orgId), [api, orgId]);
   const { data, error, reload } = useResource(fetchInsight, `pro:${orgId ?? "personal"}`);
 

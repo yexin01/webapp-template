@@ -28,6 +28,14 @@ class Project:
     created_at: datetime
 
 
+@dataclass(frozen=True, slots=True)
+class Capabilities:
+    """What the caller may do with projects in one context: the permissions above, evaluated."""
+
+    create: bool
+    delete: bool
+
+
 def clean_name(name: str) -> str:
     clean = name.strip()
     if "\x00" in clean:

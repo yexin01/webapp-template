@@ -16,14 +16,21 @@ const getToken = vi.hoisted(() => async () => `token-for-${auth.userId}`);
 const server = vi.hoisted(() => ({
   plans: { user_a: "pro", user_b: "free" } as Record<string, "pro" | "free">,
   projects: { user_a: [], user_b: [] } as Record<string, Project[]>,
+  // What the API says the caller may do; it is all that decides what the page offers.
+  can: { create: true, delete: true },
   listCalls: [] as string[],
   entitlementCalls: 0,
+}));
+// What Clerk says about the active organization and the user's role there.
+const clerk = vi.hoisted(() => ({
+  organization: null as { id: string; name: string } | null,
+  membership: null as { role: string } | null,
 }));
 
 vi.mock("@clerk/nextjs", () => ({
   useAuth: () => ({ isLoaded: auth.isLoaded, userId: auth.userId, getToken }),
   useClerk: () => ({ status: "loading" }),
-  useOrganization: () => ({ isLoaded: auth.isLoaded, organization: null, membership: null }),
+  useOrganization: () => ({ isLoaded: auth.isLoaded, ...clerk }),
 }));
 vi.mock("next/navigation", () => ({ usePathname: () => "/dashboard" }));
 const access = vi.hoisted(() => ({ granted: false }));
@@ -43,7 +50,7 @@ vi.mock("@/lib/api/client", async (importOriginal) => {
         listProjects: async () => {
           const user = await caller();
           server.listCalls.push(user);
-          return { items: server.projects[user], next_cursor: null };
+          return { items: server.projects[user], next_cursor: null, can: server.can };
         },
         createProject: async (_orgId: string | null, name: string) => ({
           id: `${await caller()}-${name}`,
@@ -61,6 +68,9 @@ beforeEach(() => {
   access.granted = false;
   auth.isLoaded = true;
   auth.userId = "user_a";
+  clerk.organization = null;
+  clerk.membership = null;
+  server.can = { create: true, delete: true };
   server.listCalls = [];
   server.entitlementCalls = 0;
   server.projects = {
@@ -86,6 +96,19 @@ describe("workspace", () => {
     access.granted = true;
     render(<Workspace />);
     expect(await screen.findByRole("heading", { name: "LLM connectivity" })).toBeInTheDocument();
+  });
+
+  it.each([
+    ["an administrator the API does not let delete", "org:admin", { create: true, delete: false }, false],
+    ["a member the API lets delete", "org:member", { create: true, delete: true }, true],
+  ])("shows Delete for %s as the API says, whatever Clerk's role is", async (_case, role, can, shown) => {
+    clerk.organization = { id: "org_1", name: "Acme" };
+    clerk.membership = { role };
+    server.can = can;
+    render(<Workspace />);
+    expect(await screen.findByRole("heading", { name: "Acme" })).toBeInTheDocument();
+    expect(await screen.findByText("A's secret project")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete A's secret project" }) !== null).toBe(shown);
   });
 
   it("shows nothing of the previous user's after a Clerk account switch", async () => {
