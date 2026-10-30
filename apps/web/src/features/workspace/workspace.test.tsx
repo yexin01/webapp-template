@@ -26,6 +26,8 @@ vi.mock("@clerk/nextjs", () => ({
   useOrganization: () => ({ isLoaded: auth.isLoaded, organization: null, membership: null }),
 }));
 vi.mock("next/navigation", () => ({ usePathname: () => "/dashboard" }));
+const access = vi.hoisted(() => ({ granted: false }));
+vi.mock("@/lib/diagnostics-access", () => ({ useDiagnosticsAccess: () => access.granted }));
 // The real useApi, over a fake API that answers for whoever's token a request carries.
 vi.mock("@/lib/api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api/client")>();
@@ -56,6 +58,7 @@ vi.mock("@/lib/api/client", async (importOriginal) => {
 });
 
 beforeEach(() => {
+  access.granted = false;
   auth.isLoaded = true;
   auth.userId = "user_a";
   server.listCalls = [];
@@ -74,6 +77,17 @@ beforeEach(() => {
 });
 
 describe("workspace", () => {
+  it("shows the LLM connectivity check only to a user the API lets use the operator tools", async () => {
+    const { unmount } = render(<Workspace />);
+    expect(await screen.findByText("A's secret project")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "LLM connectivity" })).toBeNull();
+    unmount();
+
+    access.granted = true;
+    render(<Workspace />);
+    expect(await screen.findByRole("heading", { name: "LLM connectivity" })).toBeInTheDocument();
+  });
+
   it("shows nothing of the previous user's after a Clerk account switch", async () => {
     const { rerender } = render(<Workspace />);
     expect(await screen.findByText("A's secret project")).toBeInTheDocument();

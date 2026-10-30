@@ -1,6 +1,7 @@
 import { OrganizationSwitcher, SignInButton, SignUpButton, UserButton } from "@clerk/nextjs";
 import Link from "next/link";
 
+import { OperatorOnly } from "./operator-only";
 import { SignedInOnly, SignedOutOnly, SignInUnavailable } from "./signed-in-state";
 
 export function SiteHeader() {
@@ -21,9 +22,11 @@ export function SiteHeader() {
             <li>
               <Link href="/billing">Billing</Link>
             </li>
-            <li>
-              <Link href="/integrations">Integrations</Link>
-            </li>
+            <OperatorOnly>
+              <li>
+                <Link href="/integrations">Integrations</Link>
+              </li>
+            </OperatorOnly>
           </ul>
         </SignedInOnly>
         <div className="nav-actions">
