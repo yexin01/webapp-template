@@ -21,7 +21,9 @@ from app.modules.projects.service import ProjectService
 
 Limit = Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)]
 Cursor = Annotated[str | None, Query(max_length=200)]
-ERRORS = errors(401, 403, 404)
+ERRORS = errors(401, 403, 404, 503)
+# A cursor or a name the domain refuses is a 400 (the request body and query are validated first, as 422).
+REFUSABLE_ERRORS = errors(400, 401, 403, 404, 503)
 
 
 class Project(BaseModel):
@@ -66,12 +68,18 @@ def build_router(projects: ProjectService, auth: AuthDeps, request_transaction: 
             next_cursor=encode_cursor(last.created_at, last.id) if last else None,
         )
 
-    @router.get("/projects", response_model=ProjectPage, responses=ERRORS, dependencies=[requires(PROJECT_READ)])
+    @router.get(
+        "/projects", response_model=ProjectPage, responses=REFUSABLE_ERRORS, dependencies=[requires(PROJECT_READ)]
+    )
     def list_personal(ctx: Personal, limit: Limit = DEFAULT_PAGE_SIZE, cursor: Cursor = None) -> ProjectPage:
         return page(ctx, limit, cursor)
 
     @router.post(
-        "/projects", response_model=Project, status_code=201, responses=ERRORS, dependencies=[requires(PROJECT_CREATE)]
+        "/projects",
+        response_model=Project,
+        status_code=201,
+        responses=REFUSABLE_ERRORS,
+        dependencies=[requires(PROJECT_CREATE)],
     )
     def create_personal(body: ProjectCreate, ctx: Personal) -> Project:
         return Project.from_record(projects.create(ctx, body.name))
@@ -82,7 +90,10 @@ def build_router(projects: ProjectService, auth: AuthDeps, request_transaction: 
         return Response(status_code=204)
 
     @router.get(
-        "/orgs/{org_id}/projects", response_model=ProjectPage, responses=ERRORS, dependencies=[requires(PROJECT_READ)]
+        "/orgs/{org_id}/projects",
+        response_model=ProjectPage,
+        responses=REFUSABLE_ERRORS,
+        dependencies=[requires(PROJECT_READ)],
     )
     def list_org(ctx: Organization, limit: Limit = DEFAULT_PAGE_SIZE, cursor: Cursor = None) -> ProjectPage:
         return page(ctx, limit, cursor)
@@ -91,7 +102,7 @@ def build_router(projects: ProjectService, auth: AuthDeps, request_transaction: 
         "/orgs/{org_id}/projects",
         response_model=Project,
         status_code=201,
-        responses=ERRORS,
+        responses=REFUSABLE_ERRORS,
         dependencies=[requires(PROJECT_CREATE)],
     )
     def create_org(body: ProjectCreate, ctx: Organization) -> Project:

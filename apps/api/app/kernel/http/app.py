@@ -23,12 +23,30 @@ _SCHEMAS = "#/components/schemas/"
 
 class _Application(FastAPI):
     """Documents the 422 body the API returns (``ValidationProblem``, see ``problem.py``)
-    in place of FastAPI's default ``HTTPValidationError``, for every route that can fail validation."""
+    in place of FastAPI's default ``HTTPValidationError``, for every route that can fail validation,
+    and every problem response under the content type the API sends it with (``application/problem+json``)."""
 
     def openapi(self) -> dict[str, Any]:
         if not self.openapi_schema:
-            self.openapi_schema = _document_validation_problems(super().openapi())
+            self.openapi_schema = _document_problem_media_types(_document_validation_problems(super().openapi()))
         return self.openapi_schema
+
+
+_PROBLEM_SCHEMAS = {f"{_SCHEMAS}Problem", f"{_SCHEMAS}ValidationProblem"}
+
+
+def _document_problem_media_types(document: dict[str, Any]) -> dict[str, Any]:
+    """FastAPI documents an error model as application/json; the API sends it as application/problem+json (API-02)."""
+    for path_item in document.get("paths", {}).values():
+        for operation in path_item.values():
+            for status, response in operation.get("responses", {}).items():
+                content = response.get("content", {})
+                if (
+                    status[:1] in "45"
+                    and content.get("application/json", {}).get("schema", {}).get("$ref") in _PROBLEM_SCHEMAS
+                ):
+                    response["content"] = {"application/problem+json": content["application/json"]}
+    return document
 
 
 def _document_validation_problems(document: dict[str, Any]) -> dict[str, Any]:

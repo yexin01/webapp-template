@@ -383,12 +383,13 @@ def test_a_validation_response_lists_at_most_20_errors(harness: Harness) -> None
 
 def test_the_contract_declares_the_validation_problem_the_api_returns(harness: Harness) -> None:
     """DEC-007: the OpenAPI document is the frontend's source of truth, so its 422 is the problem body
-    with field errors that the API sends, not FastAPI's default {"detail": [...]}."""
+    with field errors that the API sends, under the content type it sends it with, not FastAPI's default
+    {"detail": [...]} as application/json."""
     from app.kernel.http.schemas import ValidationProblem
 
     document = harness.client.app.openapi()  # type: ignore[attr-defined]
     declared = [
-        operation["responses"]["422"]["content"]["application/json"]["schema"]
+        operation["responses"]["422"]["content"]["application/problem+json"]["schema"]
         for path_item in document["paths"].values()
         for operation in path_item.values()
         if "422" in operation["responses"]

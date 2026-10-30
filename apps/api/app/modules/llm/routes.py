@@ -28,7 +28,9 @@ def build_router(llm: LLMService, auth: AuthDeps) -> APIRouter:
     router = APIRouter(tags=["llm"])
     Personal = Annotated[TenantContext, Depends(auth.personal)]
 
-    @router.post("/llm/check", response_model=LLMCheck, responses=errors(401, 429), dependencies=[requires(LLM_CHECK)])
+    @router.post(
+        "/llm/check", response_model=LLMCheck, responses=errors(401, 403, 429, 503), dependencies=[requires(LLM_CHECK)]
+    )
     def llm_check(ctx: Personal) -> LLMCheck:
         result = llm.check(ctx)
         return LLMCheck(

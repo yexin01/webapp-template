@@ -33,6 +33,7 @@ from app.modules.billing.adapters.stripe import StripeWebhookVerifier
 from app.modules.identity.adapters.fakes import StaticMembershipDirectory
 from app.modules.llm.adapters import MockLLMProvider
 from app.settings import Settings, load_settings
+from tests.openapi_contract import RECORDS, Contract, Recorder
 
 DEFAULT_TEST_DATABASE_URL = "postgresql://postgres:postgres@127.0.0.1:54329/app"
 TEST_STRIPE_WEBHOOK_SECRET = "whsec_test_only_not_a_real_secret_000000"
@@ -172,6 +173,29 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
 
 
+# Every response the harness's apps sent during the run is checked against packages/contracts/openapi.json
+# (DEC-007) when the session ends: a status the document does not declare, another content type, or a body
+# that does not validate fails the run. tests/integration/test_contract_conformance.py drives every operation.
+CONTRACT_PROBLEMS = pytest.StashKey[list[str]]()
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    problems = Contract().check(RECORDS) if RECORDS else []
+    session.config.stash[CONTRACT_PROBLEMS] = problems
+    if problems and session.exitstatus == pytest.ExitCode.OK:
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+
+
+def pytest_terminal_summary(terminalreporter: Any, exitstatus: int, config: pytest.Config) -> None:
+    problems = config.stash.get(CONTRACT_PROBLEMS, [])
+    if problems:
+        terminalreporter.write_sep(
+            "=", f"{len(problems)} responses differ from packages/contracts/openapi.json", red=True
+        )
+        for problem in problems:
+            terminalreporter.write_line(problem)
+
+
 def _database_required(config: pytest.Config) -> bool:
     """True in CI, when TEST_DATABASE_URL is set, or with --require-db: database tests must run, not skip."""
     ci = os.environ.get("CI", "").strip().lower() not in ("", "0", "false")
@@ -306,7 +330,9 @@ def make_harness(db: str) -> Iterator[Callable[..., Harness]]:
         overrides.update(container_overrides)
         container = build_container(settings, **overrides)
         analytics.allowed = container.kernel.analytics_events
-        client = TestClient(create_app(container), raise_server_exceptions=False)
+        app = create_app(container)
+        app.add_middleware(Recorder, sink=RECORDS)  # outermost: sees every response, for the contract check below
+        client = TestClient(app, raise_server_exceptions=False)
         harness = Harness(container, client, verifier, directory, billing, clock, analytics, db)
         created.append(harness)
         return harness
