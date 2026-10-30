@@ -48,6 +48,15 @@ test.describe("signed-in flows (sandbox)", () => {
     await expect(item).toHaveCount(0);
   });
 
+  test("unknown routes show the 404 page", async ({ page }) => {
+    const response = await page.goto("/definitely-not-a-page");
+    expect(response?.status()).toBe(404);
+    await expect(page.getByRole("heading", { name: "Page not found" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Go home" })).toHaveAttribute("href", "/");
+    const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa"]).analyze();
+    expect(results.violations).toEqual([]);
+  });
+
   test("validation errors are announced", async ({ page }) => {
     await page.goto("/dashboard");
     await page.getByRole("button", { name: "Create" }).click();

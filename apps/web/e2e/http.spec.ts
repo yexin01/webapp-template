@@ -10,6 +10,24 @@ for (const path of ["/dashboard", "/billing", "/pro", "/billing/success", "/inte
   });
 }
 
+// Default deny (src/lib/page-access.ts): a page is public only when listed there. The proxy cannot tell
+// a page from a typo, so any other path asks a signed-out visitor to sign in.
+test("a page that is not listed as public requires sign-in", async ({ request }) => {
+  const response = await request.get("/definitely-not-a-page", {
+    maxRedirects: 0,
+    headers: { Accept: "application/json" },
+  });
+  expect(response.status()).toBe(307);
+  expect(response.headers().location).toMatch(/^(https?:\/\/[^/]+)?\/sign-in\?redirect_url=/);
+});
+
+for (const path of ["/", "/sign-in", "/sign-up"]) {
+  test(`public page ${path} opens without signing in`, async ({ request }) => {
+    const response = await request.get(path, { maxRedirects: 0, headers: { Accept: "application/json" } });
+    expect(response.status()).toBe(200);
+  });
+}
+
 test("security headers are set", async ({ request }) => {
   const response = await request.get("/", { headers: { Accept: "application/json" } });
   const headers = response.headers();

@@ -417,4 +417,5 @@ Next steps:
   2. pnpm contracts              # regenerate the OpenAPI document and the typed web client
   3. pnpm test                   # the generated tests: tests/integration/test_${name}.py and the panel test
   4. Mount <${M}Panel /> from "@/features/${tokens.__path__}" in a page (for example the dashboard).
+     A new page requires sign-in; only paths listed in apps/web/src/lib/page-access.ts are public.
   5. Replace the placeholder description in ${api}/__init__.py and model your real fields.`);
