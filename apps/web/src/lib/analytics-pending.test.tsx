@@ -44,6 +44,16 @@ async function load(): Promise<{ facade: Facade; provider: Provider }> {
 const settle = () => act(() => new Promise((resolve) => setTimeout(resolve, 30)));
 const named = (events: SentEvent[], name: string) => events.filter((e) => e.event === name);
 
+/** What was transmitted once `done` holds, however slowly a loaded machine runs the SDK. */
+async function until(done: (events: SentEvent[]) => boolean) {
+  let result = await transmitted(sent);
+  for (let attempt = 0; attempt < 50 && !done(result.events); attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    result = await transmitted(sent);
+  }
+  return result;
+}
+
 beforeEach(() => {
   auth.isLoaded = true;
   auth.userId = "user_b";
@@ -60,7 +70,7 @@ describe("events tracked before the user's identity settles", () => {
 
     lookup.resolve("internal-b");
     await settle();
-    const { events } = await transmitted(sent);
+    const { events } = await until((sent) => named(sent, "paywall_viewed").length > 0);
     const [paywall, ...others] = named(events, "paywall_viewed");
     expect(others).toEqual([]);
     expect(paywall?.properties).toMatchObject({ feature: "pro_insight", distinct_id: "internal-b" });
@@ -83,7 +93,8 @@ describe("events tracked before the user's identity settles", () => {
     auth.isLoaded = true;
     view.rerender(<provider.AnalyticsProvider />);
     await settle();
-    expect(named((await transmitted(sent)).events, "upgrade_clicked")).toHaveLength(1);
+    const { events } = await until((sent) => named(sent, "upgrade_clicked").length > 0);
+    expect(named(events, "upgrade_clicked")).toHaveLength(1);
   });
 
   it("are sent on the anonymous identity when the lookup of the internal ID fails", async () => {
@@ -94,7 +105,7 @@ describe("events tracked before the user's identity settles", () => {
     facade.track("billing_portal_clicked");
     await settle();
 
-    const { events } = await transmitted(sent);
+    const { events } = await until((sent) => named(sent, "billing_portal_clicked").length > 0);
     const [portal] = named(events, "billing_portal_clicked");
     expect(portal).toBeDefined();
     expect(named(events, "$identify")).toEqual([]);
@@ -111,7 +122,10 @@ describe("events tracked before the user's identity settles", () => {
     lookup.resolve("internal-b");
     await settle();
 
-    const { events } = await transmitted(sent);
+    // The pageview and the identification come with what was kept: nothing else is on its way.
+    const { events } = await until(
+      (sent) => named(sent, "$identify").length > 0 && named(sent, "upgrade_clicked").length > 0,
+    );
     expect(named(events, "upgrade_clicked").map((e) => e.properties.plan)).toEqual(["tracked_as_b"]);
     view.unmount();
   });
@@ -123,21 +137,23 @@ describe("events tracked before the user's identity settles", () => {
     lookup.resolve("internal-b");
     await settle();
 
-    const plans = named((await transmitted(sent)).events, "upgrade_clicked").map((e) => e.properties.plan);
+    const { events } = await until((sent) => named(sent, "upgrade_clicked").length >= 20);
+    const plans = named(events, "upgrade_clicked").map((e) => e.properties.plan);
     expect(plans).toHaveLength(20);
     expect(plans).toContain("plan_20");
     expect(plans).not.toContain("plan_21");
     view.unmount();
   });
 
-  it("can be discarded, and are not kept while analytics is off", async () => {
+  it("can be discarded", async () => {
     const { facade, provider } = await load();
     const view = render(<provider.AnalyticsProvider />);
     facade.track("upgrade_clicked", { plan: "declined" });
     facade.discardPendingEvents();
     lookup.resolve("internal-b");
     await settle();
-    expect(named((await transmitted(sent)).events, "upgrade_clicked")).toEqual([]);
+    const { events } = await until((sent) => named(sent, "$identify").length > 0);
+    expect(named(events, "upgrade_clicked")).toEqual([]);
     view.unmount();
   });
 });

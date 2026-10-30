@@ -13,6 +13,28 @@ const EMAIL = "canary.person@example.com";
 // The SDK keeps the fetch it finds when it loads, so it is imported after the transport is in place.
 const sent = installPostHogTransport();
 const named = (events: SentEvent[], name: string) => events.filter((e) => e.event === name);
+const EXPECTED = [
+  "$identify",
+  "$pageview",
+  "billing_portal_clicked",
+  "integration_test_sent",
+  "paywall_viewed",
+  "upgrade_clicked",
+];
+
+/** What was transmitted once the SDK has sent everything it will, however slowly a loaded machine runs it. */
+async function transmittedEventually() {
+  let result = await transmitted(sent);
+  for (
+    let attempt = 0;
+    attempt < 50 && !EXPECTED.every((name) => named(result.events, name).length);
+    attempt++
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    result = await transmitted(sent);
+  }
+  return result;
+}
 
 describe("posthog-js used directly", () => {
   it("sends only allowlisted events and SDK events, with only allowlisted properties and no personal data", async () => {
@@ -42,21 +64,12 @@ describe("posthog-js used directly", () => {
     posthog.group("company", "acme", { email: EMAIL });
     posthog.alias(EMAIL);
 
-    const { text, events } = await transmitted(sent);
+    const { text, events } = await transmittedEventually();
     expect(text).not.toContain(EMAIL);
     expect(text).not.toContain("Secret plan");
     const names = new Set(events.map((e) => e.event));
     // The test is not vacuous: what the allowlist admits still arrives.
-    expect([...names].sort()).toEqual(
-      [
-        "$identify",
-        "$pageview",
-        "billing_portal_clicked",
-        "integration_test_sent",
-        "paywall_viewed",
-        "upgrade_clicked",
-      ].sort(),
-    );
+    expect([...names].sort()).toEqual([...EXPECTED].sort());
     // The batch is not ordered.
     expect(
       named(events, "$identify")
