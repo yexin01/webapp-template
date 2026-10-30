@@ -35,7 +35,7 @@ from app.kernel.infrastructure.redaction import (
     strip_query,
     strip_url_queries,
 )
-from app.kernel.request_context import request_id_var
+from app.kernel.request_context import request_id_var, request_telemetry_var
 
 _STANDARD_RECORD_FIELDS = frozenset(vars(logging.LogRecord("", 0, "", 0, "", None, None)).keys()) | {
     "message",
@@ -60,6 +60,13 @@ class JsonFormatter(logging.Formatter):
         request_id = request_id_var.get()
         if request_id:
             payload["request_id"] = request_id
+        telemetry = request_telemetry_var.get()
+        if telemetry is not None:
+            # Internal, pseudonymous IDs (OBS-04); a log line's own ``extra`` keys win below.
+            if telemetry.user_id is not None:
+                payload["user_id"] = str(telemetry.user_id)
+            if telemetry.org_id is not None:
+                payload["org_id"] = str(telemetry.org_id)
         extras = {k: v for k, v in vars(record).items() if k not in _STANDARD_RECORD_FIELDS}
         if extras:
             payload.update(redact(extras))
@@ -166,6 +173,11 @@ def _scrub_common(event: Any, *, keep_trace_data: bool) -> None:
         # Lets an operator go from a user's X-Request-ID to the event (OBS-05).
         tags = event.get("tags")
         event["tags"] = {**(tags if isinstance(tags, dict) else {}), "request_id": request_id}
+        telemetry = request_telemetry_var.get()
+        if telemetry is not None:
+            # Internal, pseudonymous IDs: which user and tenant an error affects (OBS-04). Never the ``user`` field.
+            ids = {"user_id": telemetry.user_id, "org_id": telemetry.org_id}
+            event["tags"].update({name: str(value) for name, value in ids.items() if value is not None})
     if isinstance(event.get("transaction"), str):
         event["transaction"] = _scrub_trace_text(event["transaction"])
     request = event.get("request")

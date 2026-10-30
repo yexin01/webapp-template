@@ -10,7 +10,7 @@ import uuid
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.kernel.http.problem import PayloadTooLargeError, internal_error_response
-from app.kernel.request_context import request_id_var
+from app.kernel.request_context import RequestTelemetry, request_id_var, request_telemetry_var
 
 logger = logging.getLogger("app.access")
 errors_logger = logging.getLogger("app.errors")
@@ -38,6 +38,9 @@ class RequestContextMiddleware:
     and security headers. Starlette's own last-resort handler runs outside
     every middleware, and the ASGI server would then print the raw exception
     message, unredacted.
+
+    Logs and error reports carry the request ID and, once the request is
+    authenticated, the internal user and organization IDs (OBS-04, OBS-05).
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -51,6 +54,8 @@ class RequestContextMiddleware:
         incoming = dict(scope.get("headers") or []).get(b"x-request-id", b"").decode("latin-1")
         request_id = incoming if _REQUEST_ID.fullmatch(incoming) else uuid.uuid4().hex
         token = request_id_var.set(request_id)
+        telemetry = RequestTelemetry(request_id)
+        telemetry_token = request_telemetry_var.set(telemetry)
         started = time.monotonic()
         status_holder = {"status": 500}
 
@@ -93,6 +98,7 @@ class RequestContextMiddleware:
                     "duration_ms": int((time.monotonic() - started) * 1000),
                 },
             )
+            request_telemetry_var.reset(telemetry_token)
             request_id_var.reset(token)
 
 
