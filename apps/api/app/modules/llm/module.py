@@ -25,7 +25,7 @@ class LLMModule:
 
 
 def build_llm(settings: LLMSettings, kernel: Kernel, auth: AuthDeps, overrides: Mapping[str, Any]) -> LLMModule:
-    provider: LLMProvider = pick(overrides, "llm_provider", lambda: _provider(settings))
+    provider: LLMProvider | None = pick(overrides, "llm_provider", lambda: _provider(settings))
     service = LLMService(
         provider,
         kernel.rate_limiter,
@@ -41,7 +41,9 @@ def build_llm(settings: LLMSettings, kernel: Kernel, auth: AuthDeps, overrides: 
     return LLMModule(service, contribution)
 
 
-def _provider(settings: LLMSettings) -> LLMProvider:
+def _provider(settings: LLMSettings) -> LLMProvider | None:
+    if settings.llm_mode is Mode.DISABLED:
+        return None
     if settings.llm_mode is Mode.MOCK or settings.llm_api_key is None or not settings.llm_model:
         return MockLLMProvider()
     cls = AnthropicProvider if settings.llm_provider is LLMProviderName.ANTHROPIC else OpenAIProvider
@@ -54,6 +56,8 @@ def _provider(settings: LLMSettings) -> LLMProvider:
 
 def describe(settings: LLMSettings) -> IntegrationInfo:
     mode = IntegrationMode(settings.llm_mode.value)
+    if mode is IntegrationMode.DISABLED:
+        return IntegrationInfo(IntegrationKey.LLM, "LLM provider", mode, ("Disabled: no provider is called",))
     target = (
         ("Mock provider",)
         if mode is IntegrationMode.MOCK
