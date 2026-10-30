@@ -29,6 +29,7 @@ const free: Schemas["BillingStatus"] = {
   current_period_end: null,
   cancels_at: null,
   available_plans: ["pro_monthly"],
+  checkout_blocked: null,
 };
 const pro: Schemas["BillingStatus"] = {
   plan: "pro",
@@ -37,6 +38,7 @@ const pro: Schemas["BillingStatus"] = {
   current_period_end: "2026-11-15T00:00:00Z",
   cancels_at: null,
   available_plans: ["pro_monthly"],
+  checkout_blocked: "already_pro",
 };
 
 function pageShow(persisted: boolean) {
@@ -180,5 +182,85 @@ describe("billing panel", () => {
     await screen.findByRole("alert");
     expect(api.syncBilling).toHaveBeenCalledOnce();
     expect(api.billingStatus).toHaveBeenCalledTimes(2);
+  });
+
+  describe("when a new subscription is refused (DEC-013)", () => {
+    const blocked = (patch: Partial<Schemas["BillingStatus"]>): Schemas["BillingStatus"] => ({
+      ...free,
+      available_plans: ["pro_monthly", "pro_yearly"],
+      ...patch,
+    });
+
+    it("offers the upgrade, and no plan management, when nothing blocks it", async () => {
+      api.billingStatus.mockResolvedValue(blocked({}));
+      render(<BillingPanel />);
+      expect(await screen.findByRole("button", { name: "Pro — monthly" })).toBeEnabled();
+      expect(screen.getByRole("button", { name: "Pro — yearly" })).toBeEnabled();
+      expect(screen.queryByRole("button", { name: "Manage billing" })).toBeNull();
+    });
+
+    it.each([
+      [
+        "payment_required",
+        { state: "payment_required" },
+        /cannot be started while this one needs a payment/,
+        true,
+      ],
+      ["subscription_exists", { state: "canceled" }, /already have a subscription/, true],
+      ["subscription_exists", { state: "processing" }, /already have a subscription/, true],
+      ["payment_pending", { state: "processing" }, /once this payment is confirmed/, false],
+    ] as const)(
+      "%s (%j) shows why, never the upgrade, and the way to plan management",
+      async (checkoutBlocked, patch, reason, canManage) => {
+        api.billingStatus.mockResolvedValue(blocked({ ...patch, checkout_blocked: checkoutBlocked }));
+        render(<BillingPanel />);
+        expect(await screen.findByText(reason)).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: /Pro — (monthly|yearly)/ })).toBeNull();
+        expect(screen.queryByRole("heading", { name: "Upgrade to Pro" })).toBeNull();
+        expect(!!screen.queryByRole("button", { name: "Manage billing" })).toBe(canManage);
+      },
+    );
+
+    it("for a Pro plan offers plan management, never the upgrade", async () => {
+      api.billingStatus.mockResolvedValue(pro);
+      render(<BillingPanel />);
+      expect(await screen.findByRole("button", { name: "Manage billing" })).toBeEnabled();
+      expect(screen.queryByRole("button", { name: /Pro — (monthly|yearly)/ })).toBeNull();
+    });
+
+    it("opens the portal from the refusal", async () => {
+      api.billingStatus.mockResolvedValue(
+        blocked({ state: "payment_required", checkout_blocked: "payment_required" }),
+      );
+      api.openPortal.mockResolvedValue({ url: "https://billing.stripe.com/p/session/1" });
+      const assign = vi.fn();
+      vi.spyOn(window, "location", "get").mockReturnValue({
+        ...window.location,
+        assign,
+        origin: window.location.origin,
+      });
+      render(<BillingPanel />);
+      await userEvent.click(await screen.findByRole("button", { name: "Manage billing" }));
+      expect(assign).toHaveBeenCalledWith("https://billing.stripe.com/p/session/1");
+    });
+
+    it("shows the refusal of a stale page, then the current state with its way on", async () => {
+      api.billingStatus
+        .mockResolvedValueOnce(blocked({}))
+        .mockResolvedValue(blocked({ state: "payment_required", checkout_blocked: "payment_required" }));
+      api.startCheckout.mockRejectedValue(
+        new ApiError(
+          409,
+          "CONFLICT",
+          "Your subscription needs a payment before you can start a new one.",
+          null,
+        ),
+      );
+      render(<BillingPanel />);
+      await userEvent.click(await screen.findByRole("button", { name: "Pro — monthly" }));
+      expect(await screen.findByRole("button", { name: "Manage billing" })).toBeEnabled();
+      expect(screen.queryByRole("button", { name: "Pro — monthly" })).toBeNull();
+      expect(screen.getByRole("alert")).toHaveTextContent("needs a payment");
+    });
   });
 });

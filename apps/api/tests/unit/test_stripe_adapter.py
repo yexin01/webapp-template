@@ -28,6 +28,7 @@ from app.modules.billing.domain import (
     SubscriptionStatus,
     portal_problems,
 )
+from app.modules.billing.ports import CheckoutSession
 from tests.stub_server import Recorded, stub_server
 
 CATALOG = PriceCatalog({PlanKey.PRO_MONTHLY: "price_m", PlanKey.PRO_YEARLY: "price_y"})
@@ -72,9 +73,14 @@ def subscription(status: str = "active", price: str = "price_m", **fields: Any) 
 
 class TestRequests:
     def test_a_checkout_session_sells_one_of_the_given_price_to_the_given_customer(self) -> None:
-        session = {"id": "cs_1", "object": "checkout.session", "url": "https://checkout.stripe.com/c/pay/cs_1"}
+        session = {
+            "id": "cs_1",
+            "object": "checkout.session",
+            "url": "https://checkout.stripe.com/c/pay/cs_1",
+            "expires_at": PERIOD_END,
+        }
         with stub_server(lambda req: (200, session)) as stub:
-            url = provider(stub.url).create_checkout_session(
+            created = provider(stub.url).create_checkout_session(
                 customer_id="cus_1",
                 price_id="price_y",
                 user_id=USER,
@@ -82,7 +88,9 @@ class TestRequests:
                 cancel_url="https://app.test/billing?checkout=canceled",
                 idempotency_key="checkout-key-1",
             )
-        assert url == "https://checkout.stripe.com/c/pay/cs_1"
+        assert created == CheckoutSession(
+            "cs_1", "https://checkout.stripe.com/c/pay/cs_1", datetime.fromtimestamp(PERIOD_END, UTC)
+        )
         [request] = stub.requests
         assert (request.method, request.path) == ("POST", "/v1/checkout/sessions")
         assert form(request) == {
@@ -129,6 +137,49 @@ class TestRequests:
         [request] = stub.requests
         assert (request.method, request.path) == ("POST", "/v1/billing_portal/sessions")
         assert form(request) == {"customer": ["cus_1"], "return_url": ["https://app.test/billing"]}
+
+
+class TestCheckoutSessionLifecycle:
+    """DEC-013: a session the user could still complete is closed at Stripe before another is created."""
+
+    OPEN: ClassVar[dict[str, Any]] = {
+        "id": "cs_1",
+        "object": "checkout.session",
+        "status": "open",
+        "url": "https://checkout.stripe.com/c/pay/cs_1",
+    }
+
+    def test_a_session_is_expired_by_id_with_no_other_input(self) -> None:
+        with stub_server(lambda req: (200, {**self.OPEN, "status": "expired", "url": None})) as stub:
+            provider(stub.url).expire_checkout_session("cs_1")
+        [request] = stub.requests
+        assert (request.method, request.path, request.body) == ("POST", "/v1/checkout/sessions/cs_1/expire", b"")
+
+    @pytest.mark.parametrize("status", [400, 404])
+    def test_a_session_that_is_not_open_any_more_is_a_rejection(self, status: int) -> None:
+        body = {"error": {"type": "invalid_request_error", "message": "Only open sessions can be expired."}}
+        with stub_server(lambda req: (status, body)) as stub, pytest.raises(InvalidRequestError):
+            provider(stub.url).expire_checkout_session("cs_1")
+        assert len(stub.requests) == 1
+
+    def test_an_outage_while_expiring_is_an_outage(self) -> None:
+        body = {"error": {"type": "api_error", "message": "down"}}
+        with stub_server(lambda req: (500, body)) as stub, pytest.raises(DependencyUnavailableError):
+            provider(stub.url).expire_checkout_session("cs_1")
+
+    def test_an_open_session_gives_its_url_and_a_closed_one_does_not(self) -> None:
+        with stub_server(lambda req: (200, self.OPEN)) as stub:
+            assert provider(stub.url).open_checkout_session_url("cs_1") == "https://checkout.stripe.com/c/pay/cs_1"
+        assert (stub.requests[0].method, stub.requests[0].path) == ("GET", "/v1/checkout/sessions/cs_1")
+        for closed in ("complete", "expired"):
+            body = {**self.OPEN, "status": closed, "url": None}
+            with stub_server(lambda req, body=body: (200, body)) as stub:
+                assert provider(stub.url).open_checkout_session_url("cs_1") is None
+
+    def test_a_url_on_another_host_is_never_returned(self) -> None:
+        body = {**self.OPEN, "url": "https://evil.test/c/pay/cs_1"}
+        with stub_server(lambda req: (200, body)) as stub, pytest.raises(NotConfiguredError):
+            provider(stub.url).open_checkout_session_url("cs_1")
 
 
 class TestSubscriptionReads:
@@ -376,15 +427,19 @@ class TestRedirectHosts:
     def checkout(url: str, custom_domain: str | None = None) -> str:
         session = {"id": "cs_1", "object": "checkout.session", "url": url}
         with stub_server(lambda req: (200, session)) as stub:
-            return StripeBillingProvider(
-                secret_key=FAKE_KEY, catalog=CATALOG, api_base=stub.url, custom_domain=custom_domain
-            ).create_checkout_session(
-                customer_id="cus_1",
-                price_id="price_m",
-                user_id=USER,
-                success_url="https://app.test/s",
-                cancel_url="https://app.test/c",
-                idempotency_key="checkout-key-1",
+            return (
+                StripeBillingProvider(
+                    secret_key=FAKE_KEY, catalog=CATALOG, api_base=stub.url, custom_domain=custom_domain
+                )
+                .create_checkout_session(
+                    customer_id="cus_1",
+                    price_id="price_m",
+                    user_id=USER,
+                    success_url="https://app.test/s",
+                    cancel_url="https://app.test/c",
+                    idempotency_key="checkout-key-1",
+                )
+                .url
             )
 
     @staticmethod

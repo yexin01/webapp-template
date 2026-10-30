@@ -14,7 +14,7 @@ from psycopg.rows import dict_row
 from app.kernel.errors import ConflictError
 from app.kernel.webhooks import EventStatus
 from app.modules.billing.domain import PlanKey, SubscriptionSnapshot, SubscriptionStatus
-from app.modules.billing.ports import BillingWebhookEvent
+from app.modules.billing.ports import BillingWebhookEvent, OpenCheckout
 
 _SUBSCRIPTION_COLUMNS = (
     "stripe_subscription_id, stripe_customer_id, status, plan_key, price_id, "
@@ -75,6 +75,48 @@ class PgBillingRepository:
         if stored is None:  # pragma: no cover
             raise RuntimeError("billing customer was not stored")
         return stored
+
+    def get_open_checkout(self, user_id: UUID) -> OpenCheckout | None:
+        row = self._one(
+            "SELECT stripe_session_id, idempotency_key, expires_at FROM app.billing_checkout_sessions "
+            "WHERE user_id = %s",
+            (user_id,),
+        )
+        return OpenCheckout(row["stripe_session_id"], row["idempotency_key"], row["expires_at"]) if row else None
+
+    def save_open_checkout(self, user_id: UUID, checkout: OpenCheckout) -> str | None:
+        values = (user_id, checkout.stripe_session_id, checkout.idempotency_key, checkout.expires_at)
+        inserted = self._exec(
+            """
+            INSERT INTO app.billing_checkout_sessions (user_id, stripe_session_id, idempotency_key, expires_at)
+            VALUES (%s, %s, %s, %s) ON CONFLICT (user_id) DO NOTHING
+            """,
+            values,
+        )
+        if inserted:
+            return None
+        # A row exists, saved by an earlier request or by one that committed just now. Locked while it is
+        # replaced, so two requests saving at once each learn what the other one replaced.
+        previous = self._one(
+            "SELECT stripe_session_id FROM app.billing_checkout_sessions WHERE user_id = %s FOR UPDATE", (user_id,)
+        )
+        self._exec(
+            """
+            UPDATE app.billing_checkout_sessions
+            SET stripe_session_id = %s, idempotency_key = %s, expires_at = %s, created_at = now()
+            WHERE user_id = %s
+            """,
+            (checkout.stripe_session_id, checkout.idempotency_key, checkout.expires_at, user_id),
+        )
+        replaced = previous["stripe_session_id"] if previous else None
+        return None if replaced == checkout.stripe_session_id else replaced
+
+    def delete_open_checkout(self, user_id: UUID, stripe_session_id: str) -> None:
+        # Only the session that was closed: a newer one saved meanwhile stays.
+        self._exec(
+            "DELETE FROM app.billing_checkout_sessions WHERE user_id = %s AND stripe_session_id = %s",
+            (user_id, stripe_session_id),
+        )
 
     def user_exists(self, user_id: UUID) -> bool:
         return self._one("SELECT 1 AS ok FROM app.users WHERE id = %s", (user_id,)) is not None

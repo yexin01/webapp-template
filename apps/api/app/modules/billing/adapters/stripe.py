@@ -25,7 +25,7 @@ from app.modules.billing.domain import (
     SubscriptionSnapshot,
     SubscriptionStatus,
 )
-from app.modules.billing.ports import BillingWebhookEvent, PriceDescription
+from app.modules.billing.ports import BillingWebhookEvent, CheckoutSession, PriceDescription
 
 logger = logging.getLogger(__name__)
 
@@ -161,7 +161,7 @@ class StripeBillingProvider:
         success_url: str,
         cancel_url: str,
         idempotency_key: str,
-    ) -> str:
+    ) -> CheckoutSession:
         session = self._call(
             self._client.v1.checkout.sessions.create,
             params={
@@ -178,7 +178,15 @@ class StripeBillingProvider:
         )
         if not session.url:
             raise DependencyUnavailableError("Billing is temporarily unavailable.")
-        return self._stripe_hosted(str(session.url))
+        return CheckoutSession(str(session.id), self._stripe_hosted(str(session.url)), _ts(_get(session, "expires_at")))
+
+    def expire_checkout_session(self, session_id: str) -> None:
+        self._call(self._client.v1.checkout.sessions.expire, session_id)
+
+    def open_checkout_session_url(self, session_id: str) -> str | None:
+        session = self._call(self._client.v1.checkout.sessions.retrieve, session_id)
+        url = _get(session, "url")
+        return self._stripe_hosted(str(url)) if _get(session, "status") == "open" and url else None
 
     def create_portal_session(self, *, customer_id: str, return_url: str) -> str:
         session = self._call(

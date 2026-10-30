@@ -42,6 +42,23 @@ export function describeStatus(status: Status): string {
   }
 }
 
+/**
+ * Why a new subscription cannot be started (DEC-013), with the way on. Null when it can.
+ * Plan management is where such a subscription is fixed, changed, or ended.
+ */
+export function describeCheckoutBlock(status: Status): string | null {
+  switch (status.checkout_blocked) {
+    case "payment_required":
+      return "A new subscription cannot be started while this one needs a payment. Use Manage billing to update your payment method or settle the invoice.";
+    case "subscription_exists":
+      return "You already have a subscription. Use Manage billing to change or cancel it instead of starting another.";
+    case "payment_pending":
+      return "You can start a new subscription once this payment is confirmed.";
+    default:
+      return null;
+  }
+}
+
 export function BillingPanel() {
   const api = useApi();
   const params = useSearchParams();
@@ -110,6 +127,13 @@ export function BillingPanel() {
   if (!status) return <LoadingState label="Loading billing…" />;
 
   const needsAttention = status.state === "past_due" || status.state === "payment_required";
+  const blockCopy = describeCheckoutBlock(status);
+  // Plan management is the way on for every refusal except a payment that is still being confirmed.
+  const canManage =
+    status.plan === "pro" ||
+    needsAttention ||
+    status.state === "canceled" ||
+    (status.checkout_blocked !== null && status.checkout_blocked !== "payment_pending");
 
   return (
     <div className="stack">
@@ -125,7 +149,8 @@ export function BillingPanel() {
       <section className={`card${needsAttention ? " card-warning" : ""}`} aria-labelledby="plan-title">
         <h2 id="plan-title">Current plan</h2>
         <p>{describeStatus(status)}</p>
-        {(status.plan === "pro" || needsAttention || status.state === "canceled") && (
+        {blockCopy !== null && <p className="muted">{blockCopy}</p>}
+        {canManage && (
           <button
             type="button"
             className="button"
@@ -137,7 +162,7 @@ export function BillingPanel() {
         )}
       </section>
 
-      {status.plan === "free" && status.state !== "processing" && (
+      {status.checkout_blocked === null && (
         <section className="card" aria-labelledby="upgrade-title">
           <h2 id="upgrade-title">Upgrade to Pro</h2>
           {status.available_plans.length === 0 ? (

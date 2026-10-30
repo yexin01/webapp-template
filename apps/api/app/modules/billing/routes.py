@@ -18,7 +18,7 @@ from app.kernel.http.auth import AuthDeps
 from app.kernel.http.schemas import StrictInput, WebhookAck, errors
 from app.kernel.ports import Clock
 from app.kernel.tenancy import TenantContext
-from app.modules.billing.domain import BillingState, BillingSummary, Plan, PlanKey
+from app.modules.billing.domain import BillingState, BillingSummary, CheckoutBlock, Plan, PlanKey
 from app.modules.billing.service import BillingService
 
 ERRORS = errors(401, 403, 409, 429, 503)
@@ -31,6 +31,9 @@ class BillingStatus(BaseModel):
     current_period_end: datetime | None
     cancels_at: datetime | None
     available_plans: list[Literal[PlanKey.PRO_MONTHLY, PlanKey.PRO_YEARLY]]
+    # Why a new checkout is refused (DEC-013), or null when starting one is allowed. The UI offers
+    # Upgrade only when this is null, and plan management otherwise.
+    checkout_blocked: CheckoutBlock | None
 
 
 class CheckoutRequest(StrictInput):
@@ -58,6 +61,7 @@ def _status(billing: BillingService, summary: BillingSummary) -> BillingStatus:
         plan_key=summary.plan_key,
         current_period_end=summary.current_period_end,
         cancels_at=summary.cancels_at,
+        checkout_blocked=summary.checkout_block,
         available_plans=[k for k in (PlanKey.PRO_MONTHLY, PlanKey.PRO_YEARLY) if billing.has_price(k)],
     )
 

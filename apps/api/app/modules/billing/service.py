@@ -8,6 +8,7 @@ duplicate, delayed, and out-of-order deliveries converge on the same state.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import threading
@@ -23,6 +24,7 @@ from app.kernel.authorization import authorize
 from app.kernel.errors import (
     ConflictError,
     DependencyUnavailableError,
+    DomainError,
     EntitlementRequiredError,
     InvalidRequestError,
     NotConfiguredError,
@@ -37,6 +39,7 @@ from app.modules.billing.domain import (
     FINAL_STATUSES,
     PRO_FEATURE_USE,
     BillingSummary,
+    CheckoutBlock,
     EntitlementChanged,
     EntitlementDecision,
     Plan,
@@ -44,6 +47,7 @@ from app.modules.billing.domain import (
     PriceCatalog,
     SubscriptionSnapshot,
     SubscriptionStatus,
+    checkout_block,
     decide,
     entitling_subscriptions,
     summarize,
@@ -53,6 +57,7 @@ from app.modules.billing.ports import (
     BillingRepository,
     BillingWebhookEvent,
     BillingWebhookVerifier,
+    OpenCheckout,
 )
 
 logger = logging.getLogger(__name__)
@@ -79,6 +84,19 @@ SYNC_EVENT_TYPES = frozenset(
         "invoice.payment_action_required",
     }
 )
+
+
+# Why a new checkout is refused (BILL-07, DEC-013). Each sends the user to plan management.
+_CHECKOUT_REFUSALS = {
+    CheckoutBlock.ALREADY_PRO: "You already have Pro. Manage your plan from the billing page.",
+    CheckoutBlock.PAYMENT_REQUIRED: (
+        "Your subscription needs a payment before you can start a new one. Use Manage billing on the billing page."
+    ),
+    CheckoutBlock.SUBSCRIPTION_EXISTS: (
+        "You already have a subscription. Manage it from the billing page instead of starting another."
+    ),
+    CheckoutBlock.PAYMENT_PENDING: "Your payment is still being confirmed. Start a new subscription after that.",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,6 +200,14 @@ class BillingService:
     # -- Checkout and portal -------------------------------------------------
 
     def start_checkout(self, ctx: TenantContext, plan_key: PlanKey, idempotency_key: str) -> str:
+        """Create a Checkout Session, unless the user already has a subscription that is not over (DEC-013).
+
+        A user has at most one open session: the one before is expired at Stripe
+        first, so two tabs can never both buy a subscription. If Stripe cannot
+        expire it, no second session is created and the request fails with a
+        retryable 503. Stripe's own subscriptions are read after that, because the
+        webhook for a session that was just completed may not have landed.
+        """
         authorize(ctx, BILLING_MANAGE)
         if not _IDEMPOTENCY_KEY.fullmatch(idempotency_key):
             raise InvalidRequestError("Idempotency-Key must be 8-64 characters [A-Za-z0-9_-].")
@@ -194,24 +220,88 @@ class BillingService:
         with self._tx.as_tenant(ctx) as t:
             subs = t.repo.list_subscriptions(ctx.user_id)
             customer_id = t.repo.get_billing_customer_id(ctx.user_id)
-        if decide(subs, self._clock.now()).plan is Plan.PRO:
-            raise ConflictError("You already have Pro. Manage your plan from the billing page.")
+            open_checkout = t.repo.get_open_checkout(ctx.user_id)
+        self._refuse_checkout(subs)
 
+        stripe_key = f"checkout-{ctx.user_id}-{plan_key.value}-{idempotency_key}"
         with self._stripe_call_slot():
             if customer_id is None:
                 created = provider.create_customer(ctx.user_id)
                 with self._tx.as_tenant(ctx) as t:
                     customer_id = t.repo.insert_billing_customer(ctx.user_id, created, self._clock.now())
-            url = provider.create_checkout_session(
+            else:
+                if open_checkout is not None and open_checkout.idempotency_key == stripe_key:
+                    # The same request again (a retry): its session, if it is still open, not a new one.
+                    url = self._open_session_url(provider, open_checkout)
+                    if url is not None:
+                        return url
+                self._close_open_checkout(provider, ctx, open_checkout)
+                self._refuse_checkout(provider.list_customer_subscriptions(customer_id))
+            # Stripe replays the session an earlier request created with the same key, even if it was closed
+            # since. Tying the key to the session just closed makes a replay of this request return the new
+            # session, and a request made after a newer session was saved never return a dead one.
+            session = provider.create_checkout_session(
                 customer_id=customer_id,
                 price_id=price_id,
                 user_id=ctx.user_id,
                 success_url=self._urls.checkout_success,
                 cancel_url=self._urls.checkout_cancel,
-                idempotency_key=f"checkout-{ctx.user_id}-{plan_key.value}-{idempotency_key}",
+                idempotency_key=stripe_key
+                if open_checkout is None
+                else f"{stripe_key}-{hashlib.sha256(open_checkout.stripe_session_id.encode()).hexdigest()[:16]}",
             )
+            self._remember_checkout(provider, ctx, OpenCheckout(session.session_id, stripe_key, session.expires_at))
         self._analytics.capture(ctx.user_id, "checkout_started", {"plan": plan_key.value})
-        return url
+        return session.url
+
+    def _refuse_checkout(self, subscriptions: Sequence[SubscriptionSnapshot]) -> None:
+        block = checkout_block(subscriptions, self._clock.now())
+        if block is not None:
+            raise ConflictError(_CHECKOUT_REFUSALS[block])
+
+    @staticmethod
+    def _open_session_url(provider: BillingProvider, checkout: OpenCheckout) -> str | None:
+        try:
+            return provider.open_checkout_session_url(checkout.stripe_session_id)
+        except InvalidRequestError:
+            return None  # Stripe no longer has it
+
+    def _close_open_checkout(
+        self, provider: BillingProvider, ctx: TenantContext, checkout: OpenCheckout | None
+    ) -> None:
+        """Expire the user's earlier session. If Stripe cannot, raise: a second session must not be created."""
+        if checkout is None:
+            return
+        if checkout.expires_at is None or checkout.expires_at > self._clock.now():
+            try:
+                provider.expire_checkout_session(checkout.stripe_session_id)
+            except InvalidRequestError:
+                pass  # completed or already expired: it cannot be completed again, and Stripe's state is read next
+            except DependencyUnavailableError as exc:
+                raise DependencyUnavailableError(
+                    "Your earlier checkout could not be closed. Nothing was started; try again in a moment."
+                ) from exc
+        with self._tx.as_tenant(ctx) as t:
+            t.repo.delete_open_checkout(ctx.user_id, checkout.stripe_session_id)
+
+    def _remember_checkout(self, provider: BillingProvider, ctx: TenantContext, checkout: OpenCheckout) -> None:
+        try:
+            with self._tx.as_tenant(ctx) as t:
+                replaced = t.repo.save_open_checkout(ctx.user_id, checkout)
+        except Exception:
+            # Not remembered, so nothing would close it later: close it now rather than leave it completable.
+            self._expire_quietly(provider, checkout.stripe_session_id)
+            raise
+        if replaced is not None:
+            # A request of the same user saved its session in between (two tabs at once): the later one wins.
+            self._expire_quietly(provider, replaced)
+
+    @staticmethod
+    def _expire_quietly(provider: BillingProvider, session_id: str) -> None:
+        try:
+            provider.expire_checkout_session(session_id)
+        except DomainError:
+            logger.warning("billing_checkout_expire_failed")
 
     def open_portal(self, ctx: TenantContext) -> str:
         authorize(ctx, BILLING_MANAGE)
