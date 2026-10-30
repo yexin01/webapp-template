@@ -40,6 +40,14 @@ describe("redaction", () => {
     },
   );
 
+  // apps/api/app/kernel/infrastructure/redaction.py
+  it.each([
+    ...["token", "access_token", "id_token", "code", "session_id", "key", "api_key", "secret", "signature"],
+    ...["ticket", "redirect_url", "__clerk_ticket"],
+  ])("removes the value of the %s query parameter, as the API does", (name) => {
+    expect(redactText(`/p?a=1&${name}=CANARY&b=2`)).toBe(`/p?a=1&${name}=[REDACTED]&b=2`);
+  });
+
   it.each([
     ["after a hyphen", "id-", "id-"],
     ["after a dot", "ref.abc.", "ref.abc."],
@@ -52,6 +60,52 @@ describe("redaction", () => {
   it("removes an email address whose local part runs on past 64 characters", () => {
     const text = `x ${"a".repeat(100)}.jane.doe@example.com y`;
     expect(redactText(text)).not.toMatch(/jane|@example\.com/);
+  });
+
+  it.each([100, 300])("removes the whole of an email address with a %i-character local part", (length) => {
+    const local = `jane.doe${"a".repeat(length - "jane.doe".length)}`;
+    expect(redactText(`x ${local}@example.com y`)).toBe("x [REDACTED] y");
+  });
+
+  it.each(["+", "-", "_", "%", "7"])(
+    "removes an email address written right after another one, joined by %s",
+    (joiner) => {
+      expect(redactText(`x to=jane@example.com${joiner}bob@example.org y`)).not.toMatch(/jane|bob|example/);
+    },
+  );
+
+  it("removes what the unbounded email pattern removed, on 20,000 generated strings", () => {
+    const unbounded = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+    const fragments = [
+      "ab",
+      "c",
+      ".",
+      "@",
+      "+",
+      "-",
+      "1",
+      " ",
+      "x.yz",
+      "@q.rs",
+      ".tu",
+      "_",
+      "%",
+      ".v",
+      ",",
+      "@a",
+      "b.cd",
+    ];
+    let seed = 1; // Park–Miller, so a failing string can be reproduced
+    const pick = (count: number) => {
+      seed = (seed * 48_271) % 2_147_483_647;
+      return seed % count;
+    };
+    for (let i = 0; i < 20_000; i++) {
+      const text = Array.from({ length: 1 + pick(12) }, () => fragments[pick(fragments.length)]).join("");
+      // Addresses written one after another, which it matched one by one, are now one match.
+      const expected = text.replace(unbounded, "[REDACTED]").replace(/(?:\[REDACTED\])+/g, "[REDACTED]");
+      expect(redactText(text), text).toBe(expected);
+    }
   });
 });
 
@@ -72,6 +126,28 @@ describe("redaction cost on long strings (OBS-06)", () => {
     const [, ms] = timed(() => redactText(text, Infinity));
     expect(ms).toBeLessThan(500);
   });
+
+  // Long enough that a quadratic pattern takes seconds, so it fails; on 1 MB it would stall the run for an hour.
+  const RUN = 84_000;
+  const unchanged = (text: string): [string, string] => [text, text];
+  it.each<[string, string, string]>([
+    ["local-part characters", ...unchanged("a.%+-_".repeat(RUN / 6))],
+    ["local-part characters before an @", ...unchanged(`${"a".repeat(RUN)}@`)],
+    ["local-part characters before an address", `${"a".repeat(RUN)}@example.com`, "[REDACTED]"],
+    ["@ between local-part characters", ...unchanged("a@".repeat(RUN / 2))],
+    ["@", ...unchanged("@".repeat(RUN))],
+    ["dots after an @", ...unchanged(`a@${".".repeat(RUN)}`)],
+    ["dotted labels after an @", ...unchanged(`a@${"b.".repeat(RUN / 2)}`)],
+    ["addresses written one after another", `a@b.cc${".d@e.ff".repeat(RUN / 7)}`, "[REDACTED]"],
+    ["near-addresses after one", `a@b.cc${".d@e".repeat(RUN / 4)}`, `[REDACTED]${".d@e".repeat(RUN / 4)}`],
+  ])(
+    "redacts email addresses in linear time on a run of %s, even without the length cap",
+    (_label, text, expected) => {
+      const [redacted, ms] = timed(() => redactText(text, Infinity));
+      expect(ms).toBeLessThan(500);
+      expect(redacted).toBe(expected);
+    },
+  );
 
   it("keeps the first 4096 characters, without a token cut in half", () => {
     const filler = "word ".repeat(819); // 4095 characters

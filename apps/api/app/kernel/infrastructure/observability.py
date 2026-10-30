@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sys
 import threading
 import time
@@ -23,7 +24,16 @@ import sentry_sdk
 from posthog import Posthog
 
 from app.kernel.infrastructure.config import CoreSettings, Mode
-from app.kernel.infrastructure.redaction import REDACTED, SENSITIVE_KEYS, redact, redact_text
+from app.kernel.infrastructure.redaction import (
+    MAX_TEXT_LENGTH,
+    REDACTED,
+    SENSITIVE_KEYS,
+    TRUNCATED,
+    redact,
+    redact_text,
+    strip_query,
+    strip_url_queries,
+)
 from app.kernel.request_context import request_id_var
 
 _STANDARD_RECORD_FIELDS = frozenset(vars(logging.LogRecord("", 0, "", 0, "", None, None)).keys()) | {
@@ -73,6 +83,61 @@ def configure_logging(level: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+# The most span text one transaction's scrubbing reads: 32 strings at the cap, about 10 ms of redaction.
+MAX_SPAN_TEXT = 32 * MAX_TEXT_LENGTH
+# Span IDs and timestamps: the SDK fills them, never with caller text, and they must stay whole.
+_SPAN_IDENTITY = frozenset({"trace_id", "span_id", "parent_span_id", "start_timestamp", "timestamp"})
+# Span and breadcrumb data holding only a query string or a fragment, or a user field (events drop the user).
+_DROPPED_DATA = re.compile(r"(?:http|url)\.(?:query|fragment)|user\..+")
+# Span and breadcrumb data holding a URL or a request target.
+_URL_DATA = frozenset({"url", "http.url", "http.target", "url.full", "url.path"})
+
+
+def _scrub_trace_text(value: str, max_length: int = MAX_TEXT_LENGTH) -> str:
+    """``value`` redacted, with each path or URL in it cut to its origin and path."""
+    return strip_url_queries(redact_text(value, max_length=max_length))
+
+
+class _SpanText:
+    """Scrubs the text of one transaction's spans, reading at most ``MAX_SPAN_TEXT`` characters in all.
+
+    It runs where the transaction ends, on the event loop, and the SDK sends up
+    to 1,000 spans with text of any length. Text repeated across spans (an
+    operation, a query run in a loop) is scrubbed once; new text past the
+    budget becomes ``TRUNCATED``.
+    """
+
+    def __init__(self) -> None:
+        self._budget = MAX_SPAN_TEXT
+        self._scrubbed: dict[str, str] = {}
+
+    def __call__(self, value: str) -> str:
+        key = value[: MAX_TEXT_LENGTH + 1]  # all of it that redact_text reads
+        if key not in self._scrubbed:
+            max_length = min(MAX_TEXT_LENGTH, self._budget)
+            self._scrubbed[key] = _scrub_trace_text(value, max_length) if max_length > 0 else TRUNCATED
+            self._budget -= min(len(value), max_length)
+        return self._scrubbed[key]
+
+
+def _scrub_data(data: Any, text: Callable[[str], str] = _scrub_trace_text) -> Any:
+    """Span or breadcrumb data: no query strings, fragments, or user fields, and all text scrubbed."""
+    if isinstance(data, dict):
+        data = {
+            key: strip_query(value) if key in _URL_DATA and isinstance(value, str) else value
+            for key, value in data.items()
+            if not (isinstance(key, str) and _DROPPED_DATA.fullmatch(key))
+        }
+    return redact(data, text=text)
+
+
+def _scrub_span(span: dict[str, Any], text: Callable[[str], str] = _scrub_trace_text) -> None:
+    """Scrubs, in place, a span of a transaction or the trace context (root span) of an event."""
+    for key, value in span.items():
+        if key not in _SPAN_IDENTITY:
+            span[key] = _scrub_data(value, text) if key == "data" else redact(value, text=text)
+
+
 def _scrub_request(request: dict[str, Any]) -> None:
     headers = request.get("headers")
     if isinstance(headers, dict):
@@ -82,26 +147,46 @@ def _scrub_request(request: dict[str, Any]) -> None:
     for key in ("cookies", "data", "env"):
         if key in request:
             request[key] = REDACTED
-    if isinstance(request.get("query_string"), str):
-        request["query_string"] = redact_text(request["query_string"])
+    # Like data_collection, never send a query string or fragment, which can hold tokens.
+    for key in ("query_string", "fragment"):
+        request.pop(key, None)
     if isinstance(request.get("url"), str):
-        request["url"] = redact_text(request["url"])
+        request["url"] = redact_text(strip_query(request["url"]))
 
 
-def scrub_event(event: Any, _hint: Any) -> Any:
-    """Sentry ``before_send``: remove secrets, bodies, and personal data; tag the request ID."""
+def _scrub_common(event: Any, *, keep_trace_data: bool) -> None:
+    """Scrubs what error events and transactions share, and tags the request ID.
+
+    The trace context's ``data`` goes, like any other context's, unless
+    ``keep_trace_data``: a transaction's is its root span's, scrubbed like a span's.
+    """
     request_id = request_id_var.get()
     if request_id:
         # Lets an operator go from a user's X-Request-ID to the event (OBS-05).
         tags = event.get("tags")
         event["tags"] = {**(tags if isinstance(tags, dict) else {}), "request_id": request_id}
+    if isinstance(event.get("transaction"), str):
+        event["transaction"] = _scrub_trace_text(event["transaction"])
     request = event.get("request")
     if isinstance(request, dict):
         _scrub_request(request)
     event.pop("user", None)
+    contexts = event.get("contexts")
+    trace = contexts.pop("trace", None) if isinstance(contexts, dict) else None
     for key in ("extra", "contexts", "tags"):
         if key in event:
             event[key] = redact(event[key])
+    if isinstance(trace, dict):
+        if "data" in trace and not keep_trace_data:
+            trace["data"] = REDACTED
+        # Its sampling context, which a caller can set, becomes the envelope's trace header.
+        _scrub_span(trace)
+        event["contexts"]["trace"] = trace
+
+
+def scrub_event(event: Any, _hint: Any) -> Any:
+    """Sentry ``before_send``: remove secrets, bodies, and personal data; tag the request ID."""
+    _scrub_common(event, keep_trace_data=False)
     for exc in (event.get("exception") or {}).get("values", []) or []:
         if isinstance(exc.get("value"), str):
             exc["value"] = redact_text(exc["value"])
@@ -119,12 +204,33 @@ def scrub_event(event: Any, _hint: Any) -> Any:
     return event
 
 
+def scrub_transaction(event: Any, _hint: Any) -> Any:
+    """Sentry ``before_send_transaction``: scrubs a transaction like an error event, and each of its spans.
+
+    Paths and URLs in the transaction name, span descriptions, and span data
+    keep only their origin and path; query strings, fragments, and user
+    fields are dropped, and all other text is redacted. The spans' text is
+    read up to ``MAX_SPAN_TEXT`` characters in all.
+    """
+    _scrub_common(event, keep_trace_data=True)
+    text = _SpanText()
+    for span in event.get("spans") or []:
+        if isinstance(span, dict):
+            _scrub_span(span, text)
+    return event
+
+
 def scrub_breadcrumb(crumb: Any, _hint: Any) -> Any:
+    """Sentry ``before_breadcrumb``: redacts the message and data; HTTP data keeps no query string or fragment."""
     if isinstance(crumb.get("message"), str):
         crumb["message"] = redact_text(crumb["message"])
     if "data" in crumb:
-        crumb["data"] = redact(crumb["data"])
+        crumb["data"] = _scrub_data(crumb["data"])
     return crumb
+
+
+def _never_sample(_sampling_context: Any) -> float:
+    return 0.0
 
 
 def sentry_options(settings: CoreSettings) -> dict[str, Any]:
@@ -135,7 +241,7 @@ def sentry_options(settings: CoreSettings) -> dict[str, Any]:
         "environment": settings.app_env.value,
         "release": settings.sentry_release,  # None: sentry-sdk derives one (SENTRY_RELEASE, git, CI)
         # Collect nothing personal or request-derived by default; the
-        # before_send scrubber is a second line of defense.
+        # before_send* scrubbers are a second line of defense.
         "data_collection": {
             "user_info": False,
             "cookies": {"mode": "off"},
@@ -149,7 +255,13 @@ def sentry_options(settings: CoreSettings) -> dict[str, Any]:
             "stack_frame_variables": False,
         },
         "traces_sample_rate": settings.sentry_traces_sample_rate,
+        # At 0 the rate alone still traces each request whose caller sends a sampled trace; a sampler overrides
+        # that. Tracing stays on, so each request still continues its caller's trace and its errors link to it.
+        "traces_sampler": None if settings.sentry_traces_sample_rate else _never_sample,
+        # Spans then travel only inside transactions, which before_send_transaction scrubs.
+        "trace_lifecycle": "static",
         "before_send": scrub_event,
+        "before_send_transaction": scrub_transaction,
         "before_breadcrumb": scrub_breadcrumb,
         "max_breadcrumbs": 50,
     }

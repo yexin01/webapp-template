@@ -26,14 +26,27 @@ export const SENSITIVE_QUERY_PARAMETERS = [
   "redirect_url",
   "session_id",
   "token",
+  "access_token",
+  "id_token",
   "code",
   "key",
+  "api_key",
   "secret",
+  "signature",
+  "ticket",
 ] as const;
 
 const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const SENSITIVE_PARAMETER_NAMES = [...SENSITIVE_QUERY_PARAMETERS.map(escapeRegExp), "__clerk[a-z_]*"].join(
   "|",
+);
+
+const EMAIL_LOCAL = "[A-Za-z0-9._%+-]";
+const EMAIL_DOMAIN = "@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}";
+// Tried only from the start of a local-part run (linear, whole address), with any glued on: "a@b.cc+d@e.ff".
+const EMAIL = new RegExp(
+  `(?<!${EMAIL_LOCAL})${EMAIL_LOCAL}+${EMAIL_DOMAIN}(?:[0-9._%+-]${EMAIL_LOCAL}*${EMAIL_DOMAIN})*`,
+  "g",
 );
 
 // Each pattern runs in linear time: no long run of characters is rescanned from every position in it.
@@ -46,8 +59,7 @@ const PATTERNS: [RegExp, string][] = [
     "$1[REDACTED]",
   ],
   [/\bbearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, "[REDACTED]"],
-  // RFC 5321 limits the local part to 64 characters; the bound keeps the scan linear.
-  [/[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, "[REDACTED]"],
+  [EMAIL, "[REDACTED]"],
   [new RegExp(`([?&](?:${SENSITIVE_PARAMETER_NAMES})=)[^&\\s"']+`, "gi"), "$1[REDACTED]"],
 ];
 
