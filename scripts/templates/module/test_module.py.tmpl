@@ -10,12 +10,12 @@ from typing import Any
 import psycopg
 import pytest
 
-from app.kernel.authorization import ALL_ROLES
+from app.kernel.authorization import ADMIN_ONLY, ALL_ROLES
 from app.kernel.pagination import DEFAULT_PAGE_SIZE
 from app.kernel.tenancy import Role
 from app.modules.__module__ import service
 from app.modules.__module__.adapters import Pg__Module__Repository
-from app.modules.__module__.domain import __ENTITY___DELETE
+from app.modules.__module__.domain import __ENTITY___CREATE, __ENTITY___DELETE
 from app.modules.identity.domain import ExternalMembership
 from tests.conftest import Harness, superuser_query
 from tests.membership_races import DOWNGRADE, REMOVE, change_after_resolution
@@ -27,6 +27,20 @@ ORG = "org_generated"
 OTHER_ORG = "org_generatedother"
 PERSONAL = "/api/v1/__path__"
 IN_ORG = f"/api/v1/orgs/{ORG}/__path__"
+
+
+# Who asks, where, and what the permissions in domain.py grant there.
+SHIPPED = [
+    pytest.param("admin", PERSONAL, {"create": True, "delete": True}, id="personal"),
+    pytest.param("admin", IN_ORG, {"create": True, "delete": True}, id="organization admin"),
+    pytest.param("member", IN_ORG, {"create": True, "delete": False}, id="organization member"),
+]
+# The same callers once members may delete but only admins may create.
+CHANGED = [
+    pytest.param("admin", PERSONAL, {"create": True, "delete": True}, id="personal"),
+    pytest.param("admin", IN_ORG, {"create": True, "delete": True}, id="organization admin"),
+    pytest.param("member", IN_ORG, {"create": False, "delete": True}, id="organization member"),
+]
 
 
 @pytest.fixture
@@ -140,6 +154,43 @@ def test_the_role_recheck_applies_the_declared_permission(
     item = harness.client.post(IN_ORG, json={"name": "shared"}, headers=people["member"]).json()
     assert harness.client.delete(f"{IN_ORG}/{item['id']}", headers=people["member"]).status_code == 204
     assert superuser_query(harness.database_url, "SELECT count(*) FROM app.__module__") == [(0,)]
+
+
+def trying(harness: Harness, headers: dict[str, str], path: str, admin: dict[str, str]) -> dict[str, bool]:
+    """What the routes do when the caller tries to create one and to delete one that an admin made."""
+    target = harness.client.post(path, json={"name": "target"}, headers=admin).json()["id"]
+    created = harness.client.post(path, json={"name": "tried"}, headers=headers).status_code
+    deleted = harness.client.delete(f"{path}/{target}", headers=headers).status_code
+    assert created in (201, 403), created
+    assert deleted in (204, 403), deleted
+    return {"create": created == 201, "delete": deleted == 204}
+
+
+@pytest.mark.parametrize(("who", "path", "granted"), SHIPPED)
+def test_the_list_says_what_the_caller_may_do(
+    harness: Harness, people: dict[str, Any], who: str, path: str, granted: dict[str, bool]
+) -> None:
+    """ARCH-03: the web app shows actions from ``can``, which equals what the routes do when the caller tries."""
+    can = harness.client.get(path, headers=people[who]).json()["can"]
+    assert can == granted
+    assert trying(harness, people[who], path, people["admin"]) == can
+
+
+@pytest.mark.parametrize(("who", "path", "granted"), CHANGED)
+def test_the_list_follows_a_change_to_the_permissions(
+    harness: Harness,
+    people: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    who: str,
+    path: str,
+    granted: dict[str, bool],
+) -> None:
+    """Edit the permissions in domain.py and nothing else: ``can`` and the routes change together."""
+    monkeypatch.setattr(service, "__ENTITY___CREATE", replace(__ENTITY___CREATE, org_roles=ADMIN_ONLY))
+    monkeypatch.setattr(service, "__ENTITY___DELETE", replace(__ENTITY___DELETE, org_roles=ALL_ROLES))
+    can = harness.client.get(path, headers=people[who]).json()["can"]
+    assert can == granted
+    assert trying(harness, people[who], path, people["admin"]) == can
 
 
 def test_create_records_an_event(harness: Harness, people: dict[str, Any]) -> None:

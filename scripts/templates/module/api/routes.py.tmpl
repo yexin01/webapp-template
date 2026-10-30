@@ -45,9 +45,16 @@ class __Entity__(BaseModel):
         )
 
 
+class __Entity__Capabilities(BaseModel):
+    create: bool
+    delete: bool
+
+
 class __Entity__Page(BaseModel):
     items: list[__Entity__]
     next_cursor: str | None
+    # What the caller may do in this context. The UI shows actions from it, not from a role (ARCH-03).
+    can: __Entity__Capabilities
 
 
 class __Entity__Create(StrictInput):
@@ -67,9 +74,11 @@ def build_router(service: __Module__Service, auth: AuthDeps, request_transaction
     def page(ctx: TenantContext, limit: int, cursor: str | None) -> __Entity__Page:
         records = service.list(ctx, limit, decode_cursor(cursor))
         last = records[-1] if len(records) == limit else None
+        can = service.capabilities(ctx)
         return __Entity__Page(
             items=[__Entity__.from_record(r) for r in records],
             next_cursor=encode_cursor(last.created_at, last.id) if last else None,
+            can=__Entity__Capabilities(create=can.create, delete=can.delete),
         )
 
     @router.get(

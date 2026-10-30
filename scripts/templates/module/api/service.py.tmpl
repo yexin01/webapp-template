@@ -14,6 +14,7 @@ from app.modules.__module__.domain import (
     __ENTITY___CREATE,
     __ENTITY___DELETE,
     __ENTITY___READ,
+    Capabilities,
     __Entity__,
     __Entity__Created,
     clean_name,
@@ -29,6 +30,10 @@ class __Module__Service:
         authorize(ctx, __ENTITY___READ)
         with self._tx.as_tenant(ctx) as t:
             return t.repo.list(ctx, bounded_limit(limit), after)
+
+    def capabilities(self, ctx: TenantContext) -> Capabilities:
+        """The UI shows actions from this, never from a role: one flag per action a route enforces."""
+        return Capabilities(create=is_allowed(ctx, __ENTITY___CREATE), delete=is_allowed(ctx, __ENTITY___DELETE))
 
     def create(self, ctx: TenantContext, name: str) -> __Entity__:
         authorize(ctx, __ENTITY___CREATE)

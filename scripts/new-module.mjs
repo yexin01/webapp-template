@@ -234,7 +234,7 @@ for (const file of tree("apps/api/app").filter((f) => f.endsWith(".py"))) {
   }
 }
 const clash = (reason) => fail(`${reason}. Pass a distinct --entity, e.g. --entity ${Entity}Item.`);
-const schemas = [Entity, `${Entity}Page`, `${Entity}Create`];
+const schemas = [Entity, `${Entity}Page`, `${Entity}Create`, `${Entity}Capabilities`];
 for (const id of schemas) {
   if (defined.has(id)) clash(`"${id}" is already defined in ${defined.get(id)}`);
 }
@@ -416,6 +416,9 @@ Next steps:
   1. pnpm db:migrate             # create app.${name} locally
   2. pnpm contracts              # regenerate the OpenAPI document and the typed web client
   3. pnpm test                   # the generated tests: tests/integration/test_${name}.py and the panel test
-  4. Mount <${M}Panel /> from "@/features/${tokens.__path__}" in a page (for example the dashboard).
+  4. Mount <${M}Panel /> from "@/features/${tokens.__path__}" in a page (for example the dashboard); it takes no props.
      A new page requires sign-in; only paths listed in apps/web/src/lib/page-access.ts are public.
-  5. Replace the placeholder description in ${api}/__init__.py and model your real fields.`);
+  5. Replace the placeholder description in ${api}/__init__.py and model your real fields.
+  6. For a new action, declare its Permission in domain.py and evaluate it in the use case, then add a flag
+     for it to Capabilities (domain.py), service.capabilities, ${Entity}Capabilities (routes.py) and the panel.
+     The panel shows actions from the list's "can", never from a role.`);
