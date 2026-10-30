@@ -115,14 +115,25 @@ class TokenTableVerifier:
 class RecordingAnalytics:
     def __init__(self) -> None:
         self.events: list[tuple[str, str, dict[str, Any]]] = []
-        self.export_ok = True
+        # The (event_id, occurred_at) each recorded event carried, in the order of ``events``.
+        self.identities: list[tuple[uuid.UUID | None, datetime | None]] = []
+        self.export_ok = True  # False: flush() reports a failed export
 
-    def capture(self, user_id: uuid.UUID, event: str, properties: Any) -> None:
+    def capture(
+        self,
+        user_id: uuid.UUID,
+        event: str,
+        properties: Any,
+        *,
+        event_id: uuid.UUID | None = None,
+        occurred_at: datetime | None = None,
+    ) -> None:
         from app.kernel.infrastructure.observability import _filter
 
         filtered = _filter(event, properties)
         if filtered is not None:
             self.events.append((str(user_id), event, filtered))
+            self.identities.append((event_id, occurred_at))
 
     def flush(self) -> bool:
         return self.export_ok

@@ -473,7 +473,7 @@ def test_readiness_checks_the_database_on_a_thread_of_its_own(harness: Harness) 
 
 def test_analytics_failure_does_not_break_requests(make_harness: Any) -> None:
     class Broken:
-        def capture(self, *_args: Any) -> None:
+        def capture(self, *_args: Any, **_kwargs: Any) -> None:
             raise ConnectionError("analytics down")
 
         def shutdown(self) -> None:

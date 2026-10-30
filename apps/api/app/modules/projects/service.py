@@ -6,7 +6,7 @@ from dataclasses import replace
 from uuid import UUID
 
 from app.kernel.authorization import authorize, is_allowed
-from app.kernel.errors import DomainError, ForbiddenError, NotFoundError
+from app.kernel.errors import DependencyUnavailableError, DomainError, ForbiddenError, NotFoundError
 from app.kernel.events import StoredEvent
 from app.kernel.pagination import PageCursor, bounded_limit
 from app.kernel.ports import Analytics, AuditEntry, Transactions, Tx
@@ -58,10 +58,21 @@ class ProjectService:
             raise refusal
 
     def capture_created(self, event: StoredEvent) -> None:
-        """Outbox handler: product analytics, after commit."""
+        """Outbox handler: product analytics, after commit.
+
+        A redelivery sends the same PostHog event (the outbox event's ID and
+        time), which PostHog deduplicates. Raises unless the export is
+        confirmed, so the outbox retries it instead of marking it processed.
+        """
         self._analytics.capture(
-            UUID(str(event.payload["user_id"])), "project_created", {"context": str(event.payload["context"])}
+            UUID(str(event.payload["user_id"])),
+            "project_created",
+            {"context": str(event.payload["context"])},
+            event_id=event.id,
+            occurred_at=event.occurred_at,
         )
+        if not self._analytics.flush():
+            raise DependencyUnavailableError("Analytics export could not be confirmed.")
 
 
 def _delete_refusal(t: Tx[ProjectRepository], ctx: TenantContext) -> DomainError | None:

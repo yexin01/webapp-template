@@ -137,10 +137,41 @@ class Clock(Protocol):
 
 
 class Analytics(Protocol):
-    def capture(self, user_id: UUID, event: str, properties: Mapping[str, str | int | bool]) -> None: ...
+    def capture(
+        self,
+        user_id: UUID,
+        event: str,
+        properties: Mapping[str, str | int | bool],
+        *,
+        event_id: UUID | None = None,
+        occurred_at: datetime | None = None,
+    ) -> None:
+        """Export an allowlisted event.
+
+        Without ``event_id`` the event is queued, and the call never waits for
+        the export. With one, it is sent before the call returns, waiting a
+        bounded time (2 s by default for PostHog), so ``flush()`` can confirm
+        it: pass one from outbox handlers only, never on the request path.
+        While the provider is not answering, such an event may instead be
+        reported unconfirmed at once, without being sent.
+
+        Outbox handlers pass the outbox event's ``id`` and ``occurred_at``, so a
+        redelivery produces the same provider event: PostHog deduplicates an
+        event by its uuid together with its event, distinct ID, and timestamp.
+        Without ``event_id`` every call is a new event, and without
+        ``occurred_at`` it is stamped with the current time.
+        """
+        ...
 
     def flush(self) -> bool:
-        """Export queued events now. Returns False if an export failed meanwhile."""
+        """Export queued events now. Returns False if an export failed meanwhile, or if queued
+        events were still unconfirmed when the flush timeout ran out.
+
+        It also returns False if one of the caller's captures since its last flush could not be
+        queued. After captures with ``event_id``, it instead confirms the events the caller sent
+        that way since its last flush, waiting on nothing else: False unless the provider accepted
+        every one. An outbox handler raises when it returns False, so the event is retried.
+        """
         ...
 
     def shutdown(self) -> None: ...

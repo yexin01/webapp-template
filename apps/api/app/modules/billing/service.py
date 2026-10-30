@@ -466,10 +466,21 @@ class BillingService:
         report.divergences.extend(_diff(user_id, _by_id(local), _by_id(remote)))
 
     def capture_entitlement_change(self, event: StoredEvent) -> None:
-        """Outbox handler: product analytics for plan changes. Idempotent at PostHog's level."""
+        """Outbox handler: product analytics for plan changes.
+
+        A redelivery sends the same PostHog event (the outbox event's ID and
+        time), which PostHog deduplicates. Raises unless the export is
+        confirmed, so the outbox retries it instead of marking it processed.
+        """
         self._analytics.capture(
-            UUID(str(event.payload["user_id"])), "plan_changed", {"plan": str(event.payload["plan"])}
+            UUID(str(event.payload["user_id"])),
+            "plan_changed",
+            {"plan": str(event.payload["plan"])},
+            event_id=event.id,
+            occurred_at=event.occurred_at,
         )
+        if not self._analytics.flush():
+            raise DependencyUnavailableError("Analytics export could not be confirmed.")
 
     def _require_provider(self) -> BillingProvider:
         if self._provider is None:
