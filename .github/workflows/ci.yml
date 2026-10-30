@@ -208,25 +208,36 @@ jobs:
     name: Secret scan
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    # On pull requests the action lists the pull request's commits through the
-    # API, which needs pull-requests: read on private repositories.
-    permissions:
-      contents: read
-      pull-requests: read
+    env:
+      # The gitleaks CLI needs no license (the gitleaks-action does for organization repositories)
+      # and runs on pull requests from forks. Keep the version in step with the image digest in
+      # scripts/git-hooks/pre-commit. Dependabot does not read either pin.
+      GITLEAKS_VERSION: "8.30.1"
+      # SHA-256 of gitleaks_8.30.1_linux_x64.tar.gz, from the release's gitleaks_8.30.1_checksums.txt.
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
           persist-credentials: false
-      # Repositories owned by an organization need a free gitleaks-action
-      # license: store it as the GITLEAKS_LICENSE secret and pass it below as
-      # GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }} (an owner action).
-      # Personal repositories do not. Pull requests from forks never receive
-      # secrets, so in an organization this step fails on fork pull requests
-      # unless it is replaced by the gitleaks CLI, which needs no license.
-      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Review comments would need pull-requests: write. Findings go to the
-          # job log, summary, and a redacted SARIF artifact instead.
-          GITLEAKS_ENABLE_COMMENTS: "false"
+      - name: Install gitleaks (pinned release, checksum verified)
+        run: |
+          set -eu
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl --fail --silent --show-error --location --retry 3 --output "$RUNNER_TEMP/$archive" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/$archive" | sha256sum --check --strict -
+          mkdir "$RUNNER_TEMP/gitleaks-bin"
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP/gitleaks-bin" gitleaks
+          echo "$RUNNER_TEMP/gitleaks-bin" >> "$GITHUB_PATH"
+      - name: The scanner flags a planted secret (self-test)
+        run: |
+          set -eu
+          planted="$(mktemp -d)"
+          printf 'aws_access_key_id = "AKIA%s"\n' "$(openssl rand -base64 48 | tr -dc 'A-Z2-7' | head -c 16)" > "$planted/planted.env"
+          if gitleaks dir "$planted" --config .gitleaks.toml --redact --no-banner; then
+            echo "::error::gitleaks did not flag a planted secret, so a clean scan would mean nothing."
+            exit 1
+          fi
+      - name: Scan the full history reachable from this commit
+        run: gitleaks git --config .gitleaks.toml --log-opts="--full-history HEAD" --redact --no-banner .

@@ -27,6 +27,7 @@ dev = [
   "import-linter>=2.15,<3",
   "pip-audit>=2.10,<3",
   "squawk-cli==2.70.0",
+  "pyyaml>=6,<7",
 ]
 
 [build-system]
