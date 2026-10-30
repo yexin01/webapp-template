@@ -77,3 +77,10 @@ def test_a_custom_domain_is_optional() -> None:
     assert make_settings().stripe_custom_domain is None
     assert make_settings(stripe_custom_domain="").stripe_custom_domain is None  # empty means unset
     assert make_settings(stripe_custom_domain="payments.example.com").stripe_custom_domain == "payments.example.com"
+
+
+@pytest.mark.parametrize("value", [0, 1_001])
+def test_user_syncs_per_hour_are_bounded(value: int) -> None:
+    with pytest.raises(ConfigError, match="BILLING_SYNCS_PER_USER_PER_HOUR"):
+        make_settings(billing_syncs_per_user_per_hour=value)
+    assert make_settings().billing_syncs_per_user_per_hour == 30

@@ -171,6 +171,8 @@ export function createApiClient(getToken: TokenGetter, options: ApiClientOptions
         }),
       ),
     openPortal: () => send(client.POST("/api/v1/billing/portal", viaProvider)),
+    /** Asks the server to re-read the signed-in user's own subscriptions from Stripe (BILL-06). */
+    syncBilling: () => send(client.POST("/api/v1/billing/sync", viaProvider)),
     proInsight: (orgId: string | null) =>
       send(
         orgId

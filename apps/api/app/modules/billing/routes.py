@@ -18,7 +18,7 @@ from app.kernel.http.auth import AuthDeps
 from app.kernel.http.schemas import StrictInput, WebhookAck, errors
 from app.kernel.ports import Clock
 from app.kernel.tenancy import TenantContext
-from app.modules.billing.domain import BillingState, Plan, PlanKey
+from app.modules.billing.domain import BillingState, BillingSummary, Plan, PlanKey
 from app.modules.billing.service import BillingService
 
 ERRORS = errors(401, 403, 409, 429, 503)
@@ -51,6 +51,17 @@ class ProInsight(BaseModel):
     generated_at: datetime
 
 
+def _status(billing: BillingService, summary: BillingSummary) -> BillingStatus:
+    return BillingStatus(
+        plan=summary.plan,
+        state=summary.state,
+        plan_key=summary.plan_key,
+        current_period_end=summary.current_period_end,
+        cancels_at=summary.cancels_at,
+        available_plans=[k for k in (PlanKey.PRO_MONTHLY, PlanKey.PRO_YEARLY) if billing.has_price(k)],
+    )
+
+
 def build_read_router(billing: BillingService, clock: Clock, auth: AuthDeps, request_transaction: Any) -> APIRouter:
     """Database-only reads: one request-scoped transaction each."""
     # The token is verified before the request takes an admission place (KDB-2).
@@ -68,15 +79,7 @@ def build_read_router(billing: BillingService, clock: Clock, auth: AuthDeps, req
 
     @router.get("/billing/status", response_model=BillingStatus, responses=ERRORS, tags=["billing"])
     def billing_status(ctx: Personal) -> BillingStatus:
-        summary = billing.summary(ctx)
-        return BillingStatus(
-            plan=summary.plan,
-            state=summary.state,
-            plan_key=summary.plan_key,
-            current_period_end=summary.current_period_end,
-            cancels_at=summary.cancels_at,
-            available_plans=[k for k in (PlanKey.PRO_MONTHLY, PlanKey.PRO_YEARLY) if billing.has_price(k)],
-        )
+        return _status(billing, billing.summary(ctx))
 
     @router.get("/pro/insight", response_model=ProInsight, responses=ERRORS, tags=["billing"])
     def pro_insight(ctx: Personal) -> ProInsight:
@@ -108,6 +111,11 @@ def build_action_router(billing: BillingService, auth: AuthDeps) -> APIRouter:
     @router.post("/billing/portal", response_model=Redirect, responses=ERRORS)
     def open_portal(ctx: Personal) -> Redirect:
         return Redirect(url=billing.open_portal(ctx))
+
+    @router.post("/billing/sync", response_model=BillingStatus, responses=ERRORS)
+    def sync_billing(ctx: Personal) -> BillingStatus:
+        """Re-read the caller's own subscriptions from Stripe, then return the status. Takes no input (BILL-02)."""
+        return _status(billing, billing.sync_from_stripe(ctx))
 
     return router
 

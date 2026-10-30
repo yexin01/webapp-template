@@ -96,7 +96,8 @@ class BillingUrls:
 
     @property
     def portal_return(self) -> str:
-        return f"{self.app_base_url}/billing"
+        # The page re-reads Stripe once when it sees ``from=portal``; the parameter grants nothing.
+        return f"{self.app_base_url}/billing?from=portal"
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +134,7 @@ class BillingService:
         rate_limiter: RateLimiter,
         checkouts_per_hour: int,
         portal_sessions_per_hour: int,
+        syncs_per_hour: int,
         max_concurrent_stripe_calls: int,
         sync_slots: int = 1,
         sync_wait_seconds: float = 5.0,
@@ -148,6 +150,7 @@ class BillingService:
         self._rate_limiter = rate_limiter
         self._checkouts_per_hour = checkouts_per_hour
         self._portal_sessions_per_hour = portal_sessions_per_hour
+        self._syncs_per_hour = syncs_per_hour
         self._stripe_calls = threading.BoundedSemaphore(max_concurrent_stripe_calls)
         self.sync_slots = sync_slots
         self.sync_wait_seconds = sync_wait_seconds
@@ -221,6 +224,35 @@ class BillingService:
             url = provider.create_portal_session(customer_id=customer_id, return_url=self._urls.portal_return)
         self._analytics.capture(ctx.user_id, "billing_portal_opened", {})
         return url
+
+    def sync_from_stripe(self, ctx: TenantContext) -> BillingSummary:
+        """Re-read the signed-in user's own customer from Stripe, as a webhook would (BILL-02, BILL-06).
+
+        Called after checkout and after the portal, when the webhook may not
+        have landed. It takes no input: entitlement still comes only from what
+        this server reads from Stripe for the user's own customer, never from
+        a redirect parameter. Webhooks, reconciliation, and this share one
+        customer lock and one set of slots, so they converge on one state.
+        """
+        authorize(ctx, BILLING_MANAGE)
+        self._require_provider()
+        self._rate_limiter.hit(f"billing-sync:{ctx.user_id}", self._syncs_per_hour, 3600)
+        with self._tx.as_tenant(ctx) as t:
+            customer_id = t.repo.get_billing_customer_id(ctx.user_id)
+        if customer_id is not None:
+            with self._sync_slots.try_admit(), self._tx.as_system() as t:
+                t.repo.lock_customer(customer_id)
+                before = decide(t.repo.list_subscriptions_by_customer(customer_id), self._clock.now()).plan
+                try:
+                    self._sync_customer(t, customer_id)
+                except InvalidRequestError:
+                    # Stripe rejected the re-read (for example, the customer was deleted):
+                    # the stored state stays, and reconciliation owns that case.
+                    logger.warning("billing_user_sync_rejected")
+                after = decide(t.repo.list_subscriptions_by_customer(customer_id), self._clock.now()).plan
+            # Normal when the webhook has not landed yet. Not an error: the CLI redirects at once.
+            logger.info("billing_user_sync", extra={"changed_plan": after is not before})
+        return self.summary(ctx)
 
     @contextmanager
     def _stripe_call_slot(self) -> Iterator[None]:
@@ -495,7 +527,8 @@ class _Slots:
     takes the connections that readiness, rate limits, and membership
     refreshes need. Webhook deliveries queue for a slot in the event loop
     first (``routes.build_webhook_router``), where waiting holds no thread;
-    here they contend only with reconciliation. A caller waits briefly. A
+    here they contend with reconciliation and with the re-reads signed-in
+    users ask for (``try_admit``). A caller waits briefly. A
     waiting caller holds a threadpool thread (40 by default, shared by every
     synchronous route), so only ``max_waiting`` callers wait; anyone else gets
     ``503`` at once, and Stripe retries the delivery.
@@ -507,6 +540,16 @@ class _Slots:
         self._waiting = 0
         self._lock = threading.Lock()
         self._wait_seconds = wait_seconds
+
+    @contextmanager
+    def try_admit(self) -> Iterator[None]:
+        """A slot now or ``503`` at once, never a wait: a user can simply ask again, and webhooks keep their places."""
+        if not self._slots.acquire(blocking=False):
+            raise _busy()
+        try:
+            yield
+        finally:
+            self._slots.release()
 
     @contextmanager
     def admit(self) -> Iterator[None]:

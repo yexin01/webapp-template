@@ -65,6 +65,7 @@ def build_billing(
         rate_limiter=kernel.rate_limiter,
         checkouts_per_hour=settings.checkouts_per_user_per_hour,
         portal_sessions_per_hour=settings.portal_sessions_per_user_per_hour,
+        syncs_per_hour=settings.billing_syncs_per_user_per_hour,
         max_concurrent_stripe_calls=settings.billing_max_concurrent_stripe_calls,
         # Synchronization holds a worker connection across Stripe calls; leave
         # at least one worker connection for everything else (the pool has two or more).

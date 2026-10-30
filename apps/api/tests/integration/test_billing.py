@@ -135,7 +135,9 @@ def test_checkout_and_portal_send_the_plan_price_customer_and_configured_urls(ha
         {**sent, "price_id": PRICE_YEARLY, "idempotency_key": f"checkout-{user_id}-pro_yearly-key-pro_yearly"},
     ]
     assert harness.client.post("/api/v1/billing/portal", headers=headers).status_code == 200
-    assert harness.billing.portal_requests == [{"customer_id": customer, "return_url": "http://localhost:3000/billing"}]
+    assert harness.billing.portal_requests == [
+        {"customer_id": customer, "return_url": "http://localhost:3000/billing?from=portal"}
+    ]
 
 
 def test_checkout_rejects_unknown_plan_and_price_ids(harness: Harness) -> None:
@@ -188,7 +190,7 @@ def test_portal_requires_existing_customer(harness: Harness) -> None:
     start_checkout(harness, headers)
     r = harness.client.post("/api/v1/billing/portal", headers=headers)
     assert r.status_code == 200
-    assert r.json()["url"] == "http://localhost:3000/billing"
+    assert r.json()["url"] == "http://localhost:3000/billing?from=portal"
 
 
 def test_portal_rate_limited(make_harness: Any) -> None:
@@ -325,6 +327,160 @@ def test_a_user_past_their_allowance_gets_429_without_taking_a_stripe_slot(make_
         release.set()
         holding.join(10)
     assert held == [200]
+
+
+# -- Re-reading Stripe on request ---------------------------------------------
+
+
+def sync(h: Harness, headers: dict[str, str], **kw: Any) -> Any:
+    return h.client.post("/api/v1/billing/sync", headers=headers, **kw)
+
+
+def plan_changes(h: Harness) -> list[Any]:
+    rows = superuser_query(
+        h.database_url,
+        "SELECT payload->>'plan' FROM app.outbox WHERE event_type = 'billing.entitlement_changed' ORDER BY occurred_at",
+    )
+    return [r[0] for r in rows]
+
+
+def test_a_user_sync_grants_pro_when_the_webhook_has_not_landed(harness: Harness) -> None:
+    """BILL-06: Stripe's own guidance is to fulfil from the landing page too; the server reads Stripe itself."""
+    headers = harness.login("user_a")
+    start_checkout(harness, headers)
+    customer = customer_of(harness, "user_a")
+    harness.billing.set_subscriptions(customer, [snapshot(customer, SubscriptionStatus.ACTIVE)])
+    assert harness.client.get("/api/v1/billing/status", headers=headers).json()["plan"] == "free"
+
+    r = sync(harness, headers)
+
+    assert r.status_code == 200
+    assert (r.json()["plan"], r.json()["state"], r.json()["plan_key"]) == ("pro", "active", "pro_monthly")
+    assert harness.client.get("/api/v1/billing/status", headers=headers).json()["plan"] == "pro"
+    assert plan_changes(harness) == ["pro"]
+
+
+def test_a_user_sync_follows_a_cancellation_made_in_the_portal(harness: Harness) -> None:
+    customer = make_pro(harness, "user_a")
+    harness.billing.set_subscriptions(customer, [snapshot(customer, SubscriptionStatus.CANCELED)])
+    r = sync(harness, harness.login("user_a"))
+    assert (r.json()["plan"], r.json()["state"]) == ("free", "canceled")
+
+
+def test_a_user_with_no_billing_account_gets_the_status_and_no_stripe_call(harness: Harness) -> None:
+    r = sync(harness, harness.login("user_a"))
+    assert (r.status_code, r.json()["plan"], r.json()["state"]) == (200, "free", "none")
+    assert harness.billing.calls == []
+
+
+def test_a_forged_success_url_plus_sync_grants_nothing_without_a_stripe_subscription(harness: Harness) -> None:
+    """NT-10: neither the session ID in the URL nor a body sent with the sync is read."""
+    headers = harness.login("user_a")
+    start_checkout(harness, headers)
+    r = sync(harness, headers, json={"session_id": "cs_forged", "plan": "pro"})
+    assert (r.status_code, r.json()["plan"]) == (200, "free")
+    assert harness.client.get("/api/v1/pro/insight", headers=headers).status_code == 403
+
+
+def test_a_user_sync_reads_only_the_callers_own_customer(harness: Harness) -> None:
+    other = make_pro(harness, "user_b")
+    harness.billing.set_subscriptions(other, [snapshot(other, SubscriptionStatus.CANCELED)])
+    headers = harness.login("user_a")
+    start_checkout(harness, headers)
+    sync(harness, headers)
+    assert harness.client.get("/api/v1/billing/status", headers=harness.login("user_b")).json()["plan"] == "pro"
+
+
+def test_user_syncs_are_rate_limited_before_any_stripe_call(make_harness: Any) -> None:
+    h = make_harness({"billing_syncs_per_user_per_hour": 2})
+    headers = h.login("user_a")
+    start_checkout(h, headers)
+    reads = h.billing.calls.count("list_customer_subscriptions")
+    assert [sync(h, headers).status_code for _ in range(4)] == [200, 200, 429, 429]
+    assert h.billing.calls.count("list_customer_subscriptions") == reads + 2
+    assert int(sync(h, headers).headers["retry-after"]) >= 1
+    assert sync(h, h.login("user_b")).status_code == 200  # the allowance is the user's own
+
+
+def test_a_sync_answers_503_at_once_while_every_slot_is_busy(make_harness: Any) -> None:
+    """A signed-in user never queues for a slot: webhooks and reconciliation keep their places."""
+    h = make_harness({"database_worker_pool_max_size": 2})  # one synchronization slot
+    first, second = h.login("user_a"), h.login("user_b")
+    for headers in (first, second):
+        start_checkout(h, headers)
+    original = InMemoryBillingProvider.list_customer_subscriptions
+    entered, release = threading.Event(), threading.Event()
+
+    def held(self: InMemoryBillingProvider, customer_id: str) -> list[SubscriptionSnapshot]:
+        entered.set()
+        release.wait(10)
+        return original(self, customer_id)
+
+    h.billing.list_customer_subscriptions = held.__get__(h.billing)  # type: ignore[method-assign]
+    holding: list[int] = []
+    thread = threading.Thread(target=lambda: holding.append(sync(h, first).status_code))
+    thread.start()
+    try:
+        assert entered.wait(10)
+        started = time.monotonic()
+        r = sync(h, second)
+        assert (r.status_code, r.json()["code"]) == (503, "DEPENDENCY_UNAVAILABLE")
+        assert time.monotonic() - started < 0.5
+    finally:
+        release.set()
+        thread.join(10)
+    assert holding == [200]
+
+
+def test_a_sync_and_a_webhook_for_the_same_customer_converge_and_record_the_plan_change_once(harness: Harness) -> None:
+    headers = harness.login("user_a")
+    start_checkout(harness, headers)
+    customer = customer_of(harness, "user_a")
+    harness.billing.set_subscriptions(customer, [snapshot(customer, SubscriptionStatus.ACTIVE)])
+    results: list[int] = []
+    gate = threading.Barrier(2)
+
+    def run(call: Any) -> None:
+        gate.wait(10)
+        results.append(call().status_code)
+
+    threads = [
+        threading.Thread(target=run, args=(lambda: sync(harness, headers),)),
+        threading.Thread(target=run, args=(lambda: send_webhook(harness, event_payload(customer)),)),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(20)
+    assert results == [200, 200]
+    assert plan_changes(harness) == ["pro"]  # whichever came second found nothing to change
+
+
+def test_a_sync_stripe_rejects_keeps_the_stored_state(harness: Harness, caplog: pytest.LogCaptureFixture) -> None:
+    """Reconciliation owns a customer Stripe no longer lets us read; the user's click changes nothing."""
+    customer = make_pro(harness, "user_a")
+    harness.billing.delete_customer(customer)
+    harness.billing.set_subscriptions(customer, [])  # the stored subscription cannot be read by ID either
+    with caplog.at_level("WARNING"):
+        r = sync(harness, harness.login("user_a"))
+    assert (r.status_code, r.json()["plan"]) == (200, "pro")
+    assert "billing_user_sync_rejected" in {rec.getMessage() for rec in caplog.records}
+
+
+def test_a_stripe_outage_during_a_sync_is_503_and_changes_nothing(harness: Harness) -> None:
+    make_pro(harness, "user_a")
+    harness.billing.fail_with = lambda: DependencyUnavailableError("Billing is temporarily unavailable.")
+    r = sync(harness, harness.login("user_a"))
+    assert (r.status_code, r.json()["code"]) == (503, "DEPENDENCY_UNAVAILABLE")
+    harness.billing.fail_with = None
+    assert harness.client.get("/api/v1/billing/status", headers=harness.login("user_a")).json()["plan"] == "pro"
+
+
+def test_sync_is_not_available_without_billing_or_in_an_organization(make_harness: Any) -> None:
+    h = make_harness(billing_provider=None)
+    r = sync(h, h.login("user_a"))
+    assert (r.status_code, r.json()["code"]) == (503, "NOT_CONFIGURED")
+    assert h.client.post("/api/v1/billing/sync").status_code == 401
 
 
 # -- Entitlement and presentation ---------------------------------------------

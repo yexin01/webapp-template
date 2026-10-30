@@ -14,13 +14,20 @@ const INTERVAL_MS = 1500;
  * Clerk that loads late or never, cannot stretch it.
  */
 const BUDGET_MS = 30_000;
+/**
+ * How long the webhook gets to confirm on its own. Normally Pro is stored before
+ * Stripe redirects here, so this wait is short; after it the server is asked once
+ * to re-read Stripe itself, as Stripe recommends for the landing page.
+ */
+const SYNC_AFTER_MS = 3_000;
 
 type View = "waiting" | "confirmed" | "delayed";
 
 /**
  * After Stripe redirects back, Pro is granted only once the server has
- * synchronized the subscription from a verified webhook (BILL-06). This page
- * polls the server; it never trusts the redirect itself.
+ * synchronized the subscription from Stripe (BILL-06): from the verified webhook,
+ * or from a re-read the server makes itself when this page asks. This page polls
+ * the server; it never trusts the redirect itself.
  */
 export function CheckoutConfirmation() {
   const { isLoaded, userId } = useAuth();
@@ -61,7 +68,7 @@ function Confirmation({ expired }: { expired: boolean }) {
         const status = await api.billingStatus();
         if (cancelled) return;
         if (status.plan === "pro") {
-          setState("confirmed");
+          confirm();
           return;
         }
       } catch {
@@ -71,10 +78,24 @@ function Confirmation({ expired }: { expired: boolean }) {
       if (Date.now() + INTERVAL_MS >= deadline) setState("delayed");
       else timer = window.setTimeout(() => void poll(), INTERVAL_MS);
     }
+    function confirm() {
+      cancelled = true;
+      window.clearTimeout(timer);
+      window.clearTimeout(syncTimer);
+      setState("confirmed");
+    }
+    // Once, after the short wait. Any failure (rate limit, busy, outage) falls through to the polling.
+    const syncTimer = window.setTimeout(() => {
+      void api.syncBilling().then(
+        (status) => !cancelled && status.plan === "pro" && confirm(),
+        () => undefined,
+      );
+    }, SYNC_AFTER_MS);
     void poll();
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
+      window.clearTimeout(syncTimer);
     };
   }, [api]);
 

@@ -6,14 +6,20 @@ import { ApiError } from "@/lib/api/errors";
 
 import { BillingPanel } from "./billing-panel";
 
-const api = vi.hoisted(() => ({ billingStatus: vi.fn(), startCheckout: vi.fn(), openPortal: vi.fn() }));
+const api = vi.hoisted(() => ({
+  billingStatus: vi.fn(),
+  startCheckout: vi.fn(),
+  openPortal: vi.fn(),
+  syncBilling: vi.fn(),
+}));
+const search = vi.hoisted(() => ({ query: "" }));
 vi.mock("@/lib/api/use-api", () => ({ useApi: () => api }));
 vi.mock("@/lib/analytics", () => ({ track: vi.fn() }));
 const auth = vi.hoisted(() => ({ isLoaded: true, userId: "user_1" as string | undefined }));
 vi.mock("@clerk/nextjs", () => ({ useAuth: () => auth }));
 vi.mock("next/navigation", () => ({
   usePathname: () => "/billing",
-  useSearchParams: () => new URLSearchParams(),
+  useSearchParams: () => new URLSearchParams(search.query),
 }));
 
 const free: Schemas["BillingStatus"] = {
@@ -45,6 +51,10 @@ beforeEach(() => {
   auth.isLoaded = true;
   auth.userId = "user_1";
   api.billingStatus.mockReset();
+  api.startCheckout.mockReset();
+  api.syncBilling.mockReset();
+  api.syncBilling.mockResolvedValue(pro);
+  search.query = "";
 });
 
 describe("billing panel", () => {
@@ -121,5 +131,54 @@ describe("billing panel", () => {
     const alert = screen.getByRole("alert");
     expect(alert).toHaveTextContent("You already have Pro. Manage your plan from the billing page.");
     expect(alert).not.toHaveTextContent("Check your input");
+  });
+
+  it("re-reads Stripe, once, when the visitor comes back from the Customer Portal", async () => {
+    search.query = "from=portal";
+    api.billingStatus.mockResolvedValue(free);
+    api.syncBilling.mockResolvedValue({ ...free, plan: "free", state: "canceled" });
+    render(<BillingPanel />);
+    expect(await screen.findByText(/Your Pro plan has ended/)).toBeInTheDocument();
+    expect(api.syncBilling).toHaveBeenCalledOnce();
+    expect(api.billingStatus).not.toHaveBeenCalled();
+  });
+
+  it("shows the stored status when the re-read after the portal fails", async () => {
+    search.query = "from=portal";
+    api.billingStatus.mockResolvedValue(pro);
+    api.syncBilling.mockRejectedValue(new ApiError(429, "RATE_LIMITED", "Slow down.", null));
+    render(<BillingPanel />);
+    expect(await screen.findByText(/Your Pro plan renews on/)).toBeInTheDocument();
+    expect(api.billingStatus).toHaveBeenCalledOnce();
+  });
+
+  it("does not re-read Stripe on an ordinary visit", async () => {
+    api.billingStatus.mockResolvedValue(free);
+    render(<BillingPanel />);
+    await screen.findByText(/You are on the Free plan/);
+    expect(api.syncBilling).not.toHaveBeenCalled();
+  });
+
+  it("re-reads after the portal only at the first load, not when the status is reloaded", async () => {
+    search.query = "from=portal";
+    api.billingStatus.mockResolvedValue(pro);
+    api.syncBilling.mockResolvedValue(pro);
+    render(<BillingPanel />);
+    await screen.findByText(/Your Pro plan renews on/);
+    pageShow(true); // back/forward cache: the status is fetched again, the page URL still has the parameter
+    await screen.findByText(/Your Pro plan renews on/);
+    expect(api.syncBilling).toHaveBeenCalledOnce();
+    expect(api.billingStatus).toHaveBeenCalledOnce();
+  });
+
+  it("re-reads Stripe before showing the plan when a refused checkout shows the plan moved (BILL-07)", async () => {
+    api.billingStatus.mockResolvedValue(free);
+    api.syncBilling.mockResolvedValue(pro);
+    api.startCheckout.mockRejectedValue(new ApiError(409, "CONFLICT", "You already have Pro.", null));
+    render(<BillingPanel />);
+    await userEvent.click(await screen.findByRole("button", { name: "Pro — monthly" }));
+    await screen.findByRole("alert");
+    expect(api.syncBilling).toHaveBeenCalledOnce();
+    expect(api.billingStatus).toHaveBeenCalledTimes(2);
   });
 });
