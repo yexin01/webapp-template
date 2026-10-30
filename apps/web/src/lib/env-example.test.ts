@@ -19,7 +19,7 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }));
 describe("the shipped .env.example", () => {
   const load = () => {
     const env: Record<string, string | undefined> = {};
-    loadEnvFiles(dir, "development", isWebVariable, env);
+    loadEnvFiles(dir, isWebVariable, env);
     return env;
   };
 

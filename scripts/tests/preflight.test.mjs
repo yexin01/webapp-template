@@ -118,7 +118,7 @@ test("the web check runs the web app's own validators through Next's config load
   ]);
   assert.deepEqual(placeholder, []);
   assert.deepEqual(legacy, [
-    "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY is malformed",
+    "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY is still the .env.example placeholder (copy it from Clerk Dashboard > API keys)",
     "CLERK_SECRET_KEY is malformed or still the .env.example placeholder",
   ]);
 });

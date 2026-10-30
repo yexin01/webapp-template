@@ -93,7 +93,7 @@ def test_the_old_placeholder_pair_is_refused_without_a_traceback(env_file: Calla
     status, out, err = run(doctor.check_config, path)
     assert status == 1
     assert out == ""
-    assert "  - NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY is malformed" in err
+    assert "  - NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY is still the .env.example placeholder" in err
     assert "Traceback" not in err
     assert "docs/integrations.md" in err
 
