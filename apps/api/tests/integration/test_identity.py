@@ -31,6 +31,7 @@ from app.modules.identity.adapters.clerk import ClerkMembershipDirectory, ClerkT
 from app.modules.identity.domain import ExternalMembership
 from tests.conftest import Harness, TokenTableVerifier, superuser_query
 from tests.integration.test_platform import SVIX_SECRET, clerk_send
+from tests.lock_waits import wait_for_lock_wait
 
 pytestmark = pytest.mark.db
 
@@ -1080,7 +1081,7 @@ def test_a_refresh_does_not_deadlock_with_a_privileged_write(harness: Harness) -
         assert t.lock_my_role(ctx.org_id) is Role.ADMIN
         worker = threading.Thread(target=refresh)
         worker.start()
-        time.sleep(0.3)  # the refresh now holds the user row and waits for the membership
+        wait_for_lock_wait(h.database_url)  # the refresh now holds the user row and waits for the membership
         t.audit(AuditEntry(ctx.user_id, ctx.org_id, "project:delete", "project", str(uuid.uuid4()), "succeeded", None))
     outcome["write"] = "committed"
     worker.join(10)
@@ -1099,29 +1100,38 @@ def test_refreshes_creating_the_same_organizations_do_not_deadlock(
     h.directory.set("user_1", [ExternalMembership("org_a", Role.MEMBER), ExternalMembership("org_b", Role.MEMBER)])
     h.directory.set("user_2", [ExternalMembership("org_b", Role.MEMBER), ExternalMembership("org_a", Role.MEMBER)])
     original = repository.PgIdentityRepository._exec
+    inserted = {"user_1": threading.Event(), "user_2": threading.Event()}
 
-    def slow_exec(self: Any, query: str, params: Any = ()) -> int:
+    def exec_then_hold(self: Any, query: str, params: Any = ()) -> int:
         count = original(self, query, params)
-        if "INSERT INTO app.organizations" in query:
-            time.sleep(0.3)  # widen the window between the two organization inserts
+        me = threading.current_thread().name
+        if "INSERT INTO app.organizations" in query and me in inserted and not inserted[me].is_set():
+            inserted[me].set()
+            other = inserted["user_2" if me == "user_1" else "user_1"]
+            # Keep the first new organization uncommitted until the other refresh has one too, or waits on it.
+            wait_for_lock_wait(h.database_url, or_until=other)
         return count
 
-    monkeypatch.setattr(repository.PgIdentityRepository, "_exec", slow_exec)
+    monkeypatch.setattr(repository.PgIdentityRepository, "_exec", exec_then_hold)
     outcome: dict[str, str] = {}
 
     def run(external_user_id: str, user_id: Any) -> None:
         try:
             resolver.refresh_memberships(user_id, external_user_id)
             outcome[external_user_id] = "ok"
-        except DomainError as exc:
+        except (DomainError, pytest.fail.Exception) as exc:  # a deadlock, or a wait that timed out
             outcome[external_user_id] = repr(exc.__cause__ or exc)
 
-    threads = [threading.Thread(target=run, args=args) for args in (("user_1", one), ("user_2", two))]
+    threads = [
+        threading.Thread(target=run, args=(name, user), name=name) for name, user in (("user_1", one), ("user_2", two))
+    ]
     for thread in threads:
         thread.start()
     for thread in threads:
         thread.join(10)
     assert outcome == {"user_1": "ok", "user_2": "ok"}
+    # Both refreshes held their first insert, so the race above was exercised.
+    assert {name: event.is_set() for name, event in inserted.items()} == {"user_1": True, "user_2": True}
     assert _memberships(h) == 4
 
 

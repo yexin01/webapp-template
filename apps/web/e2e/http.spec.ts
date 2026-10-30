@@ -37,7 +37,8 @@ test("integration diagnostics require authentication", async ({ request }) => {
   expect(check.status()).toBe(401);
 });
 
-test("session cookies are not accepted for API authentication", async ({ request }) => {
+// API-04 with a valid token: test_api_security.py::test_api04_a_valid_token_in_the_session_cookie_is_refused
+test("a forged session cookie does not authenticate API requests", async ({ request }) => {
   const me = await request.get("/api/v1/me", { headers: { Cookie: "__session=forged" } });
   expect(me.status()).toBe(401);
 });

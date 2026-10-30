@@ -23,6 +23,7 @@ from app.modules.billing.adapters.fakes import InMemoryBillingProvider
 from app.modules.billing.adapters.stripe import to_snapshot
 from app.modules.billing.domain import Plan, PlanKey, SubscriptionSnapshot, SubscriptionStatus, decide
 from tests.conftest import PRICE_MONTHLY, PRICE_YEARLY, TEST_STRIPE_WEBHOOK_SECRET, Harness, superuser_query
+from tests.lock_waits import wait_for_lock_wait
 
 pytestmark = pytest.mark.db
 
@@ -528,21 +529,25 @@ def test_concurrent_distinct_events_converge_on_the_latest_stripe_state(harness:
     provider = harness.billing
     original = InMemoryBillingProvider.list_customer_subscriptions
     first_read = threading.Event()
+    delivered: list[Any] = []
 
     def slow_first_read(self: InMemoryBillingProvider, customer_id: str) -> list[SubscriptionSnapshot]:
         seen = original(self, customer_id)
         if not first_read.is_set():
             first_read.set()
-            time.sleep(1.0)
+            wait_for_lock_wait(harness.database_url)  # the second delivery queues behind the customer lock
         return seen
 
     provider.list_customer_subscriptions = slow_first_read.__get__(provider)  # type: ignore[method-assign]
-    first = threading.Thread(target=lambda: send_webhook(harness, event_payload(customer)))
+    first = threading.Thread(target=lambda: delivered.append(send_webhook(harness, event_payload(customer))))
     first.start()
     assert first_read.wait(10)
     provider.set_subscriptions(customer, [snapshot(customer, SubscriptionStatus.CANCELED)])
     second = send_webhook(harness, event_payload(customer, "customer.subscription.deleted"))
     first.join(20)
+    # The wait runs inside the first delivery, so a failed wait shows only as that delivery's 500.
+    assert delivered[0].status_code == 200
+    assert delivered[0].json()["status"] == "processed"
     assert second.json()["status"] == "processed"
     assert harness.client.get("/api/v1/billing/status", headers=harness.login("user_a")).json()["plan"] == "free"
 
@@ -635,7 +640,7 @@ def test_reconciliation_never_overwrites_a_concurrent_webhook(harness: Harness) 
                 )
             )
             webhook.start()
-            time.sleep(0.5)  # the webhook waits on the customer lock
+            wait_for_lock_wait(harness.database_url)  # the webhook waits on the customer lock
         return seen
 
     provider.list_customer_subscriptions = racing_list.__get__(provider)  # type: ignore[method-assign]
@@ -935,7 +940,6 @@ def test_redelivered_flagged_event_during_reconciliation_does_not_deadlock(harne
     harness.billing.set_subscriptions(customer, [snapshot(customer, SubscriptionStatus.CANCELED)])
 
     original = InMemoryBillingProvider.list_customer_subscriptions
-    started = threading.Event()
     delivered: list[Any] = []
     redelivery: threading.Thread | None = None
 
@@ -944,7 +948,7 @@ def test_redelivered_flagged_event_during_reconciliation_does_not_deadlock(harne
         if redelivery is None:  # reconciliation holds the customer lock: redeliver the flagged event now
             redelivery = threading.Thread(target=lambda: delivered.append(send_webhook(harness, payload)))
             redelivery.start()
-            started.wait(0.5)  # give the redelivery time to queue behind the lock
+            wait_for_lock_wait(harness.database_url)  # the redelivery queues behind the lock
         return original(self, customer_id)
 
     harness.billing.list_customer_subscriptions = racing.__get__(harness.billing)  # type: ignore[method-assign]

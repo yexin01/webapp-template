@@ -49,8 +49,10 @@ _ENV_PREFIXES = (
     "POSTHOG_",
     "ERROR_REPORTING_",
     "SENTRY_",
+    "VERCEL_GIT_COMMIT_SHA",
     "MEMBERSHIP_",
     "CHECKOUTS_",
+    "PORTAL_",
     "MAX_REQUEST_",
     "LOG_LEVEL",
     "DIAGNOSTICS_",
@@ -59,9 +61,14 @@ _ENV_PREFIXES = (
 )
 
 
+def _is_settings_variable(name: str) -> bool:
+    # The settings classes match environment names in any case (case_sensitive=False).
+    return name.upper().startswith(_ENV_PREFIXES)
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _isolate_environment() -> Iterator[None]:
-    saved = {k: v for k, v in os.environ.items() if k.startswith(_ENV_PREFIXES)}
+    saved = {k: v for k, v in os.environ.items() if _is_settings_variable(k)}
     for key in saved:
         del os.environ[key]
     yield

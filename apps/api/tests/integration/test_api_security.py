@@ -20,6 +20,7 @@ from app.kernel.tenancy import Role
 from app.modules.identity.adapters.clerk import ClerkTokenVerifier
 from app.modules.identity.domain import ExternalMembership
 from tests.conftest import Harness, superuser_query
+from tests.lock_waits import wait_for_lock_wait
 
 pytestmark = pytest.mark.db
 
@@ -212,8 +213,8 @@ def test_nt06_concurrent_downgrade_waits_for_privileged_transaction(harness: Har
         assert t.lock_my_role(org_uuid) is Role.ADMIN
         worker = threading.Thread(target=downgrade)
         worker.start()
-        # The downgrade blocks on the row lock held by this transaction.
-        assert not downgrade_committed.wait(0.5)
+        wait_for_lock_wait(harness.database_url)  # the downgrade blocks on the row lock held by this transaction
+        assert not downgrade_committed.is_set()
     worker.join(5)
     assert downgrade_committed.is_set()
 
