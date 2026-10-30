@@ -40,6 +40,16 @@
             ],
             "title": "Cancels At"
           },
+          "checkout_blocked": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CheckoutBlock"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "current_period_end": {
             "anyOf": [
               {
@@ -75,10 +85,22 @@
           "plan_key",
           "current_period_end",
           "cancels_at",
-          "available_plans"
+          "available_plans",
+          "checkout_blocked"
         ],
         "title": "BillingStatus",
         "type": "object"
+      },
+      "CheckoutBlock": {
+        "description": "Why a new checkout is refused (BILL-07, DEC-013). The user is sent to plan management instead.",
+        "enum": [
+          "already_pro",
+          "payment_required",
+          "subscription_exists",
+          "payment_pending"
+        ],
+        "title": "CheckoutBlock",
+        "type": "string"
       },
       "CheckoutRequest": {
         "additionalProperties": false,
@@ -881,6 +903,78 @@
           }
         },
         "summary": "Billing Status",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/api/v1/billing/sync": {
+      "post": {
+        "description": "Re-read the caller's own subscriptions from Stripe, then return the status. Takes no input (BILL-02).",
+        "operationId": "sync_billing_api_v1_billing_sync_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BillingStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Sync Billing",
         "tags": [
           "billing"
         ]
