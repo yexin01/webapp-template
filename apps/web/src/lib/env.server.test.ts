@@ -193,6 +193,35 @@ describe("web server configuration (ENV-03)", () => {
     expect(live.errorReporting).toMatchObject({ enabled: true, tracesSampleRate: 0.25 });
   });
 
+  describe("STRIPE_CUSTOM_DOMAIN", () => {
+    it.each([
+      "https://payments.example.com",
+      "payments.example.com/x",
+      "payments",
+      "Payments.Example.com",
+      "payments.example.com:8443",
+    ])("rejects %s", (value) => {
+      expect(problems({ ...base, STRIPE_CUSTOM_DOMAIN: value })).toEqual([
+        "STRIPE_CUSTOM_DOMAIN must be a hostname such as payments.example.com",
+      ]);
+    });
+
+    it("accepts a hostname, and is unset by default or when empty", () => {
+      expect(loadServerEnv({ ...base, STRIPE_CUSTOM_DOMAIN: "payments.example.com" }, serving)).toMatchObject(
+        {
+          stripeCustomDomain: "payments.example.com",
+        },
+      );
+      expect(loadServerEnv(base, serving).stripeCustomDomain).toBeNull();
+      expect(loadServerEnv({ ...base, STRIPE_CUSTOM_DOMAIN: " " }, serving).stripeCustomDomain).toBeNull();
+    });
+
+    it("is read from the repository .env by the web app", () => {
+      expect(isWebVariable("STRIPE_CUSTOM_DOMAIN")).toBe(true);
+      expect(isWebVariable("STRIPE_SECRET_KEY")).toBe(false);
+    });
+  });
+
   it("treats an empty value as unset", () => {
     expect(
       loadServerEnv({ ...base, ANALYTICS_MODE: "", SENTRY_TRACES_SAMPLE_RATE: " " }, serving),

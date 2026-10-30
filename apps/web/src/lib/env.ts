@@ -20,6 +20,8 @@ export function isAppEnv(value: string | undefined): value is AppEnv {
 export type PublicEnv = Readonly<{
   appEnv: AppEnv;
   clerkPublishableKey: string;
+  /** Derived from the server's STRIPE_CUSTOM_DOMAIN by next.config.ts; empty when the account has none. */
+  stripeCustomDomain: string;
   analytics: Readonly<{ enabled: boolean; key: string; host: string }>;
   errorReporting: Readonly<{ enabled: boolean; dsn: string }>;
 }>;
@@ -30,6 +32,7 @@ const sentryDsn = process.env.NEXT_PUBLIC_SENTRY_DSN ?? "";
 export const publicEnv: PublicEnv = Object.freeze({
   appEnv: isAppEnv(process.env.NEXT_PUBLIC_APP_ENV) ? process.env.NEXT_PUBLIC_APP_ENV : "local",
   clerkPublishableKey: process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ?? "",
+  stripeCustomDomain: process.env.NEXT_PUBLIC_STRIPE_CUSTOM_DOMAIN ?? "",
   analytics: Object.freeze({
     enabled: process.env.NEXT_PUBLIC_ANALYTICS_ENABLED === "true" && Boolean(posthogKey),
     key: posthogKey,

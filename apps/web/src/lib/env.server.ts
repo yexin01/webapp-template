@@ -23,6 +23,7 @@ export const SERVER_VARIABLES = [
   "SENTRY_TRACES_SAMPLE_RATE",
   "CLERK_SECRET_KEY",
   "CLERK_JWT_KEY",
+  "STRIPE_CUSTOM_DOMAIN",
 ] as const;
 
 export function isWebVariable(name: string): boolean {
@@ -36,6 +37,8 @@ export type ServerEnv = Readonly<{
   appEnv: AppEnv;
   apiOrigin: string;
   clerkPublishableKey: string;
+  /** The Stripe custom domain of Checkout and the Customer Portal, if the account has one. */
+  stripeCustomDomain: string | null;
   analytics: Readonly<{ mode: TelemetryMode; enabled: boolean; host: string }>;
   errorReporting: Readonly<{ mode: TelemetryMode; enabled: boolean; dsn: string; tracesSampleRate: number }>;
 }>;
@@ -86,6 +89,9 @@ function isLoopbackOrigin(origin: string): boolean {
   const { hostname } = new URL(origin);
   return hostname === "localhost" || hostname === "[::1]" || /^127(?:\.\d{1,3}){3}$/.test(hostname);
 }
+
+/** A bare lowercase hostname with at least one dot: no scheme, port, path, or wildcard (like the API's check). */
+const HOSTNAME = /^(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 
 /** A Sentry DSN is an http(s) URL whose user part is the project's public key. */
 function isSentryDsn(value: string): boolean {
@@ -171,6 +177,11 @@ export function loadServerEnv(env: Source, options: LoadOptions): ServerEnv {
 
   problems.push(...clerkProblems(source, appEnv, options));
 
+  const stripeCustomDomain = source("STRIPE_CUSTOM_DOMAIN") ?? null;
+  if (stripeCustomDomain !== null && !HOSTNAME.test(stripeCustomDomain)) {
+    problems.push("STRIPE_CUSTOM_DOMAIN must be a hostname such as payments.example.com");
+  }
+
   const analyticsMode = telemetryMode("ANALYTICS_MODE", source("ANALYTICS_MODE"), appEnv, problems);
   const analyticsEnabled = analyticsMode !== "disabled";
   if (analyticsEnabled && !source("NEXT_PUBLIC_POSTHOG_KEY")) {
@@ -204,6 +215,7 @@ export function loadServerEnv(env: Source, options: LoadOptions): ServerEnv {
     appEnv,
     apiOrigin,
     clerkPublishableKey: source("NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY") ?? "",
+    stripeCustomDomain,
     analytics: Object.freeze({ mode: analyticsMode, enabled: analyticsEnabled, host: posthogHost }),
     errorReporting: Object.freeze({
       mode: errorReportingMode,

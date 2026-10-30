@@ -72,7 +72,7 @@ def subscription(status: str = "active", price: str = "price_m", **fields: Any) 
 
 class TestRequests:
     def test_a_checkout_session_sells_one_of_the_given_price_to_the_given_customer(self) -> None:
-        session = {"id": "cs_1", "object": "checkout.session", "url": "https://checkout.stripe.test/cs_1"}
+        session = {"id": "cs_1", "object": "checkout.session", "url": "https://checkout.stripe.com/c/pay/cs_1"}
         with stub_server(lambda req: (200, session)) as stub:
             url = provider(stub.url).create_checkout_session(
                 customer_id="cus_1",
@@ -82,7 +82,7 @@ class TestRequests:
                 cancel_url="https://app.test/billing?checkout=canceled",
                 idempotency_key="checkout-key-1",
             )
-        assert url == "https://checkout.stripe.test/cs_1"
+        assert url == "https://checkout.stripe.com/c/pay/cs_1"
         [request] = stub.requests
         assert (request.method, request.path) == ("POST", "/v1/checkout/sessions")
         assert form(request) == {
@@ -118,10 +118,14 @@ class TestRequests:
         assert request.headers["idempotency-key"] == f"customer-create-{USER}"
 
     def test_a_portal_session_returns_to_the_given_url(self) -> None:
-        session = {"id": "bps_1", "object": "billing_portal.session", "url": "https://billing.stripe.test/p/1"}
+        session = {
+            "id": "bps_1",
+            "object": "billing_portal.session",
+            "url": "https://billing.stripe.com/p/session/bps_1",
+        }
         with stub_server(lambda req: (200, session)) as stub:
             url = provider(stub.url).create_portal_session(customer_id="cus_1", return_url="https://app.test/billing")
-        assert url == "https://billing.stripe.test/p/1"
+        assert url == "https://billing.stripe.com/p/session/bps_1"
         [request] = stub.requests
         assert (request.method, request.path) == ("POST", "/v1/billing_portal/sessions")
         assert form(request) == {"customer": ["cus_1"], "return_url": ["https://app.test/billing"]}
@@ -361,3 +365,75 @@ class TestPortalConfiguration:
             provider(stub.url).describe_portal()
         assert message in caught.value.public_message  # type: ignore[attr-defined]
         assert FAKE_KEY not in caught.value.public_message  # type: ignore[attr-defined]
+
+
+class TestRedirectHosts:
+    """The user is sent to the URL Stripe returns: Stripe's own hosts, or the account's custom domain, nothing else."""
+
+    SESSION_ID = "cs_live_a1b2c3"
+
+    @staticmethod
+    def checkout(url: str, custom_domain: str | None = None) -> str:
+        session = {"id": "cs_1", "object": "checkout.session", "url": url}
+        with stub_server(lambda req: (200, session)) as stub:
+            return StripeBillingProvider(
+                secret_key=FAKE_KEY, catalog=CATALOG, api_base=stub.url, custom_domain=custom_domain
+            ).create_checkout_session(
+                customer_id="cus_1",
+                price_id="price_m",
+                user_id=USER,
+                success_url="https://app.test/s",
+                cancel_url="https://app.test/c",
+                idempotency_key="checkout-key-1",
+            )
+
+    @staticmethod
+    def portal(url: str, custom_domain: str | None = None) -> str:
+        session = {"id": "bps_1", "object": "billing_portal.session", "url": url}
+        with stub_server(lambda req: (200, session)) as stub:
+            return StripeBillingProvider(
+                secret_key=FAKE_KEY, catalog=CATALOG, api_base=stub.url, custom_domain=custom_domain
+            ).create_portal_session(customer_id="cus_1", return_url="https://app.test/billing")
+
+    @pytest.mark.parametrize(
+        "url", ["https://checkout.stripe.com/c/pay/cs_1", "https://billing.stripe.com/p/session/x"]
+    )
+    def test_stripe_hosts_are_accepted_without_any_setting(self, url: str) -> None:
+        assert self.checkout(url) == url
+        assert self.portal(url) == url
+
+    def test_the_configured_custom_domain_is_accepted_unchanged(self) -> None:
+        url = f"https://payments.example.com/c/pay/{self.SESSION_ID}#fid"
+        assert self.checkout(url, "payments.example.com") == url
+        assert self.portal("https://payments.example.com/p/session/bps_1", "payments.example.com") == (
+            "https://payments.example.com/p/session/bps_1"
+        )
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://payments.example.com/c/pay/cs_1",  # no custom domain is configured
+            "http://checkout.stripe.com/c/pay/cs_1",
+            "https://stripe.com.evil.test/c/pay/cs_1",
+            "https://notstripe.com/c/pay/cs_1",
+            "https://checkout.stripe.com@evil.test/c/pay/cs_1",
+            "https://evil.test\\@checkout.stripe.com/c/pay/cs_1",
+            "https://[::1/c/pay/cs_1",
+            "/c/pay/cs_1",
+        ],
+    )
+    @pytest.mark.parametrize("call", ["checkout", "portal"])
+    def test_any_other_host_is_a_configuration_error_that_logs_the_host_only(
+        self, call: str, url: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        url = url.replace("cs_1", self.SESSION_ID)
+        with caplog.at_level(logging.WARNING), pytest.raises(NotConfiguredError, match="STRIPE_CUSTOM_DOMAIN"):
+            getattr(self, call)(url)
+        [record] = [r for r in caplog.records if r.levelno >= logging.ERROR]
+        assert record.getMessage() == "stripe_session_host_unexpected"
+        assert self.SESSION_ID not in caplog.text  # the session ID is in the path
+
+    @pytest.mark.parametrize("host", ["payments.example.com.evil.test", "xpayments.example.com", "example.com"])
+    def test_a_custom_domain_matches_exactly(self, host: str) -> None:
+        with pytest.raises(NotConfiguredError):
+            self.checkout(f"https://{host}/c/pay/x", "payments.example.com")

@@ -6,6 +6,7 @@ import json
 import logging
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlsplit
 from uuid import UUID
 
 import stripe
@@ -107,8 +108,10 @@ class StripeBillingProvider:
         catalog: PriceCatalog,
         timeout_seconds: float = 10.0,
         api_base: str | None = None,
+        custom_domain: str | None = None,
     ) -> None:
         self._catalog = catalog
+        self._custom_domain = custom_domain
         self._client = stripe.StripeClient(
             secret_key,
             # The SDK attaches idempotency keys to retried POSTs, so bounded
@@ -175,7 +178,7 @@ class StripeBillingProvider:
         )
         if not session.url:
             raise DependencyUnavailableError("Billing is temporarily unavailable.")
-        return str(session.url)
+        return self._stripe_hosted(str(session.url))
 
     def create_portal_session(self, *, customer_id: str, return_url: str) -> str:
         session = self._call(
@@ -183,7 +186,29 @@ class StripeBillingProvider:
             params={"customer": customer_id, "return_url": return_url},
             server_built=True,
         )
-        return str(session.url)
+        return self._stripe_hosted(str(session.url))
+
+    def _stripe_hosted(self, url: str) -> str:
+        """The user is sent to this URL, so it must be on Stripe or the account's custom domain (SEC-14)."""
+        try:
+            parts = urlsplit(url)
+            host, userinfo = parts.hostname, parts.username
+        except ValueError:
+            host, userinfo = None, None
+            parts = urlsplit("")
+        if (
+            parts.scheme != "https"
+            or host is None
+            or userinfo is not None
+            or "\\" in url
+            or not (host == "stripe.com" or host.endswith(".stripe.com") or host == self._custom_domain)
+        ):
+            # The host only: the path carries the session ID.
+            logger.error("stripe_session_host_unexpected", extra={"host": (host or "")[:253]})
+            raise NotConfiguredError(
+                "Billing redirects are not configured for this Stripe account (STRIPE_CUSTOM_DOMAIN)."
+            )
+        return url
 
     def list_customer_subscriptions(self, customer_id: str) -> list[SubscriptionSnapshot]:
         result = self._call(

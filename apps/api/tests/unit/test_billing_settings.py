@@ -63,3 +63,17 @@ def test_portal_sessions_per_user_are_bounded(value: int) -> None:
     with pytest.raises(ConfigError, match="PORTAL_SESSIONS_PER_USER_PER_HOUR"):
         make_settings(portal_sessions_per_user_per_hour=value)
     assert make_settings().portal_sessions_per_user_per_hour == 20
+
+
+@pytest.mark.parametrize(
+    "value", ["https://payments.example.com", "payments.example.com/x", "payments", "Payments.Example.com", "a.b:8080"]
+)
+def test_a_custom_domain_is_a_bare_hostname(value: str) -> None:
+    with pytest.raises(ConfigError, match="STRIPE_CUSTOM_DOMAIN must be a hostname"):
+        make_settings(stripe_custom_domain=value)
+
+
+def test_a_custom_domain_is_optional() -> None:
+    assert make_settings().stripe_custom_domain is None
+    assert make_settings(stripe_custom_domain="").stripe_custom_domain is None  # empty means unset
+    assert make_settings(stripe_custom_domain="payments.example.com").stripe_custom_domain == "payments.example.com"

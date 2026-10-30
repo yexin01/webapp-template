@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import re
+
 from pydantic import BaseModel, Field, SecretStr
 
 from app.kernel.infrastructure.config import CoreSettings, Mode, mode_problems, secret
 from app.modules.billing.domain import PlanKey
+
+# A bare lowercase hostname with at least one dot: no scheme, port, path, or wildcard.
+_HOSTNAME = re.compile(r"^(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$")
 
 
 class BillingSettings(BaseModel):
@@ -17,6 +22,8 @@ class BillingSettings(BaseModel):
     # Comma-separated prices that are no longer sold but still grant Pro to existing subscribers.
     stripe_price_pro_monthly_retained: str = ""
     stripe_price_pro_yearly_retained: str = ""
+    # The custom domain of Stripe-hosted Checkout and the Customer Portal, if the account has one.
+    stripe_custom_domain: str | None = None
     checkouts_per_user_per_hour: int = Field(default=10, ge=1, le=1_000)
     # Each portal session is a Stripe API call, and Stripe's rate limit is shared by the whole account.
     portal_sessions_per_user_per_hour: int = Field(default=20, ge=1, le=1_000)
@@ -31,6 +38,8 @@ class BillingSettings(BaseModel):
 
 def billing_problems(s: BillingSettings, core: CoreSettings) -> list[str]:
     problems = mode_problems("BILLING_MODE", s.billing_mode, core.app_env) + retained_problems(s)
+    if s.stripe_custom_domain and not _HOSTNAME.fullmatch(s.stripe_custom_domain):
+        problems.append("STRIPE_CUSTOM_DOMAIN must be a hostname such as payments.example.com")
     if s.billing_mode is Mode.DISABLED:
         problems.append("BILLING_MODE must be mock, sandbox, or live")
     if s.billing_mode is Mode.MOCK:

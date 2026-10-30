@@ -97,7 +97,11 @@ def _provider(core: CoreSettings, settings: BillingSettings, catalog: PriceCatal
         return InMemoryBillingProvider(core.app_base_url)
     if settings.stripe_secret_key is None:  # pragma: no cover - validated in Settings
         return None
-    return StripeBillingProvider(secret_key=settings.stripe_secret_key.get_secret_value(), catalog=catalog)
+    return StripeBillingProvider(
+        secret_key=settings.stripe_secret_key.get_secret_value(),
+        catalog=catalog,
+        custom_domain=settings.stripe_custom_domain or None,
+    )
 
 
 def describe(settings: BillingSettings) -> IntegrationInfo:
