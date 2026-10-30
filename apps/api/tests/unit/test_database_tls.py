@@ -62,7 +62,7 @@ def test_an_explicit_sslmode_is_never_overridden(mode: str) -> None:
         f"{REMOTE}?sslrootcert=system",
         f"{REMOTE}?service=production",
         "postgresql://u:p@localhost/app",
-        "postgresql://u:p@127.0.0.1:54329/app",
+        "postgresql://u:p@127.0.0.1:5432/app",
         "postgresql:///app?host=/var/run/postgresql",
         "not a connection string",
     ],

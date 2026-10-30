@@ -72,7 +72,7 @@ def test_the_running_api_never_reads_the_migration_url(monkeypatch: pytest.Monke
 @pytest.mark.parametrize(
     ("url", "expected"),
     [
-        ("postgresql://postgres:postgres@127.0.0.1:54329/app", "postgresql://app_login:<password>@127.0.0.1:54329/app"),
+        ("postgresql://postgres:postgres@127.0.0.1:5432/app", "postgresql://app_login:<password>@127.0.0.1:5432/app"),
         # Supabase's pooler routes by "<role>.<project ref>".
         (
             "postgresql://postgres.abcdefgh:p%40ss@aws-0-eu-west-1.pooler.supabase.com:5432/postgres",
