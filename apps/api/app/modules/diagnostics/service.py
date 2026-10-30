@@ -77,24 +77,7 @@ class DiagnosticsService:
         return result
 
     def _check(self, ctx: TenantContext, key: IntegrationKey, probe: IntegrationProbe) -> CheckResult:
-        info = probe.info
-        if info.mode in (IntegrationMode.MOCK, IntegrationMode.DISABLED):
-            return CheckResult(key, info.mode, Outcome.SKIPPED, _skip_reason(info.mode))
-
-        started = self._monotonic()
-        try:
-            verdict = probe.check(ctx)
-        except DomainError as exc:
-            verdict = Verdict(Outcome.FAILED, exc.public_message, error_code=exc.code.lower())
-        return CheckResult(
-            key=key,
-            mode=info.mode,
-            outcome=verdict.outcome,
-            summary=verdict.summary,
-            latency_ms=int((self._monotonic() - started) * 1000),
-            error_code=verdict.error_code,
-            reference=verdict.reference,
-        )
+        return run_probe(probe, ctx, self._monotonic)
 
     def _require_available(self, ctx: TenantContext) -> None:
         # Disabled diagnostics, other contexts, a session someone else started (an impersonator
@@ -114,6 +97,31 @@ class DiagnosticsService:
     def _audit(self, ctx: TenantContext, key: IntegrationKey, outcome: str, request_id: str | None) -> None:
         with self._tx.as_tenant(ctx) as t:
             t.audit(AuditEntry(ctx.user_id, None, _AUDIT_ACTION, "integration", key.value, outcome, request_id))
+
+
+def run_probe(
+    probe: IntegrationProbe, ctx: TenantContext, monotonic: Callable[[], float] = time.monotonic
+) -> CheckResult:
+    """One check as the /integrations page and the command line report it: mock and disabled integrations
+    are skipped without a call, and a ``DomainError`` from the probe is a failed check."""
+    info = probe.info
+    if info.mode in (IntegrationMode.MOCK, IntegrationMode.DISABLED):
+        return CheckResult(info.key, info.mode, Outcome.SKIPPED, _skip_reason(info.mode))
+
+    started = monotonic()
+    try:
+        verdict = probe.check(ctx)
+    except DomainError as exc:
+        verdict = Verdict(Outcome.FAILED, exc.public_message, error_code=exc.code.lower())
+    return CheckResult(
+        key=info.key,
+        mode=info.mode,
+        outcome=verdict.outcome,
+        summary=verdict.summary,
+        latency_ms=int((monotonic() - started) * 1000),
+        error_code=verdict.error_code,
+        reference=verdict.reference,
+    )
 
 
 def _skip_reason(mode: IntegrationMode) -> str:

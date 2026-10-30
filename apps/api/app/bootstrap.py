@@ -21,6 +21,7 @@ from starlette.middleware import Middleware
 from app.kernel.application.outbox import OutboxDispatcher
 from app.kernel.application.probes import AnalyticsProbe, DatabaseProbe, ErrorReportingProbe
 from app.kernel.application.rate_limit import RateLimiter
+from app.kernel.diagnostics import IntegrationProbe
 from app.kernel.events import EventHandlers
 from app.kernel.http.app import build_fastapi
 from app.kernel.http.request_scope import AfterResponseDispatch, note_recorded_event, request_transaction
@@ -78,9 +79,9 @@ class Container:
         ]
 
     @cached_property
-    def diagnostics(self) -> DiagnosticsModule:
-        """Built from the probes of every module's contribution, so a module's probe cannot be left out."""
-        probes = [
+    def probes(self) -> list[IntegrationProbe]:
+        """The kernel's own integration probes and those of every module's contribution, so none is left out."""
+        return [
             DatabaseProbe(
                 describe_database(self.settings),
                 self.kernel.store,
@@ -90,7 +91,10 @@ class Container:
             AnalyticsProbe(describe_analytics(self.settings), self.kernel.analytics),
             ErrorReportingProbe(describe_error_reporting(self.settings), self.kernel.error_reporter),
         ]
-        return build_diagnostics(self.settings, self.settings, self.kernel, self.identity.auth, probes)
+
+    @cached_property
+    def diagnostics(self) -> DiagnosticsModule:
+        return build_diagnostics(self.settings, self.settings, self.kernel, self.identity.auth, self.probes)
 
     def contributions(self) -> list[Contribution]:
         return [*self.module_contributions(), self.diagnostics.contribution]
