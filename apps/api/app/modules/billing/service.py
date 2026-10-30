@@ -34,6 +34,7 @@ from app.kernel.tenancy import TenantContext
 from app.kernel.webhooks import EventStatus
 from app.modules.billing.domain import (
     BILLING_MANAGE,
+    FINAL_STATUSES,
     PRO_FEATURE_USE,
     BillingSummary,
     EntitlementChanged,
@@ -575,9 +576,6 @@ def _busy() -> DependencyUnavailableError:
     return DependencyUnavailableError("Billing synchronization is busy. Retry shortly.")
 
 
-_FINAL_STATUSES = frozenset({SubscriptionStatus.CANCELED, SubscriptionStatus.INCOMPLETE_EXPIRED})
-
-
 def _read_remote(
     provider: BillingProvider, customer_id: str, local: Sequence[SubscriptionSnapshot]
 ) -> list[SubscriptionSnapshot]:
@@ -599,7 +597,7 @@ def _read_remote(
     unlisted = [
         s.stripe_subscription_id
         for s in local
-        if s.stripe_subscription_id not in listed and s.status not in _FINAL_STATUSES
+        if s.stripe_subscription_id not in listed and s.status not in FINAL_STATUSES
     ]
     if rejected is not None and not unlisted:
         raise rejected
@@ -634,7 +632,7 @@ def _log_anomalies(customer_id: str, subs: Sequence[SubscriptionSnapshot], now: 
         if sub.status is SubscriptionStatus.TRIALING:
             # Trials are out of scope (DEC-010, spec §9.5): not entitled, and logged.
             logger.warning("billing_trialing_anomaly", extra={"stripe_subscription_id": sub.stripe_subscription_id})
-        if sub.plan_key is PlanKey.UNKNOWN and sub.status not in _FINAL_STATUSES:
+        if sub.plan_key is PlanKey.UNKNOWN and sub.status not in FINAL_STATUSES:
             # A price outside the catalog never grants Pro: for example, a replaced
             # price that is not listed in STRIPE_PRICE_PRO_*_RETAINED. While the
             # subscription is paid, a user pays without Pro, so it is an error.

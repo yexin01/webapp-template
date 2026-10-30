@@ -40,6 +40,15 @@ class SubscriptionStatus(StrEnum):
     PAUSED = "paused"
 
 
+class CheckoutBlock(StrEnum):
+    """Why a new checkout is refused (BILL-07, DEC-013). The user is sent to plan management instead."""
+
+    ALREADY_PRO = "already_pro"
+    PAYMENT_REQUIRED = "payment_required"
+    SUBSCRIPTION_EXISTS = "subscription_exists"
+    PAYMENT_PENDING = "payment_pending"
+
+
 class BillingState(StrEnum):
     """What the UI shows. Derived here so every surface agrees (BILL-20)."""
 
@@ -79,7 +88,11 @@ class BillingSummary:
     plan_key: PlanKey | None
     current_period_end: datetime | None
     cancels_at: datetime | None
+    checkout_block: CheckoutBlock | None = None
 
+
+# Subscriptions that are over: they never block a new checkout and are never read again.
+FINAL_STATUSES = frozenset({SubscriptionStatus.CANCELED, SubscriptionStatus.INCOMPLETE_EXPIRED})
 
 # DEC-010 (ADR-0001): past_due keeps Pro while Stripe retries payment.
 _ENTITLED_STATUSES = frozenset({SubscriptionStatus.ACTIVE, SubscriptionStatus.PAST_DUE})
@@ -136,6 +149,28 @@ def decide(
     return EntitlementDecision(Plan.FREE, "no_entitling_subscription")
 
 
+def checkout_block(subscriptions: Sequence[SubscriptionSnapshot], now: datetime) -> CheckoutBlock | None:
+    """Why a new checkout must be refused, or ``None`` when starting one cannot buy a second subscription.
+
+    DEC-013 option B. Any subscription that is not over blocks it, because Stripe
+    would hold a second one and charge both: an entitling one (BILL-07); one that
+    needs a payment (``unpaid``, ``paused``, or ``past_due`` on a price outside the
+    catalog); a paying one the catalog does not know, or a trial; and, defensively,
+    ``incomplete``. A subscription that has ended is over, whatever Stripe still says.
+    """
+    if entitling_subscriptions(subscriptions, now):
+        return CheckoutBlock.ALREADY_PRO
+    live = [s for s in subscriptions if s.status not in FINAL_STATUSES and not _has_ended(s, now)]
+    statuses = {s.status for s in live}
+    if statuses & {SubscriptionStatus.UNPAID, SubscriptionStatus.PAUSED, SubscriptionStatus.PAST_DUE}:
+        return CheckoutBlock.PAYMENT_REQUIRED
+    if statuses & {SubscriptionStatus.ACTIVE, SubscriptionStatus.TRIALING}:
+        return CheckoutBlock.SUBSCRIPTION_EXISTS
+    if SubscriptionStatus.INCOMPLETE in statuses:
+        return CheckoutBlock.PAYMENT_PENDING
+    return None
+
+
 _PENDING_STATES: dict[SubscriptionStatus, BillingState] = {
     SubscriptionStatus.INCOMPLETE: BillingState.PROCESSING,
     SubscriptionStatus.UNPAID: BillingState.PAYMENT_REQUIRED,
@@ -149,6 +184,7 @@ def summarize(
     now: datetime,
 ) -> BillingSummary:
     """Summarize personal billing state for presentation."""
+    block = checkout_block(subscriptions, now)
     decision = decide(subscriptions, now)
     sub = decision.subscription
     if sub is not None:
@@ -159,17 +195,17 @@ def summarize(
             state = BillingState.CANCELING
         else:
             state = BillingState.ACTIVE
-        return BillingSummary(Plan.PRO, state, sub.plan_key, sub.current_period_end, end)
+        return BillingSummary(Plan.PRO, state, sub.plan_key, sub.current_period_end, end, block)
 
     pending = [s for s in subscriptions if s.status in _PENDING_STATES]
     if pending:
         p = _latest(pending)
-        return BillingSummary(Plan.FREE, _PENDING_STATES[p.status], p.plan_key, p.current_period_end, None)
+        return BillingSummary(Plan.FREE, _PENDING_STATES[p.status], p.plan_key, p.current_period_end, None, block)
 
     if subscriptions:
         last = _latest(subscriptions)
-        return BillingSummary(Plan.FREE, BillingState.CANCELED, last.plan_key, None, None)
-    return BillingSummary(Plan.FREE, BillingState.NONE, None, None, None)
+        return BillingSummary(Plan.FREE, BillingState.CANCELED, last.plan_key, None, None, block)
+    return BillingSummary(Plan.FREE, BillingState.NONE, None, None, None, block)
 
 
 @dataclass(frozen=True, slots=True)
