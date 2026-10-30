@@ -56,6 +56,8 @@ jobs:
           uv run ruff format --check app tests index.py ../../perf
       - name: Import boundaries
         run: uv run lint-imports
+      - name: Migration lint (MIG-03)
+        run: uv run squawk --config ../../.squawk.toml ../../supabase/migrations/*.sql
       - name: Type check (strict)
         run: uv run mypy
       - name: Tests (unit, integration, RLS, security, resilience)

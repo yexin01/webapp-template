@@ -4,9 +4,9 @@
  * (scripts/lib/tracked-copy.mjs) to a temporary git checkout, runs
  * `new:module` there, and proves the generated modules pass the same gates as
  * hand-written code:
- * - API: lint, format, strict types, import contracts, architecture tests,
- *   and the generated integration tests (including the DB-07 row-level
- *   security tests) against local PostgreSQL;
+ * - API: lint, format, strict types, import contracts, migration lint (squawk),
+ *   architecture tests, and the generated integration tests (including the
+ *   DB-07 row-level security tests) against local PostgreSQL;
  * - contracts: regeneration;
  * - web: types, lint, and the generated component tests.
  * Three modules are generated: a typical one, a one-letter name (the shortest
@@ -326,6 +326,7 @@ try {
   uv(["ruff", "format", "--check", "."], "ruff format");
   uv(["mypy"], "mypy");
   uv(["lint-imports"], "import contracts");
+  uv(["squawk", "--config", "../../.squawk.toml", "../../supabase/migrations/*.sql"], "migration lint");
   const apiTests = modules.map(([name]) => `tests/integration/test_${name}.py`);
   const pytest = uv(["pytest", "-q", "-p", "no:cacheprovider", "-rs", "tests/architecture", ...apiTests], "API tests");
   // Database tests skip when PostgreSQL is down; a skip must not count as a pass.
