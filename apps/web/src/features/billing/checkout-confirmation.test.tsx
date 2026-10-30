@@ -5,7 +5,7 @@ import { ApiError } from "@/lib/api/errors";
 
 import { CheckoutConfirmation } from "./checkout-confirmation";
 
-const api = vi.hoisted(() => ({ billingStatus: vi.fn() }));
+const api = vi.hoisted(() => ({ billingStatus: vi.fn(), syncBilling: vi.fn() }));
 const auth = vi.hoisted(() => ({ isLoaded: true, userId: "user_1" as string | undefined }));
 // One client per signed-in user, and a new one once the user arrives, as useApi does.
 const clients = vi.hoisted(() => new Map<string, object>());
@@ -25,6 +25,8 @@ beforeEach(() => {
   auth.userId = "user_1";
   vi.useFakeTimers();
   api.billingStatus.mockReset();
+  api.syncBilling.mockReset();
+  api.syncBilling.mockResolvedValue(free);
 });
 afterEach(() => vi.useRealTimers());
 
@@ -88,6 +90,92 @@ describe("checkout confirmation", () => {
     await advance(1500 * 3);
     // One request per interval from here on, not one per mounted effect.
     expect(api.billingStatus.mock.calls.length - afterMount).toBe(3);
+  });
+
+  describe("asking the server to re-read Stripe", () => {
+    it("does so once, after the short wait, and confirms on what the server read", async () => {
+      api.billingStatus.mockResolvedValue(free);
+      api.syncBilling.mockResolvedValue({ plan: "pro", state: "active" });
+      render(<CheckoutConfirmation />);
+      await advance(2_900);
+      expect(api.syncBilling).not.toHaveBeenCalled();
+      expect(screen.queryByText(/You are now on Pro/)).toBeNull();
+      await advance(100);
+      expect(api.syncBilling).toHaveBeenCalledOnce();
+      expect(screen.getByText(/You are now on Pro/)).toBeInTheDocument();
+      // Confirmed: the polling stops with it.
+      const polls = api.billingStatus.mock.calls.length;
+      await advance(30_000);
+      expect(api.billingStatus).toHaveBeenCalledTimes(polls);
+      expect(api.syncBilling).toHaveBeenCalledOnce();
+    });
+
+    it("is not needed when the webhook already confirmed", async () => {
+      api.billingStatus.mockResolvedValue({ plan: "pro", state: "active" });
+      render(<CheckoutConfirmation />);
+      await advance(10_000);
+      expect(screen.getByText(/You are now on Pro/)).toBeInTheDocument();
+      expect(api.syncBilling).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["rate-limited", new ApiError(429, "RATE_LIMITED", "Slow down.", null)],
+      ["busy", new ApiError(503, "DEPENDENCY_UNAVAILABLE", "Busy.", null)],
+      ["failing", new Error("network")],
+    ])("falls through to the polling when the read is %s", async (_label, failure) => {
+      api.billingStatus
+        .mockResolvedValueOnce(free)
+        .mockResolvedValueOnce(free)
+        .mockResolvedValueOnce(free)
+        .mockResolvedValue({ plan: "pro", state: "active" });
+      api.syncBilling.mockRejectedValue(failure);
+      render(<CheckoutConfirmation />);
+      await advance(3_000);
+      expect(api.syncBilling).toHaveBeenCalledOnce();
+      expect(screen.queryByText(/You are now on Pro/)).toBeNull();
+      await advance(1_500);
+      expect(screen.getByText(/You are now on Pro/)).toBeInTheDocument();
+      expect(api.syncBilling).toHaveBeenCalledOnce();
+    });
+
+    it("keeps waiting when the server read finds no subscription yet", async () => {
+      api.billingStatus.mockResolvedValue(free);
+      render(<CheckoutConfirmation />);
+      await advance(5_000);
+      expect(api.syncBilling).toHaveBeenCalledOnce();
+      expect(screen.getByText(/Waiting for payment confirmation/)).toBeInTheDocument();
+    });
+
+    it("never fires after unmount, and once under StrictMode", async () => {
+      api.billingStatus.mockResolvedValue(free);
+      const { unmount } = render(<CheckoutConfirmation />);
+      await advance(2_000);
+      unmount();
+      await advance(10_000);
+      expect(api.syncBilling).not.toHaveBeenCalled();
+
+      render(
+        <StrictMode>
+          <CheckoutConfirmation />
+        </StrictMode>,
+      );
+      await advance(5_000);
+      expect(api.syncBilling).toHaveBeenCalledOnce();
+    });
+
+    it("is not sent for a user who is not the one now signed in", async () => {
+      api.billingStatus.mockResolvedValue(free);
+      auth.userId = "user_a";
+      const { rerender } = render(<CheckoutConfirmation />);
+      await advance(2_000);
+      auth.userId = "user_b";
+      rerender(<CheckoutConfirmation />);
+      await advance(1_500);
+      // User A's chain was stopped before its read; user B's own chain asks at its own 3 s.
+      expect(api.syncBilling).not.toHaveBeenCalled();
+      await advance(2_000);
+      expect(api.syncBilling).toHaveBeenCalledOnce();
+    });
   });
 
   it("gives up with a reassuring message after the last attempt", async () => {

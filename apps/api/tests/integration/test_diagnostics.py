@@ -13,10 +13,12 @@ import psycopg
 import pytest
 from psycopg import sql
 
+from app.kernel.errors import ForbiddenError
 from app.kernel.infrastructure.config import AppEnv
 from app.kernel.infrastructure.store import PgKernelStore
 from app.kernel.ports import ConnectionDescription
 from app.kernel.tenancy import Role
+from app.modules.billing.domain import PortalConfiguration
 from app.modules.billing.ports import PriceDescription
 from app.modules.identity.domain import ExternalMembership
 from app.modules.llm.adapters import MockLLMProvider
@@ -72,6 +74,22 @@ def _price(price_id: str, interval: str, **kwargs: Any) -> PriceDescription:
     return PriceDescription(**values)
 
 
+def _portal(**kwargs: Any) -> PortalConfiguration:
+    """A default Customer Portal configuration that follows DEC-010."""
+    values: dict[str, Any] = {
+        "active": True,
+        "payment_method_update": True,
+        "invoice_history": True,
+        "cancel_enabled": True,
+        "cancel_mode": "at_period_end",
+        "switch_enabled": True,
+        "allowed_updates": ("price",),
+        "switch_prices": frozenset({PRICE_MONTHLY, PRICE_YEARLY}),
+    }
+    values.update(kwargs)
+    return PortalConfiguration(**values)
+
+
 @pytest.fixture
 def sandbox(make_harness: Callable[..., Harness]) -> Callable[..., Harness]:
     def factory(settings: dict[str, Any] | None = None, **overrides: Any) -> Harness:
@@ -79,6 +97,7 @@ def sandbox(make_harness: Callable[..., Harness]) -> Callable[..., Harness]:
         h = make_harness({**SANDBOX, **(settings or {})}, **overrides)
         h.billing.set_price(_price(PRICE_MONTHLY, "month"))
         h.billing.set_price(_price(PRICE_YEARLY, "year"))
+        h.billing.set_portal(_portal())
         return h
 
     return factory
@@ -292,6 +311,71 @@ def test_billing_check_flags_misconfigured_prices(
     assert body["outcome"] == "failed"
     assert body["error_code"] == "price_mismatch"
     assert expected in body["summary"]
+
+
+def test_billing_check_passes_with_the_portal_verified_and_the_webhook_not_checked(
+    sandbox: Callable[..., Harness],
+) -> None:
+    h = sandbox()
+    body = check(h, "billing")
+    assert body["outcome"] == "passed", body
+    assert "Customer Portal default configuration matches DEC-010" in body["summary"]
+    assert "Webhook endpoint and signing secret: not checked" in body["summary"]
+    assert "describe_portal" in h.billing.calls
+
+
+@pytest.mark.parametrize(
+    ("portal", "expected"),
+    [
+        (None, "no default Customer Portal configuration"),
+        (_portal(payment_method_update=False), "update their payment method"),
+        (_portal(invoice_history=False), "invoice history"),
+        (_portal(cancel_mode="immediately"), "cancels immediately"),
+        (_portal(cancel_enabled=False), "does not let customers cancel"),
+        (_portal(switch_enabled=False), "switch between the Pro prices"),
+        (_portal(switch_prices=frozenset({PRICE_MONTHLY})), f"cannot switch to the pro_yearly price {PRICE_YEARLY}"),
+        (
+            _portal(switch_prices=frozenset({PRICE_MONTHLY, PRICE_YEARLY, "price_extra"})),
+            "also offers price_extra, a price outside the catalog",
+        ),
+    ],
+)
+def test_billing_check_flags_a_portal_that_departs_from_the_policy(
+    sandbox: Callable[..., Harness], portal: PortalConfiguration | None, expected: str
+) -> None:
+    h = sandbox()
+    h.billing.set_portal(portal)
+    body = check(h, "billing")
+    assert body["outcome"] == "failed"
+    assert body["error_code"] == "portal_mismatch"
+    assert expected in body["summary"]
+
+
+def test_billing_check_names_a_retained_price_the_portal_still_offers(sandbox: Callable[..., Harness]) -> None:
+    h = sandbox({"stripe_price_pro_monthly_retained": "price_old"})
+    h.billing.set_portal(_portal(switch_prices=frozenset({PRICE_MONTHLY, PRICE_YEARLY, "price_old"})))
+    body = check(h, "billing")
+    assert body["error_code"] == "portal_mismatch"
+    assert "price_old, a replaced pro_monthly price that is no longer sold" in body["summary"]
+
+
+def test_billing_check_reports_prices_and_portal_together(sandbox: Callable[..., Harness]) -> None:
+    h = sandbox()
+    h.billing.set_price(_price(PRICE_MONTHLY, "month", active=False))
+    h.billing.set_portal(_portal(invoice_history=False))
+    body = check(h, "billing")
+    assert body["error_code"] == "price_mismatch"
+    assert "archived" in body["summary"]
+    assert "invoice history" in body["summary"]
+
+
+def test_billing_check_says_so_when_the_key_cannot_read_the_portal(sandbox: Callable[..., Harness]) -> None:
+    """A restricted key without portal access still verifies the prices; the portal is reported as not checked."""
+    h = sandbox()
+    h.billing.set_portal(ForbiddenError("The Stripe API key cannot read Customer Portal configurations."))
+    body = check(h, "billing")
+    assert body["outcome"] == "passed"
+    assert "Customer Portal: not checked" in body["summary"]
 
 
 def test_billing_check_reports_unknown_price(sandbox: Callable[..., Harness]) -> None:

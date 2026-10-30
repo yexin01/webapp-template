@@ -1,5 +1,6 @@
 import createClient, { type Client } from "openapi-fetch";
 
+import { publicEnv } from "../env";
 import { PROVIDER_TIMEOUT_MS, REQUEST_TIMEOUT_MS } from "./deadlines";
 import { ApiError, type Problem } from "./errors";
 import type { components, paths } from "./schema";
@@ -170,6 +171,8 @@ export function createApiClient(getToken: TokenGetter, options: ApiClientOptions
         }),
       ),
     openPortal: () => send(client.POST("/api/v1/billing/portal", viaProvider)),
+    /** Asks the server to re-read the signed-in user's own subscriptions from Stripe (BILL-06). */
+    syncBilling: () => send(client.POST("/api/v1/billing/sync", viaProvider)),
     proInsight: (orgId: string | null) =>
       send(
         orgId
@@ -191,12 +194,22 @@ export function createApiClient(getToken: TokenGetter, options: ApiClientOptions
 
 export type ApiClient = ReturnType<typeof createApiClient>;
 
-/** Only same-origin or Stripe-hosted redirects are followed (SEC-14). */
-export function isAllowedRedirect(url: string, currentOrigin: string): boolean {
+/**
+ * Only same-origin, Stripe-hosted, or the account's Stripe custom domain are followed (SEC-14).
+ * The API has already checked the host; this is the browser's own check of what it navigates to.
+ */
+export function isAllowedRedirect(
+  url: string,
+  currentOrigin: string,
+  customDomain: string = publicEnv.stripeCustomDomain,
+): boolean {
   try {
     const target = new URL(url, currentOrigin);
     if (target.origin === currentOrigin) return true;
-    return target.protocol === "https:" && /(^|\.)stripe\.com$/.test(target.hostname);
+    if (target.protocol !== "https:") return false;
+    return (
+      /(^|\.)stripe\.com$/.test(target.hostname) || (customDomain !== "" && target.hostname === customDomain)
+    );
   } catch {
     return false;
   }

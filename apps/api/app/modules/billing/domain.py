@@ -40,6 +40,15 @@ class SubscriptionStatus(StrEnum):
     PAUSED = "paused"
 
 
+class CheckoutBlock(StrEnum):
+    """Why a new checkout is refused (BILL-07, DEC-013). The user is sent to plan management instead."""
+
+    ALREADY_PRO = "already_pro"
+    PAYMENT_REQUIRED = "payment_required"
+    SUBSCRIPTION_EXISTS = "subscription_exists"
+    PAYMENT_PENDING = "payment_pending"
+
+
 class BillingState(StrEnum):
     """What the UI shows. Derived here so every surface agrees (BILL-20)."""
 
@@ -79,7 +88,11 @@ class BillingSummary:
     plan_key: PlanKey | None
     current_period_end: datetime | None
     cancels_at: datetime | None
+    checkout_block: CheckoutBlock | None = None
 
+
+# Subscriptions that are over: they never block a new checkout and are never read again.
+FINAL_STATUSES = frozenset({SubscriptionStatus.CANCELED, SubscriptionStatus.INCOMPLETE_EXPIRED})
 
 # DEC-010 (ADR-0001): past_due keeps Pro while Stripe retries payment.
 _ENTITLED_STATUSES = frozenset({SubscriptionStatus.ACTIVE, SubscriptionStatus.PAST_DUE})
@@ -136,6 +149,28 @@ def decide(
     return EntitlementDecision(Plan.FREE, "no_entitling_subscription")
 
 
+def checkout_block(subscriptions: Sequence[SubscriptionSnapshot], now: datetime) -> CheckoutBlock | None:
+    """Why a new checkout must be refused, or ``None`` when starting one cannot buy a second subscription.
+
+    DEC-013 option B. Any subscription that is not over blocks it, because Stripe
+    would hold a second one and charge both: an entitling one (BILL-07); one that
+    needs a payment (``unpaid``, ``paused``, or ``past_due`` on a price outside the
+    catalog); a paying one the catalog does not know, or a trial; and, defensively,
+    ``incomplete``. A subscription that has ended is over, whatever Stripe still says.
+    """
+    if entitling_subscriptions(subscriptions, now):
+        return CheckoutBlock.ALREADY_PRO
+    live = [s for s in subscriptions if s.status not in FINAL_STATUSES and not _has_ended(s, now)]
+    statuses = {s.status for s in live}
+    if statuses & {SubscriptionStatus.UNPAID, SubscriptionStatus.PAUSED, SubscriptionStatus.PAST_DUE}:
+        return CheckoutBlock.PAYMENT_REQUIRED
+    if statuses & {SubscriptionStatus.ACTIVE, SubscriptionStatus.TRIALING}:
+        return CheckoutBlock.SUBSCRIPTION_EXISTS
+    if SubscriptionStatus.INCOMPLETE in statuses:
+        return CheckoutBlock.PAYMENT_PENDING
+    return None
+
+
 _PENDING_STATES: dict[SubscriptionStatus, BillingState] = {
     SubscriptionStatus.INCOMPLETE: BillingState.PROCESSING,
     SubscriptionStatus.UNPAID: BillingState.PAYMENT_REQUIRED,
@@ -149,6 +184,7 @@ def summarize(
     now: datetime,
 ) -> BillingSummary:
     """Summarize personal billing state for presentation."""
+    block = checkout_block(subscriptions, now)
     decision = decide(subscriptions, now)
     sub = decision.subscription
     if sub is not None:
@@ -159,17 +195,17 @@ def summarize(
             state = BillingState.CANCELING
         else:
             state = BillingState.ACTIVE
-        return BillingSummary(Plan.PRO, state, sub.plan_key, sub.current_period_end, end)
+        return BillingSummary(Plan.PRO, state, sub.plan_key, sub.current_period_end, end, block)
 
     pending = [s for s in subscriptions if s.status in _PENDING_STATES]
     if pending:
         p = _latest(pending)
-        return BillingSummary(Plan.FREE, _PENDING_STATES[p.status], p.plan_key, p.current_period_end, None)
+        return BillingSummary(Plan.FREE, _PENDING_STATES[p.status], p.plan_key, p.current_period_end, None, block)
 
     if subscriptions:
         last = _latest(subscriptions)
-        return BillingSummary(Plan.FREE, BillingState.CANCELED, last.plan_key, None, None)
-    return BillingSummary(Plan.FREE, BillingState.NONE, None, None, None)
+        return BillingSummary(Plan.FREE, BillingState.CANCELED, last.plan_key, None, None, block)
+    return BillingSummary(Plan.FREE, BillingState.NONE, None, None, None, block)
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,6 +230,65 @@ class PriceCatalog:
         if price_id is None:
             return PlanKey.UNKNOWN
         return self.retained.get(price_id, PlanKey.UNKNOWN)
+
+
+@dataclass(frozen=True, slots=True)
+class PortalConfiguration:
+    """What the Customer Portal's default configuration lets customers do (DEC-010, ADR-0001).
+
+    The portal is configured in the Stripe Dashboard; this only describes it.
+    """
+
+    active: bool
+    payment_method_update: bool
+    invoice_history: bool
+    cancel_enabled: bool
+    cancel_mode: str
+    switch_enabled: bool
+    allowed_updates: tuple[str, ...]
+    # Every price a customer can switch between, across all products.
+    switch_prices: frozenset[str]
+
+
+_PORTAL_FIX = "Settings > Billing > Customer portal"
+
+
+def portal_problems(portal: PortalConfiguration | None, catalog: PriceCatalog) -> list[str]:
+    """How the default portal configuration departs from DEC-010; empty when it matches.
+
+    Proration, promotion codes, and customer details are product choices and are not checked.
+    """
+    if portal is None:
+        return [f"no default Customer Portal configuration is saved in this mode (save one in {_PORTAL_FIX})"]
+    problems: list[str] = []
+    if not portal.active:
+        problems.append("the default Customer Portal configuration is inactive")
+    if not portal.payment_method_update:
+        problems.append("the portal does not let customers update their payment method")
+    if not portal.invoice_history:
+        problems.append("the portal does not show invoice history")
+    if not portal.cancel_enabled:
+        problems.append("the portal does not let customers cancel")
+    elif portal.cancel_mode != "at_period_end":
+        problems.append("the portal cancels immediately instead of at the end of the billing period")
+    if not portal.switch_enabled or "price" not in portal.allowed_updates:
+        problems.append("the portal does not let customers switch between the Pro prices")
+        return problems
+    wanted = {key: catalog.price_for(key) for key in (PlanKey.PRO_MONTHLY, PlanKey.PRO_YEARLY)}
+    for key, price in wanted.items():
+        if price is not None and price not in portal.switch_prices:
+            problems.append(f"the portal cannot switch to the {key.value} price {price}")
+    for price in sorted(portal.switch_prices - {p for p in wanted.values() if p}):
+        known = catalog.key_for(price)
+        problems.append(
+            f"the portal also offers {price}, "
+            + (
+                f"a replaced {known.value} price that is no longer sold"
+                if known is not PlanKey.UNKNOWN
+                else "a price outside the catalog that grants no Pro"
+            )
+        )
+    return problems
 
 
 # Billing is owned by individuals, so it is never managed from an organization

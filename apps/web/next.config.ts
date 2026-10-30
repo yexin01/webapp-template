@@ -57,6 +57,7 @@ function nextConfig(phase: string): NextConfig {
       NEXT_PUBLIC_ANALYTICS_ENABLED: String(env.analytics.enabled),
       NEXT_PUBLIC_ERROR_REPORTING_ENABLED: String(env.errorReporting.enabled),
       NEXT_PUBLIC_APP_ENV: env.appEnv,
+      NEXT_PUBLIC_STRIPE_CUSTOM_DOMAIN: env.stripeCustomDomain ?? "",
     },
     async rewrites() {
       // The browser calls the Python API same-origin; no CORS and no API secrets in the web app.

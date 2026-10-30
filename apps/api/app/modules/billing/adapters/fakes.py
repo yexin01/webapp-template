@@ -4,11 +4,23 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from uuid import UUID
 
 from app.kernel.errors import InvalidRequestError
-from app.modules.billing.domain import SubscriptionSnapshot
-from app.modules.billing.ports import PriceDescription
+from app.modules.billing.domain import PortalConfiguration, SubscriptionSnapshot
+from app.modules.billing.ports import CheckoutSession, PriceDescription
+
+
+@dataclass
+class _Session:
+    session_id: str
+    user_id: UUID
+    customer_id: str
+    url: str
+    expires_at: datetime
+    status: str = "open"
 
 
 class InMemoryBillingProvider:
@@ -19,6 +31,11 @@ class InMemoryBillingProvider:
         self._subscriptions: dict[str, list[SubscriptionSnapshot]] = {}
         self._prices: dict[str, PriceDescription] = {}
         self._deleted_customers: set[str] = set()
+        self._portal: PortalConfiguration | Exception | None = None
+        self._sessions: dict[str, _Session] = {}
+        self._session_by_key: dict[str, str] = {}
+        # When the sessions created from now on expire.
+        self.session_expires_at = datetime(2100, 1, 1, tzinfo=UTC)
         self.calls: list[str] = []
         # The arguments of each session created, so tests can check what Stripe would be asked for.
         self.checkout_requests: list[dict[str, object]] = []
@@ -47,7 +64,7 @@ class InMemoryBillingProvider:
         success_url: str,
         cancel_url: str,
         idempotency_key: str,
-    ) -> str:
+    ) -> CheckoutSession:
         self._maybe_fail("create_checkout_session")
         with self._lock:
             self.checkout_requests.append(
@@ -60,7 +77,37 @@ class InMemoryBillingProvider:
                     "idempotency_key": idempotency_key,
                 }
             )
-        return f"{self._base}/billing/success?session_id=cs_mock"
+            # Like Stripe: the same key returns the session it created, whatever has happened to it since.
+            known = self._session_by_key.get(idempotency_key)
+            session = self._sessions[known] if known else None
+            if session is None:
+                session_id = f"cs_mock_{len(self._sessions) + 1:04d}"
+                session = _Session(
+                    session_id,
+                    user_id,
+                    customer_id,
+                    f"{self._base}/billing/success?session_id={session_id}",
+                    self.session_expires_at,
+                )
+                self._sessions[session_id] = session
+                self._session_by_key[idempotency_key] = session_id
+            return CheckoutSession(session.session_id, session.url, session.expires_at)
+
+    def expire_checkout_session(self, session_id: str) -> None:
+        self._maybe_fail("expire_checkout_session")
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if session is None or session.status != "open":
+                raise InvalidRequestError("The billing request was rejected.")
+            session.status = "expired"
+
+    def open_checkout_session_url(self, session_id: str) -> str | None:
+        self._maybe_fail("open_checkout_session_url")
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if session is None:
+                raise InvalidRequestError("The billing request was rejected.")
+            return session.url if session.status == "open" else None
 
     def create_portal_session(self, *, customer_id: str, return_url: str) -> str:
         self._maybe_fail("create_portal_session")
@@ -97,7 +144,35 @@ class InMemoryBillingProvider:
             raise InvalidRequestError("The billing request was rejected.")
         return price
 
+    def describe_portal(self) -> PortalConfiguration | None:
+        self._maybe_fail("describe_portal")
+        with self._lock:
+            portal = self._portal
+        if isinstance(portal, Exception):
+            raise portal
+        return portal
+
     # Test helpers -----------------------------------------------------------
+
+    def open_sessions(self, user_id: UUID | None = None) -> list[str]:
+        """The IDs of the Checkout Sessions a user could still complete."""
+        with self._lock:
+            return [
+                s.session_id
+                for s in self._sessions.values()
+                if s.status == "open" and (user_id is None or s.user_id == user_id)
+            ]
+
+    def complete_session(self, session_id: str, subscription: SubscriptionSnapshot) -> None:
+        """The user paid in a session: it is complete, and Stripe holds the subscription it created."""
+        with self._lock:
+            session = self._sessions[session_id]
+            session.status = "complete"
+            self._subscriptions.setdefault(session.customer_id, []).append(subscription)
+
+    def set_portal(self, portal: PortalConfiguration | Exception | None) -> None:
+        with self._lock:
+            self._portal = portal
 
     def set_price(self, price: PriceDescription) -> None:
         with self._lock:

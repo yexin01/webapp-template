@@ -55,6 +55,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/billing/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Sync Billing
+         * @description Re-read the caller's own subscriptions from Stripe, then return the status. Takes no input (BILL-02).
+         */
+        post: operations["sync_billing_api_v1_billing_sync_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/diagnostics/integrations": {
         parameters: {
             query?: never;
@@ -345,12 +365,19 @@ export interface components {
             available_plans: ("pro_monthly" | "pro_yearly")[];
             /** Cancels At */
             cancels_at: string | null;
+            checkout_blocked: components["schemas"]["CheckoutBlock"] | null;
             /** Current Period End */
             current_period_end: string | null;
             plan: components["schemas"]["Plan"];
             plan_key: components["schemas"]["PlanKey"] | null;
             state: components["schemas"]["BillingState"];
         };
+        /**
+         * CheckoutBlock
+         * @description Why a new checkout is refused (BILL-07, DEC-013). The user is sent to plan management instead.
+         * @enum {string}
+         */
+        CheckoutBlock: "already_pro" | "payment_required" | "subscription_exists" | "payment_pending";
         /** CheckoutRequest */
         CheckoutRequest: {
             /**
@@ -726,6 +753,71 @@ export interface operations {
         };
     };
     billing_status_api_v1_billing_status_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BillingStatus"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    sync_billing_api_v1_billing_sync_post: {
         parameters: {
             query?: never;
             header?: never;

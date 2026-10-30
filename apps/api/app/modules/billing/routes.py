@@ -19,7 +19,15 @@ from app.kernel.http.auth import AuthDeps, requires
 from app.kernel.http.schemas import StrictInput, WebhookAck, errors
 from app.kernel.ports import Clock
 from app.kernel.tenancy import TenantContext
-from app.modules.billing.domain import BILLING_MANAGE, PRO_FEATURE_USE, BillingState, Plan, PlanKey
+from app.modules.billing.domain import (
+    BILLING_MANAGE,
+    PRO_FEATURE_USE,
+    BillingState,
+    BillingSummary,
+    CheckoutBlock,
+    Plan,
+    PlanKey,
+)
 from app.modules.billing.service import BillingService
 
 ERRORS = errors(401, 403, 409, 429, 503)
@@ -32,6 +40,9 @@ class BillingStatus(BaseModel):
     current_period_end: datetime | None
     cancels_at: datetime | None
     available_plans: list[Literal[PlanKey.PRO_MONTHLY, PlanKey.PRO_YEARLY]]
+    # Why a new checkout is refused (DEC-013), or null when starting one is allowed. The UI offers
+    # Upgrade only when this is null, and plan management otherwise.
+    checkout_blocked: CheckoutBlock | None
 
 
 class CheckoutRequest(StrictInput):
@@ -50,6 +61,18 @@ class Entitlement(BaseModel):
 class ProInsight(BaseModel):
     message: str
     generated_at: datetime
+
+
+def _status(billing: BillingService, summary: BillingSummary) -> BillingStatus:
+    return BillingStatus(
+        plan=summary.plan,
+        state=summary.state,
+        plan_key=summary.plan_key,
+        current_period_end=summary.current_period_end,
+        cancels_at=summary.cancels_at,
+        checkout_blocked=summary.checkout_block,
+        available_plans=[k for k in (PlanKey.PRO_MONTHLY, PlanKey.PRO_YEARLY) if billing.has_price(k)],
+    )
 
 
 def build_read_router(billing: BillingService, clock: Clock, auth: AuthDeps, request_transaction: Any) -> APIRouter:
@@ -82,15 +105,7 @@ def build_read_router(billing: BillingService, clock: Clock, auth: AuthDeps, req
         dependencies=[requires(BILLING_MANAGE)],
     )
     def billing_status(ctx: Personal) -> BillingStatus:
-        summary = billing.summary(ctx)
-        return BillingStatus(
-            plan=summary.plan,
-            state=summary.state,
-            plan_key=summary.plan_key,
-            current_period_end=summary.current_period_end,
-            cancels_at=summary.cancels_at,
-            available_plans=[k for k in (PlanKey.PRO_MONTHLY, PlanKey.PRO_YEARLY) if billing.has_price(k)],
-        )
+        return _status(billing, billing.summary(ctx))
 
     @router.get(
         "/pro/insight",
@@ -136,6 +151,11 @@ def build_action_router(billing: BillingService, auth: AuthDeps) -> APIRouter:
     @router.post("/billing/portal", response_model=Redirect, responses=ERRORS, dependencies=[requires(BILLING_MANAGE)])
     def open_portal(ctx: Personal) -> Redirect:
         return Redirect(url=billing.open_portal(ctx))
+
+    @router.post("/billing/sync", response_model=BillingStatus, responses=ERRORS)
+    def sync_billing(ctx: Personal) -> BillingStatus:
+        """Re-read the caller's own subscriptions from Stripe, then return the status. Takes no input (BILL-02)."""
+        return _status(billing, billing.sync_from_stripe(ctx))
 
     return router
 

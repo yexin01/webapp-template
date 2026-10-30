@@ -2,16 +2,30 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlsplit
 from uuid import UUID
 
 import stripe
 
-from app.kernel.errors import DependencyUnavailableError, InvalidRequestError, WebhookSignatureError
-from app.modules.billing.domain import PlanKey, PriceCatalog, SubscriptionSnapshot, SubscriptionStatus
-from app.modules.billing.ports import BillingWebhookEvent, PriceDescription
+from app.kernel.errors import (
+    DependencyUnavailableError,
+    ForbiddenError,
+    InvalidRequestError,
+    NotConfiguredError,
+    WebhookSignatureError,
+)
+from app.modules.billing.domain import (
+    PlanKey,
+    PortalConfiguration,
+    PriceCatalog,
+    SubscriptionSnapshot,
+    SubscriptionStatus,
+)
+from app.modules.billing.ports import BillingWebhookEvent, CheckoutSession, PriceDescription
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +85,22 @@ def to_snapshot(sub: Any, catalog: PriceCatalog) -> SubscriptionSnapshot:
     )
 
 
+def _configuration_error(exc: stripe.StripeError) -> NotConfiguredError:
+    # The NOT_CONFIGURED this returns is the error report (the kernel error handler sends it once, scrubbed).
+    # An ERROR record here would be a second event. Stripe's message text never leaves: it can quote request values.
+    logger.warning(
+        "stripe_configuration_error",
+        extra={
+            "error_type": type(exc).__name__,
+            "code": exc.code,
+            "param": getattr(exc, "param", None),
+            "http_status": exc.http_status,
+            "request_id": exc.request_id,
+        },
+    )
+    return NotConfiguredError("Billing is not configured correctly for this Stripe account.")
+
+
 class StripeBillingProvider:
     def __init__(
         self,
@@ -79,8 +109,10 @@ class StripeBillingProvider:
         catalog: PriceCatalog,
         timeout_seconds: float = 10.0,
         api_base: str | None = None,
+        custom_domain: str | None = None,
     ) -> None:
         self._catalog = catalog
+        self._custom_domain = custom_domain
         self._client = stripe.StripeClient(
             secret_key,
             # The SDK attaches idempotency keys to retried POSTs, so bounded
@@ -91,10 +123,21 @@ class StripeBillingProvider:
             base_addresses={"api": api_base} if api_base else None,
         )
 
-    def _call(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
+    def _call(self, fn: Any, *args: Any, server_built: bool = False, **kwargs: Any) -> Any:
+        """Call Stripe and map its failures.
+
+        A rejected key is a configuration error. So is a rejected request whose
+        every input the server built itself (``server_built``): it cannot be the
+        caller's fault, and a deleted customer is the one input that can go stale.
+        Both reach error reporting; messages from Stripe never do.
+        """
         try:
             return fn(*args, **kwargs)
+        except (stripe.AuthenticationError, stripe.PermissionError) as exc:
+            raise _configuration_error(exc) from exc
         except stripe.InvalidRequestError as exc:
+            if server_built and exc.param != "customer":
+                raise _configuration_error(exc) from exc
             logger.warning("stripe_invalid_request", extra={"code": exc.code, "http_status": exc.http_status})
             raise InvalidRequestError("The billing request was rejected.") from exc
         except stripe.StripeError as exc:
@@ -106,6 +149,7 @@ class StripeBillingProvider:
             self._client.v1.customers.create,
             params={"metadata": {_METADATA_USER_KEY: str(user_id)}},
             options={"idempotency_key": f"customer-create-{user_id}"},
+            server_built=True,
         )
         return str(customer.id)
 
@@ -118,7 +162,7 @@ class StripeBillingProvider:
         success_url: str,
         cancel_url: str,
         idempotency_key: str,
-    ) -> str:
+    ) -> CheckoutSession:
         session = self._call(
             self._client.v1.checkout.sessions.create,
             params={
@@ -131,17 +175,49 @@ class StripeBillingProvider:
                 "subscription_data": {"metadata": {_METADATA_USER_KEY: str(user_id)}},
             },
             options={"idempotency_key": idempotency_key},
+            server_built=True,
         )
         if not session.url:
             raise DependencyUnavailableError("Billing is temporarily unavailable.")
-        return str(session.url)
+        return CheckoutSession(str(session.id), self._stripe_hosted(str(session.url)), _ts(_get(session, "expires_at")))
+
+    def expire_checkout_session(self, session_id: str) -> None:
+        self._call(self._client.v1.checkout.sessions.expire, session_id)
+
+    def open_checkout_session_url(self, session_id: str) -> str | None:
+        session = self._call(self._client.v1.checkout.sessions.retrieve, session_id)
+        url = _get(session, "url")
+        return self._stripe_hosted(str(url)) if _get(session, "status") == "open" and url else None
 
     def create_portal_session(self, *, customer_id: str, return_url: str) -> str:
         session = self._call(
             self._client.v1.billing_portal.sessions.create,
             params={"customer": customer_id, "return_url": return_url},
+            server_built=True,
         )
-        return str(session.url)
+        return self._stripe_hosted(str(session.url))
+
+    def _stripe_hosted(self, url: str) -> str:
+        """The user is sent to this URL, so it must be on Stripe or the account's custom domain (SEC-14)."""
+        try:
+            parts = urlsplit(url)
+            host, userinfo = parts.hostname, parts.username
+        except ValueError:
+            host, userinfo = None, None
+            parts = urlsplit("")
+        if (
+            parts.scheme != "https"
+            or host is None
+            or userinfo is not None
+            or "\\" in url
+            or not (host == "stripe.com" or host.endswith(".stripe.com") or host == self._custom_domain)
+        ):
+            # The host only: the path carries the session ID.
+            logger.error("stripe_session_host_unexpected", extra={"host": (host or "")[:253]})
+            raise NotConfiguredError(
+                "Billing redirects are not configured for this Stripe account (STRIPE_CUSTOM_DOMAIN)."
+            )
+        return url
 
     def list_customer_subscriptions(self, customer_id: str) -> list[SubscriptionSnapshot]:
         result = self._call(
@@ -176,6 +252,38 @@ class StripeBillingProvider:
             livemode=bool(_get(price, "livemode")),
         )
 
+    def describe_portal(self) -> PortalConfiguration | None:
+        # Diagnostics only, like describe_price. Read only: the portal's configuration is owned by
+        # the Stripe Dashboard (ADR-0001) and is never created or changed from here.
+        try:
+            found = self._client.v1.billing_portal.configurations.list(params={"is_default": True, "limit": 1})
+        except stripe.AuthenticationError as exc:
+            raise DependencyUnavailableError("Stripe rejected the API key.") from exc
+        except stripe.PermissionError as exc:
+            raise ForbiddenError("The Stripe API key cannot read Customer Portal configurations.") from exc
+        except stripe.InvalidRequestError as exc:
+            raise InvalidRequestError("Stripe rejected the request for the portal configuration.") from exc
+        except stripe.StripeError as exc:
+            raise DependencyUnavailableError("Stripe is temporarily unavailable.") from exc
+        if not found.data:
+            return None
+        config = found.data[0]
+        features = _get(config, "features")
+        cancel = _get(features, "subscription_cancel")
+        update = _get(features, "subscription_update")
+        return PortalConfiguration(
+            active=bool(_get(config, "active")),
+            payment_method_update=bool(_get(_get(features, "payment_method_update"), "enabled")),
+            invoice_history=bool(_get(_get(features, "invoice_history"), "enabled")),
+            cancel_enabled=bool(_get(cancel, "enabled")),
+            cancel_mode=str(_get(cancel, "mode") or ""),
+            switch_enabled=bool(_get(update, "enabled")),
+            allowed_updates=tuple(str(u) for u in _get(update, "default_allowed_updates") or []),
+            switch_prices=frozenset(
+                str(price) for product in _get(update, "products") or [] for price in _get(product, "prices") or []
+            ),
+        )
+
     def get_customer_app_user_id(self, customer_id: str) -> UUID | None:
         customer = self._call(self._client.v1.customers.retrieve, customer_id)
         if _get(customer, "deleted"):
@@ -199,22 +307,46 @@ class StripeWebhookVerifier:
 
     def verify(self, payload: bytes, signature_header: str | None) -> BillingWebhookEvent:
         if not signature_header:
+            logger.warning("stripe_webhook_rejected", extra={"reason": "missing_signature"})
             raise WebhookSignatureError()
         try:
-            event = stripe.Webhook.construct_event(
+            stripe.WebhookSignature.verify_header(
                 payload,
                 signature_header,
                 self._secret,
-                tolerance=_SIGNATURE_TOLERANCE_SECONDS,  # gitleaks:allow (variable reference, not a secret)
+                _SIGNATURE_TOLERANCE_SECONDS,  # gitleaks:allow (variable reference, not a secret)
             )
         except (stripe.SignatureVerificationError, ValueError) as exc:
+            # Never the body or the header (BILL-08).
+            logger.warning("stripe_webhook_rejected", extra={"reason": type(exc).__name__})
             raise WebhookSignatureError() from exc
 
-        obj = _get(_get(event, "data"), "object")
+        # Signed by Stripe, so a body this API cannot read is a setup mistake, not a forgery.
+        try:
+            body = json.loads(payload)
+        except ValueError:
+            body = None
+        if not isinstance(body, dict) or body.get("object") != "event":
+            found = body if isinstance(body, dict) else {}
+            logger.error(
+                "stripe_webhook_unsupported_payload",
+                extra={"object": _short(found.get("object")), "event_type": _short(found.get("type"))},
+            )
+            raise InvalidRequestError(
+                "This endpoint accepts Stripe snapshot events only. "
+                "Create the Stripe event destination with the payload format Snapshot (docs/integrations.md)."
+            )
+
+        obj = _get(_get(body, "data"), "object")
         customer_id = _id(obj) if _get(obj, "object") == "customer" else _id(_get(obj, "customer"))
         return BillingWebhookEvent(
-            event_id=str(_get(event, "id")),
-            event_type=str(_get(event, "type")),
-            created_at=_ts(_get(event, "created")) or datetime.now(UTC),
+            event_id=str(_get(body, "id")),
+            event_type=str(_get(body, "type")),
+            created_at=_ts(_get(body, "created")) or datetime.now(UTC),
             customer_id=customer_id,
         )
+
+
+def _short(value: Any) -> str:
+    """A value from a signed body, bounded for the logs."""
+    return value[:64] if isinstance(value, str) else type(value).__name__

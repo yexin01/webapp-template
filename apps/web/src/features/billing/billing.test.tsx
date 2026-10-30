@@ -13,6 +13,7 @@ const base: Schemas["BillingStatus"] = {
   current_period_end: null,
   cancels_at: null,
   available_plans: ["pro_monthly", "pro_yearly"],
+  checkout_blocked: null,
 };
 
 describe("billing status copy", () => {

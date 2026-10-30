@@ -365,4 +365,25 @@ describe("redirect allowlist", () => {
   ])("%s -> %s", (url, allowed) => {
     expect(isAllowedRedirect(url, origin)).toBe(allowed);
   });
+
+  describe("with a Stripe custom domain", () => {
+    const domain = "payments.example.com";
+    it.each([
+      ["https://payments.example.com/c/pay/cs_live_1", true],
+      ["https://payments.example.com/p/session/1", true],
+      ["https://checkout.stripe.com/c/pay/cs_live_1", true],
+      ["http://payments.example.com/c/pay/cs_live_1", false],
+      ["https://payments.example.com.evil.test/c/pay/cs_live_1", false],
+      ["https://xpayments.example.com/c/pay/cs_live_1", false],
+      ["https://example.com/c/pay/cs_live_1", false],
+      ["https://evil.test/?https://payments.example.com", false],
+    ])("%s -> %s", (url, allowed) => {
+      expect(isAllowedRedirect(url, origin, domain)).toBe(allowed);
+    });
+
+    it("is refused when no custom domain is configured", () => {
+      expect(isAllowedRedirect("https://payments.example.com/c/pay/cs_live_1", origin, "")).toBe(false);
+      expect(isAllowedRedirect("https://payments.example.com/c/pay/cs_live_1", origin)).toBe(false);
+    });
+  });
 });

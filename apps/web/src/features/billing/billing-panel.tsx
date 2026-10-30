@@ -1,7 +1,7 @@
 "use client";
 
 import { useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { track } from "@/lib/analytics";
 import { isAllowedRedirect, type Schemas } from "@/lib/api/client";
@@ -42,13 +42,43 @@ export function describeStatus(status: Status): string {
   }
 }
 
+/**
+ * Why a new subscription cannot be started (DEC-013), with the way on. Null when it can.
+ * Plan management is where such a subscription is fixed, changed, or ended.
+ */
+export function describeCheckoutBlock(status: Status): string | null {
+  switch (status.checkout_blocked) {
+    case "payment_required":
+      return "A new subscription cannot be started while this one needs a payment. Use Manage billing to update your payment method or settle the invoice.";
+    case "subscription_exists":
+      return "You already have a subscription. Use Manage billing to change or cancel it instead of starting another.";
+    case "payment_pending":
+      return "You can start a new subscription once this payment is confirmed.";
+    default:
+      return null;
+  }
+}
+
 export function BillingPanel() {
   const api = useApi();
   const params = useSearchParams();
   const [actionError, setActionError] = useState<unknown>(null);
   const [pending, setPending] = useState<string | null>(null);
 
-  const fetchStatus = useCallback(() => api.billingStatus(), [api]);
+  // Back from the Customer Portal the webhook may not have landed yet: the first load asks the server
+  // to re-read Stripe. The parameter only triggers that read; it never grants or shows anything itself.
+  const syncFirst = useRef(params.get("from") === "portal");
+  const fetchStatus = useCallback(async () => {
+    if (syncFirst.current) {
+      syncFirst.current = false;
+      try {
+        return await api.syncBilling();
+      } catch {
+        /* show the stored status instead */
+      }
+    }
+    return api.billingStatus();
+  }, [api]);
   const { data: status, error, reload } = useResource(fetchStatus, "billing-status");
 
   // Back from Stripe, the browser may restore this page from its back/forward
@@ -82,8 +112,14 @@ export function BillingPanel() {
     } catch (e) {
       setActionError(e);
       setPending(null);
-      // The plan changed since this page loaded (BILL-07): show the current one and its plan management.
-      if (e instanceof ApiError && e.code === "CONFLICT") reload();
+      // The plan changed since this page loaded (BILL-07, DEC-013): re-read Stripe, since the webhook
+      // may not have landed, then show the current plan and its plan management.
+      if (e instanceof ApiError && e.code === "CONFLICT") {
+        void api
+          .syncBilling()
+          .catch(() => undefined)
+          .finally(reload);
+      }
     }
   }
 
@@ -91,6 +127,13 @@ export function BillingPanel() {
   if (!status) return <LoadingState label="Loading billing…" />;
 
   const needsAttention = status.state === "past_due" || status.state === "payment_required";
+  const blockCopy = describeCheckoutBlock(status);
+  // Plan management is the way on for every refusal except a payment that is still being confirmed.
+  const canManage =
+    status.plan === "pro" ||
+    needsAttention ||
+    status.state === "canceled" ||
+    (status.checkout_blocked !== null && status.checkout_blocked !== "payment_pending");
 
   return (
     <div className="stack">
@@ -106,7 +149,8 @@ export function BillingPanel() {
       <section className={`card${needsAttention ? " card-warning" : ""}`} aria-labelledby="plan-title">
         <h2 id="plan-title">Current plan</h2>
         <p>{describeStatus(status)}</p>
-        {(status.plan === "pro" || needsAttention || status.state === "canceled") && (
+        {blockCopy !== null && <p className="muted">{blockCopy}</p>}
+        {canManage && (
           <button
             type="button"
             className="button"
@@ -118,7 +162,7 @@ export function BillingPanel() {
         )}
       </section>
 
-      {status.plan === "free" && status.state !== "processing" && (
+      {status.checkout_blocked === null && (
         <section className="card" aria-labelledby="upgrade-title">
           <h2 id="upgrade-title">Upgrade to Pro</h2>
           {status.available_plans.length === 0 ? (

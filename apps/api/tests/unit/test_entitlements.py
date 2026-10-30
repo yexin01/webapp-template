@@ -9,10 +9,12 @@ import pytest
 
 from app.modules.billing.domain import (
     BillingState,
+    CheckoutBlock,
     Plan,
     PlanKey,
     SubscriptionSnapshot,
     SubscriptionStatus,
+    checkout_block,
     decide,
     summarize,
 )
@@ -106,3 +108,61 @@ def test_summary_states(subs: list[SubscriptionSnapshot], state: BillingState, p
 def test_summary_reports_cancellation_date() -> None:
     summary = summarize([sub(SubscriptionStatus.ACTIVE, cancel_at_period_end=True)], NOW)
     assert summary.cancels_at == LATER
+
+
+# -- Refusing a second checkout (DEC-013 option B) ------------------------------
+
+UNKNOWN = {"plan_key": PlanKey.UNKNOWN, "price_id": "price_replaced"}
+
+
+@pytest.mark.parametrize(
+    ("subscription", "expected"),
+    [
+        (sub(SubscriptionStatus.ACTIVE), CheckoutBlock.ALREADY_PRO),
+        (sub(SubscriptionStatus.ACTIVE, cancel_at_period_end=True), CheckoutBlock.ALREADY_PRO),  # until it ends
+        (sub(SubscriptionStatus.PAST_DUE), CheckoutBlock.ALREADY_PRO),  # DEC-010
+        (sub(SubscriptionStatus.UNPAID), CheckoutBlock.PAYMENT_REQUIRED),
+        (sub(SubscriptionStatus.PAUSED), CheckoutBlock.PAYMENT_REQUIRED),
+        (sub(SubscriptionStatus.PAST_DUE, **UNKNOWN), CheckoutBlock.PAYMENT_REQUIRED),
+        (sub(SubscriptionStatus.ACTIVE, **UNKNOWN), CheckoutBlock.SUBSCRIPTION_EXISTS),
+        (sub(SubscriptionStatus.TRIALING), CheckoutBlock.SUBSCRIPTION_EXISTS),
+        (sub(SubscriptionStatus.INCOMPLETE), CheckoutBlock.PAYMENT_PENDING),
+        (sub(SubscriptionStatus.CANCELED), None),
+        (sub(SubscriptionStatus.INCOMPLETE_EXPIRED), None),
+        # Stripe still says active, but the end date has passed: the subscription is over, as for entitlement.
+        (sub(SubscriptionStatus.ACTIVE, cancel_at_period_end=True, current_period_end=EARLIER), None),
+        (sub(SubscriptionStatus.UNPAID, ended_at=EARLIER), None),
+    ],
+    ids=lambda v: v.value if isinstance(v, CheckoutBlock) else None,
+)
+def test_each_unsettled_subscription_blocks_a_new_checkout(
+    subscription: SubscriptionSnapshot, expected: CheckoutBlock | None
+) -> None:
+    assert checkout_block([subscription], NOW) is expected
+    assert summarize([subscription], NOW).checkout_block is expected
+
+
+def test_no_subscription_blocks_nothing() -> None:
+    assert checkout_block([], NOW) is None
+    assert summarize([], NOW).checkout_block is None
+
+
+def test_a_finished_subscription_beside_a_new_one_blocks_only_for_the_new_one() -> None:
+    old = sub(SubscriptionStatus.CANCELED, stripe_subscription_id="sub_old")
+    assert checkout_block([old], NOW) is None
+    assert checkout_block([old, sub(SubscriptionStatus.UNPAID, stripe_subscription_id="sub_new")], NOW) is (
+        CheckoutBlock.PAYMENT_REQUIRED
+    )
+
+
+def test_a_payment_that_is_due_is_named_before_an_active_subscription_the_catalog_does_not_know() -> None:
+    unpaid = sub(SubscriptionStatus.UNPAID, stripe_subscription_id="sub_a")
+    other = sub(SubscriptionStatus.ACTIVE, stripe_subscription_id="sub_b", **UNKNOWN)
+    assert checkout_block([other, unpaid], NOW) is CheckoutBlock.PAYMENT_REQUIRED
+
+
+def test_the_summary_blocks_exactly_when_it_does_not_offer_checkout() -> None:
+    """The UI offers Upgrade only when nothing blocks it, so the two cannot disagree."""
+    for status in SubscriptionStatus:
+        summary = summarize([sub(status)], NOW)
+        assert (summary.checkout_block is None) == (summary.state in (BillingState.CANCELED, BillingState.NONE))

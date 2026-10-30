@@ -17,7 +17,7 @@ from sentry_sdk.envelope import Envelope
 from sentry_sdk.integrations.logging import LoggingIntegration
 from sentry_sdk.transport import Transport
 
-from app.kernel.errors import WebhookSignatureError
+from app.kernel.errors import InvalidRequestError, WebhookSignatureError
 from app.kernel.infrastructure.observability import scrub_event, sentry_options
 from app.kernel.infrastructure.redaction import REDACTED, redact, redact_text
 from app.modules.billing.adapters.stripe import StripeWebhookVerifier, to_snapshot
@@ -46,6 +46,17 @@ def event(event_type: str = "customer.subscription.updated", customer: str = "cu
             "data": {"object": {"id": "sub_1", "object": "subscription", "customer": customer}},
         }
     ).encode()
+
+
+THIN = json.dumps(
+    {
+        "id": "evt_thin",
+        "object": "v2.core.event",
+        "type": "v1.customer.subscription.updated",
+        "created": "2026-10-30T10:00:00.000Z",
+        "related_object": {"id": "sub_1", "type": "subscription", "url": "/v1/subscriptions/sub_1"},
+    }
+).encode()
 
 
 class TestStripeWebhookVerifier:
@@ -82,6 +93,38 @@ class TestStripeWebhookVerifier:
         payload = event()
         with pytest.raises(WebhookSignatureError):
             StripeWebhookVerifier(SECRET).verify(payload, header_factory(payload))
+
+    def test_a_signed_thin_payload_is_named_not_called_forged(self, caplog: pytest.LogCaptureFixture) -> None:
+        """A destination created with the Thin payload format delivers v2 notifications this API cannot read."""
+        payload = THIN
+        with caplog.at_level(logging.WARNING), pytest.raises(InvalidRequestError, match="Snapshot") as caught:
+            StripeWebhookVerifier(SECRET).verify(payload, sign(payload))
+        assert not isinstance(caught.value, WebhookSignatureError)
+        [record] = [r for r in caplog.records if r.name == "app.modules.billing.adapters.stripe"]
+        assert (record.levelno, record.getMessage()) == (logging.ERROR, "stripe_webhook_unsupported_payload")
+        assert (record.object, record.event_type) == ("v2.core.event", "v1.customer.subscription.updated")  # type: ignore[attr-defined]
+        assert "evt_thin" not in caplog.text  # never the body
+
+    @pytest.mark.parametrize(
+        "header_factory",
+        [
+            lambda p: None,
+            lambda p: sign(p, secret="whsec_wrong_secret_000000000000"),
+            lambda p: sign(p, timestamp=int(time.time()) - 3600),
+            lambda p: sign(p + b" "),
+        ],
+    )
+    def test_a_thin_payload_without_a_valid_signature_is_still_a_forgery(
+        self, header_factory: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.WARNING), pytest.raises(WebhookSignatureError):
+            StripeWebhookVerifier(SECRET).verify(THIN, header_factory(THIN))
+        assert [r.levelno for r in caplog.records] == [logging.WARNING]  # anyone can send these, so never an error
+
+    @pytest.mark.parametrize("body", [b"not json", b"[1]", b'"event"', b"{}", b'{"object": "list"}'])
+    def test_a_signed_body_that_is_not_an_event_is_unsupported(self, body: bytes) -> None:
+        with pytest.raises(InvalidRequestError, match="Snapshot"):
+            StripeWebhookVerifier(SECRET).verify(body, sign(body))
 
 
 class TestSubscriptionMapping:

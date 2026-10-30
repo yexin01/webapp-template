@@ -233,6 +233,66 @@ def test_api_role_cannot_read_audit_or_ledgers(seeded: str) -> None:
             conn.execute(f"SELECT * FROM app.{table}")
 
 
+@pytest.fixture
+def with_open_checkouts(seeded: str) -> str:
+    """The seed plus an open Checkout Session for each of Alice and Bob (DEC-013)."""
+    with psycopg.connect(seeded) as conn, conn.transaction():
+        for user, name in ((ALICE, "alice"), (BOB, "bob")):
+            conn.execute(
+                "INSERT INTO app.billing_checkout_sessions (user_id, stripe_session_id, idempotency_key) "
+                "VALUES (%s, %s, 'key')",
+                (user, f"cs_test_{name}"),
+            )
+    return seeded
+
+
+def test_each_user_reaches_only_their_own_open_checkout_session(with_open_checkouts: str) -> None:
+    for user, name in ((ALICE, "alice"), (BOB, "bob")):
+        with as_role(with_open_checkouts, "app_api", user_id=user) as conn:
+            assert conn.execute("SELECT stripe_session_id FROM app.billing_checkout_sessions").fetchall() == [
+                (f"cs_test_{name}",)
+            ]
+    with as_role(with_open_checkouts, "app_api") as conn:  # no user in the context
+        assert conn.execute("SELECT count(*) FROM app.billing_checkout_sessions").fetchone() == (0,)
+
+
+def test_a_user_cannot_change_or_delete_another_users_open_checkout_session(with_open_checkouts: str) -> None:
+    with as_role(with_open_checkouts, "app_api", user_id=ALICE) as conn:
+        assert conn.execute("UPDATE app.billing_checkout_sessions SET stripe_session_id = 'cs_x'").rowcount == 1
+        assert conn.execute("DELETE FROM app.billing_checkout_sessions WHERE user_id = %s", (BOB,)).rowcount == 0
+    with as_role(with_open_checkouts, "app_api", user_id=BOB) as conn:
+        assert conn.execute("SELECT stripe_session_id FROM app.billing_checkout_sessions").fetchall() == [
+            ("cs_test_bob",)
+        ]
+
+
+@pytest.mark.parametrize("user", [BOB, None])
+def test_a_user_cannot_save_an_open_checkout_session_for_someone_else(seeded: str, user: str | None) -> None:
+    context = {"user_id": user} if user else {}
+    with (
+        pytest.raises(psycopg.errors.InsufficientPrivilege),
+        as_role(seeded, "app_api", **context) as conn,
+    ):
+        conn.execute(
+            "INSERT INTO app.billing_checkout_sessions (user_id, stripe_session_id, idempotency_key) "
+            "VALUES (%s, 'cs_test_x', 'key')",
+            (ALICE,),
+        )
+
+
+def test_the_worker_role_has_no_access_to_open_checkout_sessions(with_open_checkouts: str) -> None:
+    with pytest.raises(psycopg.errors.InsufficientPrivilege), as_role(with_open_checkouts, "app_worker") as conn:
+        conn.execute("SELECT * FROM app.billing_checkout_sessions")
+
+
+def test_open_checkout_sessions_are_removed_with_their_user(with_open_checkouts: str) -> None:
+    with psycopg.connect(with_open_checkouts) as conn, conn.transaction():
+        conn.execute("DELETE FROM app.projects WHERE owner_user_id = %s OR created_by = %s", (BOB, BOB))
+        conn.execute("DELETE FROM app.organization_memberships WHERE user_id = %s", (BOB,))
+        conn.execute("DELETE FROM app.users WHERE id = %s", (BOB,))
+        assert conn.execute("SELECT user_id::text FROM app.billing_checkout_sessions").fetchall() == [(ALICE,)]
+
+
 def test_users_visible_only_to_themselves(seeded: str) -> None:
     with as_role(seeded, "app_api", user_id=ALICE) as conn:
         rows = conn.execute("SELECT id::text FROM app.users").fetchall()

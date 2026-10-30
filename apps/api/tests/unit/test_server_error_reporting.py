@@ -131,10 +131,10 @@ def test_a_rejected_stripe_key_reaches_sentry_as_one_scrubbed_event_with_the_req
             f"/api/v1/checkout?token={QUERY_SECRET}", headers={"Authorization": f"Bearer {TOKEN}"}
         )
     assert response.status_code == 503
-    assert response.json()["code"] == "DEPENDENCY_UNAVAILABLE"
+    assert response.json()["code"] == "NOT_CONFIGURED"
     [event] = reports.events
-    assert event["level"] == "error"
-    assert event["tags"]["error_code"] == "DEPENDENCY_UNAVAILABLE"
+    assert event["level"] == "warning"
+    assert event["tags"]["error_code"] == "NOT_CONFIGURED"
     assert event["tags"]["request_id"] == response.headers["x-request-id"]
     chain = [(v["module"], v["type"]) for v in event["exception"]["values"]]
     assert any(module.startswith("stripe") and kind == "AuthenticationError" for module, kind in chain), chain
