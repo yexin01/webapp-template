@@ -75,6 +75,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/diagnostics/access": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Diagnostics Access
+         * @description Whether the caller may use the diagnostics routes. Any signed-in caller gets an answer, never a 404;
+         *     the routes themselves decide again on every request.
+         */
+        get: operations["diagnostics_access_api_v1_diagnostics_access_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/diagnostics/integrations": {
         parameters: {
             query?: never;
@@ -385,6 +406,14 @@ export interface components {
              * @enum {string}
              */
             plan: "pro_monthly" | "pro_yearly";
+        };
+        /** DiagnosticsAccess */
+        DiagnosticsAccess: {
+            /**
+             * Available
+             * @description Whether this caller may use the diagnostics routes: false when diagnostics are off for them
+             */
+            available: boolean;
         };
         /** Entitlement */
         Entitlement: {
@@ -873,6 +902,35 @@ export interface operations {
             };
             /** @description Service Unavailable */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    diagnostics_access_api_v1_diagnostics_access_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DiagnosticsAccess"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
                 headers: {
                     [name: string]: unknown;
                 };
