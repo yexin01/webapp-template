@@ -17,12 +17,13 @@ from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 import sentry_sdk
 from posthog import Posthog
 
+from app.kernel.errors import DomainError
 from app.kernel.infrastructure.config import CoreSettings, Mode
 from app.kernel.infrastructure.redaction import (
     MAX_TEXT_LENGTH,
@@ -298,6 +299,59 @@ class SentryErrorReporter:
 class NoopErrorReporter:
     def send_test_event(self) -> str | None:
         return None
+
+
+class ErrorThrottle:
+    """Lets one report of each key through per interval, and remembers at most ``max_keys`` keys (OBS-07)."""
+
+    def __init__(self, interval_seconds: float, max_keys: int, clock: Callable[[], float] = time.monotonic) -> None:
+        self._interval = interval_seconds
+        self._max_keys = max_keys
+        self._clock = clock
+        self._last: dict[tuple[str, ...], float] = {}  # in the order of the last report; guarded by _lock
+        self._lock = threading.Lock()
+
+    def __len__(self) -> int:
+        return len(self._last)
+
+    def allow(self, key: tuple[str, ...]) -> bool:
+        now = self._clock()
+        with self._lock:
+            last = self._last.pop(key, None)
+            if last is not None and now - last < self._interval:
+                self._last[key] = last
+                return False
+            if len(self._last) >= self._max_keys:
+                for stale in [k for k, t in self._last.items() if now - t >= self._interval]:
+                    del self._last[stale]
+            if len(self._last) >= self._max_keys:
+                del self._last[next(iter(self._last))]
+            self._last[key] = now
+            return True
+
+
+_server_errors = ErrorThrottle(interval_seconds=60.0, max_keys=256)
+
+
+def report_server_error(exc: DomainError, *, level: Literal["error", "warning"]) -> None:
+    """Report a 5xx the API chose to Sentry, at most once a minute per cause on this instance (OBS-07).
+
+    The error handler consumes a ``DomainError`` before Sentry's hooks look at it, and they report only
+    an error with a ``status_code``. The event passes ``before_send`` like any other, and carries the
+    request ID. This never raises and never waits for the network (OBS-06): the SDK sends in the background.
+    """
+    if not sentry_sdk.is_initialized():
+        return
+    cause = type(exc.__cause__).__name__ if exc.__cause__ is not None else ""
+    # Public messages of these errors are constants, so a cause is told apart by its code and type.
+    if not _server_errors.allow((exc.code, exc.public_message, cause)):
+        return
+    try:
+        sentry_sdk.capture_exception(
+            exc, level=level, tags={"error_code": exc.code}, fingerprint=["{{ default }}", exc.code, cause]
+        )
+    except Exception:  # noqa: BLE001 - telemetry must never break requests
+        logger.warning("error_report_failed")
 
 
 # ---------------------------------------------------------------------------

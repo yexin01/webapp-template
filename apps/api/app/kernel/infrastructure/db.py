@@ -334,11 +334,13 @@ class Database:
 
         ``error`` is what the request raised, or ``None`` if it completed:
 
-        - Completed, or a ``DomainError``: commit. A domain error is an
-          expected outcome whose writes must persist, such as the audit entry
-          of a denied action (NT-07).
-        - Any other error (a bug, a cancelled request): roll back, so an
-          unexpected failure never leaves committed writes behind it.
+        - Completed, or a ``DomainError`` that declares a status (a 4xx, or a
+          503 the service chose): commit. It is an expected outcome whose
+          writes must persist, such as the audit entry of a denied action
+          (NT-07).
+        - Any other error (a bug, a cancelled request, a bare ``DomainError``,
+          which is a 500): roll back, so an unexpected failure never leaves
+          committed writes behind it.
 
         If a block rolled the request transaction back and the handler still
         completed, the work of earlier blocks is gone, so the request fails
@@ -355,7 +357,7 @@ class Database:
             )
         if not scope.is_open:
             return None
-        if error is None or isinstance(error, DomainError):
+        if error is None or (isinstance(error, DomainError) and error.status != 500):
             return scope.commit
         return functools.partial(scope.rollback, error)
 

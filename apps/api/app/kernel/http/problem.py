@@ -16,38 +16,14 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.routing import Match
 
-from app.kernel.errors import (
-    AuthenticationError,
-    ConflictError,
-    DependencyUnavailableError,
-    DomainError,
-    EntitlementRequiredError,
-    ForbiddenError,
-    InvalidRequestError,
-    NotConfiguredError,
-    NotFoundError,
-    RateLimitedError,
-    WebhookSignatureError,
-)
+from app.kernel.errors import AuthenticationError, DomainError, NotConfiguredError, RateLimitedError
 from app.kernel.http.schemas import MAX_VALIDATION_ERRORS
+from app.kernel.infrastructure.observability import report_server_error
 from app.kernel.request_context import request_id_var
 
 logger = logging.getLogger(__name__)
 
 PROBLEM_MEDIA_TYPE = "application/problem+json"
-
-_STATUS: dict[type[DomainError], int] = {
-    AuthenticationError: 401,
-    ForbiddenError: 403,
-    EntitlementRequiredError: 403,
-    NotFoundError: 404,
-    ConflictError: 409,
-    InvalidRequestError: 400,
-    WebhookSignatureError: 400,
-    RateLimitedError: 429,
-    DependencyUnavailableError: 503,
-    NotConfiguredError: 503,
-}
 
 
 class PayloadTooLargeError(StarletteHTTPException):
@@ -82,13 +58,6 @@ def problem(
     return JSONResponse(body, status_code=status, headers=headers, media_type=PROBLEM_MEDIA_TYPE)
 
 
-def _status_for(exc: DomainError) -> int:
-    for cls in type(exc).__mro__:
-        if cls in _STATUS:
-            return _STATUS[cls]
-    return 500
-
-
 def _allowed_methods(request: Request) -> list[str]:
     """Every method that some route serves at the request's path.
 
@@ -108,14 +77,17 @@ def _allowed_methods(request: Request) -> list[str]:
 def install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(DomainError)
     async def _domain(_request: Request, exc: DomainError) -> JSONResponse:
-        status = _status_for(exc)
+        status = exc.status
         headers: dict[str, str] = {}
         if isinstance(exc, RateLimitedError):
             headers["Retry-After"] = str(exc.retry_after_seconds)
         if isinstance(exc, AuthenticationError):
             headers["WWW-Authenticate"] = "Bearer"
         if status >= 500:
-            logger.warning("dependency_or_configuration_error", extra={"code": exc.code})
+            cause = type(exc.__cause__).__name__ if exc.__cause__ is not None else None
+            logger.warning("dependency_or_configuration_error", extra={"code": exc.code, "cause_type": cause})
+            # Expected, so a warning: the public Clerk webhook answers NOT_CONFIGURED while its secret is unset.
+            report_server_error(exc, level="warning" if isinstance(exc, NotConfiguredError) else "error")
         return problem(status, exc.code, exc.public_message, headers=headers or None)
 
     @app.exception_handler(RequestValidationError)
