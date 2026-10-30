@@ -1,0 +1,68 @@
+# Applies pending migrations to a hosted database (MIG-05). Manual only: it never
+# runs on push or pull request, so merging changes no database by itself.
+#
+# Owner setup (docs-notes/deploy.md): create the GitHub Environments `preview` and
+# `production`, make yourself a required reviewer on `production` (it can hold the
+# run until you approve), allow deployments from the default branch only, and store
+# each environment's own MIGRATION_DATABASE_URL secret: the migration role's
+# Supabase session pooler string. Preview and production credentials stay apart.
+#
+# Run it from the default branch, once the code that needs the migrations is merged
+# and before it is promoted. Never apply an unmerged branch's migrations to a shared
+# database: once a later version is recorded, every earlier-numbered migration is refused.
+name: Database migrate
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: GitHub Environment whose MIGRATION_DATABASE_URL secret names the database
+        type: choice
+        required: true
+        options: [preview, production]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: db-migrate-${{ inputs.environment }}
+  cancel-in-progress: false
+
+env:
+  # The migration runner needs the API's runtime dependencies only.
+  UV_FROZEN: "1"
+  UV_NO_DEV: "1"
+
+jobs:
+  migrate:
+    name: migrate (${{ inputs.environment }})
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    environment: ${{ inputs.environment }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version-file: .nvmrc
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          version: "0.11.1"
+      - run: uv sync --frozen --no-dev
+        working-directory: apps/api
+      - name: Check that the environment has a database secret
+        env:
+          TARGET: ${{ inputs.environment }}
+          MIGRATION_DATABASE_URL: ${{ secrets.MIGRATION_DATABASE_URL }}
+        run: |
+          if [ -z "$MIGRATION_DATABASE_URL" ]; then
+            echo "::error::The $TARGET environment has no MIGRATION_DATABASE_URL secret."
+            exit 1
+          fi
+      - name: Apply migrations
+        env:
+          MIGRATION_DATABASE_URL: ${{ secrets.MIGRATION_DATABASE_URL }}
+        run: pnpm db:migrate --allow-remote
