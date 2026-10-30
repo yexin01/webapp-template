@@ -173,6 +173,13 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
 
 
+@pytest.fixture(autouse=True)
+def _contract_exempt(request: pytest.FixtureRequest) -> Iterator[None]:
+    Recorder.paused = request.node.get_closest_marker("contract_exempt") is not None
+    yield
+    Recorder.paused = False
+
+
 # Every response the harness's apps sent during the run is checked against packages/contracts/openapi.json
 # (DEC-007) when the session ends: a status the document does not declare, another content type, or a body
 # that does not validate fails the run. tests/integration/test_contract_conformance.py drives every operation.

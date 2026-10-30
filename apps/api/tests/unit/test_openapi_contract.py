@@ -294,7 +294,9 @@ def test_the_committed_document_declares_what_every_authenticated_operation_can_
 
 
 API_DIR = Path(__file__).resolve().parents[2]
-SESSION_CONFTEST = "from tests.conftest import pytest_sessionfinish, pytest_terminal_summary  # noqa: F401\n"
+SESSION_CONFTEST = (
+    "from tests.conftest import _contract_exempt, pytest_sessionfinish, pytest_terminal_summary  # noqa: F401\n"
+)
 
 
 def run_session(tmp_path: Path, record: str) -> subprocess.CompletedProcess[str]:
@@ -338,3 +340,78 @@ def test_a_session_whose_responses_all_conform_passes(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "differ from" not in result.stdout
+
+
+RECORDED_PROBE = """
+import anyio
+import pytest
+
+from tests.openapi_contract import RECORDS, Recorder
+
+
+async def inner(scope, receive, send):
+    await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"text/html")]})
+    await send({"type": "http.response.body", "body": b"<html>"})
+
+
+async def receive():
+    return {"type": "http.request", "body": b"", "more_body": False}
+
+
+async def send(message):
+    return None
+
+
+%s
+def test_a_route_sends_what_the_document_does_not_describe():
+    anyio.run(Recorder(inner, RECORDS), {"type": "http", "method": "GET", "path": "/api/v1/me"}, receive, send)
+"""
+
+
+def run_recorded_session(tmp_path: Path, marker: str) -> subprocess.CompletedProcess[str]:
+    tmp_path.mkdir(exist_ok=True)
+    (tmp_path / "conftest.py").write_text(SESSION_CONFTEST)
+    (tmp_path / "test_probe.py").write_text(RECORDED_PROBE % marker)
+    return subprocess.run(  # noqa: S603 - fixed arguments, our own interpreter
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-p",
+            "no:cacheprovider",
+            "-c",
+            str(API_DIR / "pyproject.toml"),
+            str(tmp_path),
+        ],
+        cwd=API_DIR,
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+
+
+def test_a_test_marked_contract_exempt_does_not_count_and_an_unmarked_one_does(tmp_path: Path) -> None:
+    exempt = run_recorded_session(tmp_path / "exempt", "@pytest.mark.contract_exempt")
+    assert exempt.returncode == 0, exempt.stdout + exempt.stderr
+    assert "differ from" not in exempt.stdout
+    counted = run_recorded_session(tmp_path / "counted", "")
+    assert counted.returncode == 1, counted.stdout + counted.stderr
+    assert "sent as text/html, the document declares application/json" in counted.stdout
+
+
+def test_a_paused_recorder_records_nothing_and_resumes() -> None:
+    async def inner(scope: dict[str, Any], receive: Any, send: Any) -> None:
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    sink: list[Record] = []
+    scope = {"type": "http", "method": "GET", "path": "/x"}
+    Recorder.paused = True
+    try:
+        run_asgi(Recorder(inner, sink), scope)
+        assert sink == []
+    finally:
+        Recorder.paused = False
+    run_asgi(Recorder(inner, sink), scope)
+    assert len(sink) == 1

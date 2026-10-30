@@ -216,7 +216,12 @@ class Contract:
 
 
 class Recorder:
-    """ASGI middleware that records every HTTP response into ``sink`` and changes nothing."""
+    """ASGI middleware that records every HTTP response into ``sink`` and changes nothing.
+
+    While ``paused`` it records nothing: a test that makes a route raise an error the route cannot raise, to
+    test the platform around it, is no evidence about the contract (the ``contract_exempt`` marker)."""
+
+    paused = False
 
     def __init__(self, app: Any, sink: list[Record]) -> None:
         self.app = app
@@ -240,7 +245,7 @@ class Recorder:
         try:
             await self.app(scope, receive, capture)
         finally:
-            if started:
+            if started and not Recorder.paused:
                 self.sink.append(
                     Record(
                         scope["method"],
