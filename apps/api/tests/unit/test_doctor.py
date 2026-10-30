@@ -335,7 +335,7 @@ def test_manual_steps_name_what_no_api_can_check_once_keys_are_in() -> None:
     assert "Customer Portal" in steps
     assert "api/v1/webhooks/stripe" in steps
     assert "spending limit" in steps
-    assert "pnpm doctor --send-test-events" in steps
+    assert "pnpm check:setup --send-test-events" in steps
     assert "Fix the FAIL" not in steps
-    assert "pnpm doctor --send-test-events" not in steps_for(settings, results, send=True)
+    assert "pnpm check:setup --send-test-events" not in steps_for(settings, results, send=True)
     assert "no emails, tokens, or query strings" in steps_for(settings, results, send=True)

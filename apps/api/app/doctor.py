@@ -66,7 +66,7 @@ def _mode_label(mode: IntegrationMode) -> str:
     return _MODE_LABELS.get(mode, mode.value)
 
 
-_NOT_SENT = "Not sent: run `pnpm doctor --send-test-events` to send {what} to your {mode} project."
+_NOT_SENT = "Not sent: run `pnpm check:setup --send-test-events` to send {what} to your {mode} project."
 _IDENTITY_NOTE = (
     "The Clerk Backend API accepted the secret key for a membership read. The command line has no session, so "
     "no session token was verified: sign in and run the Clerk check on /integrations for that."
@@ -190,7 +190,7 @@ def evidence_block(
         if send_test_events
         else "none (run with --send-test-events to send them)"
     )
-    command = "pnpm doctor --send-test-events" if send_test_events else "pnpm doctor"
+    command = "pnpm check:setup --send-test-events" if send_test_events else "pnpm check:setup"
     lines = [
         f"## Evidence: integration diagnostics ({today})",
         "",
@@ -288,11 +288,13 @@ def manual_steps(settings: Settings, results: Sequence[CheckResult], *, send_tes
                 f"{name} (optional): set its mode to sandbox with its key or DSN in .env (docs/integrations.md)."
             )
         elif key_mode is not None and not send_test_events:
-            steps.append(f"{name}: run `pnpm doctor --send-test-events` to send the test event, then confirm {what}.")
+            steps.append(
+                f"{name}: run `pnpm check:setup --send-test-events` to send the test event, then confirm {what}."
+            )
         elif key_mode is not None:
             steps.append(f"{name}: confirm {what}, and that no emails, tokens, or query strings were captured.")
     if any(r.outcome is Outcome.FAILED for r in results):
-        steps.append("Fix the FAIL lines above (each says why), then run `pnpm doctor` again.")
+        steps.append("Fix the FAIL lines above (each says why), then run `pnpm check:setup` again.")
     steps.append(
         "To keep this result as evidence (spec section 20), paste the block above into a new file under "
         "dev-docs/evidence/. Skipped and mocked lines stay NOT VERIFIED until they run in sandbox mode and pass."
