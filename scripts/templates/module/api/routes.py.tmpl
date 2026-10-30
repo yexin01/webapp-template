@@ -26,7 +26,9 @@ from app.modules.__module__.service import __Module__Service
 
 Limit = Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)]
 Cursor = Annotated[str | None, Query(max_length=200)]
-ERRORS = errors(401, 403, 404)
+ERRORS = errors(401, 403, 404, 503)
+# A cursor or a name the domain refuses is a 400 (the request body and query are validated first, as 422).
+REFUSABLE_ERRORS = errors(400, 401, 403, 404, 503)
 
 
 class __Entity__(BaseModel):
@@ -73,7 +75,7 @@ def build_router(service: __Module__Service, auth: AuthDeps, request_transaction
         )
 
     @router.get(
-        "/__path__", response_model=__Entity__Page, responses=ERRORS, dependencies=[requires(__ENTITY___READ)]
+        "/__path__", response_model=__Entity__Page, responses=REFUSABLE_ERRORS, dependencies=[requires(__ENTITY___READ)]
     )
     def list___module___personal(ctx: Personal, limit: Limit = DEFAULT_PAGE_SIZE, cursor: Cursor = None) -> __Entity__Page:
         return page(ctx, limit, cursor)
@@ -82,7 +84,7 @@ def build_router(service: __Module__Service, auth: AuthDeps, request_transaction
         "/__path__",
         response_model=__Entity__,
         status_code=201,
-        responses=ERRORS,
+        responses=REFUSABLE_ERRORS,
         dependencies=[requires(__ENTITY___CREATE)],
     )
     def create___entity___personal(body: __Entity__Create, ctx: Personal) -> __Entity__:
@@ -98,7 +100,7 @@ def build_router(service: __Module__Service, auth: AuthDeps, request_transaction
     @router.get(
         "/orgs/{org_id}/__path__",
         response_model=__Entity__Page,
-        responses=ERRORS,
+        responses=REFUSABLE_ERRORS,
         dependencies=[requires(__ENTITY___READ)],
     )
     def list___module___org(ctx: Organization, limit: Limit = DEFAULT_PAGE_SIZE, cursor: Cursor = None) -> __Entity__Page:
@@ -108,7 +110,7 @@ def build_router(service: __Module__Service, auth: AuthDeps, request_transaction
         "/orgs/{org_id}/__path__",
         response_model=__Entity__,
         status_code=201,
-        responses=ERRORS,
+        responses=REFUSABLE_ERRORS,
         dependencies=[requires(__ENTITY___CREATE)],
     )
     def create___entity___org(body: __Entity__Create, ctx: Organization) -> __Entity__:
