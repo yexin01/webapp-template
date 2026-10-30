@@ -15,6 +15,7 @@ from app.modules.projects.domain import (
     PROJECT_CREATE,
     PROJECT_DELETE,
     PROJECT_READ,
+    Capabilities,
     Project,
     ProjectCreated,
     clean_name,
@@ -31,6 +32,10 @@ class ProjectService:
         authorize(ctx, PROJECT_READ)
         with self._tx.as_tenant(ctx) as t:
             return t.repo.list(ctx, bounded_limit(limit), after)
+
+    def capabilities(self, ctx: TenantContext) -> Capabilities:
+        """The UI shows actions from this, never from a role: one flag per action a route enforces."""
+        return Capabilities(create=is_allowed(ctx, PROJECT_CREATE), delete=is_allowed(ctx, PROJECT_DELETE))
 
     def create(self, ctx: TenantContext, name: str) -> Project:
         authorize(ctx, PROJECT_CREATE)

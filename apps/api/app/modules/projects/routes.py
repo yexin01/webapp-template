@@ -40,9 +40,16 @@ class Project(BaseModel):
         )
 
 
+class ProjectCapabilities(BaseModel):
+    create: bool
+    delete: bool
+
+
 class ProjectPage(BaseModel):
     items: list[Project]
     next_cursor: str | None
+    # What the caller may do in this context. The UI shows actions from it, not from a role (ARCH-03).
+    can: ProjectCapabilities
 
 
 class ProjectCreate(StrictInput):
@@ -61,9 +68,11 @@ def build_router(projects: ProjectService, auth: AuthDeps, request_transaction: 
     def page(ctx: TenantContext, limit: int, cursor: str | None) -> ProjectPage:
         records = projects.list(ctx, limit, decode_cursor(cursor))
         last = records[-1] if len(records) == limit else None
+        can = projects.capabilities(ctx)
         return ProjectPage(
             items=[Project.from_record(r) for r in records],
             next_cursor=encode_cursor(last.created_at, last.id) if last else None,
+            can=ProjectCapabilities(create=can.create, delete=can.delete),
         )
 
     @router.get("/projects", response_model=ProjectPage, responses=ERRORS, dependencies=[requires(PROJECT_READ)])
