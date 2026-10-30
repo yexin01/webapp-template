@@ -17,6 +17,7 @@ vi.mock("@/lib/api/use-api", () => ({ useApi: () => api }));
 vi.mock("next/navigation", () => ({ usePathname: () => "/integrations" }));
 vi.mock("@clerk/nextjs", () => ({
   useAuth: () => auth,
+  useClerk: () => ({ status: "ready" }),
   useOrganization: () => ({ organization: null }),
 }));
 vi.mock("@sentry/nextjs", () => ({ getClient: () => undefined, captureException: vi.fn(), flush: vi.fn() }));

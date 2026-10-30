@@ -1,7 +1,8 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { REQUEST_TIMEOUT_MS, type Schemas } from "@/lib/api/client";
+import { type Schemas } from "@/lib/api/client";
+import { CLERK_LOAD_BACKSTOP_MS } from "@/lib/use-resource";
 
 import { Workspace } from "./workspace";
 
@@ -21,6 +22,7 @@ const server = vi.hoisted(() => ({
 
 vi.mock("@clerk/nextjs", () => ({
   useAuth: () => ({ isLoaded: auth.isLoaded, userId: auth.userId, getToken }),
+  useClerk: () => ({ status: "loading" }),
   useOrganization: () => ({ isLoaded: auth.isLoaded, organization: null, membership: null }),
 }));
 vi.mock("next/navigation", () => ({ usePathname: () => "/dashboard" }));
@@ -105,7 +107,7 @@ describe("workspace", () => {
       render(<Workspace />);
       expect(screen.getByText("Loading workspace…")).toBeInTheDocument();
 
-      act(() => vi.advanceTimersByTime(REQUEST_TIMEOUT_MS));
+      act(() => vi.advanceTimersByTime(CLERK_LOAD_BACKSTOP_MS));
       expect(screen.getByRole("alert")).toHaveTextContent("Sign-in unavailable");
       act(() => screen.getByRole("button", { name: "Try again" }).click());
       expect(reloadPage).toHaveBeenCalledOnce();

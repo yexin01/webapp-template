@@ -3,7 +3,7 @@
 import { Show } from "@clerk/nextjs";
 import type { ReactNode } from "react";
 
-import { reloadPage, useClerkLoadTimedOut } from "@/lib/use-resource";
+import { reloadPage, useClerkUnavailable } from "@/lib/use-resource";
 
 /**
  * Signed-in and signed-out switches for server components, decided in the
@@ -25,14 +25,14 @@ export function SignedOutOnly({ children }: { children: ReactNode }) {
  * visitors get a message and a way to retry instead of no controls (§16.4).
  */
 export function SignInUnavailable() {
-  const timedOut = useClerkLoadTimedOut();
+  const unavailable = useClerkUnavailable();
   // The live region stays mounted (hidden while empty), so screen readers announce the message.
   return (
     <>
-      <span role="status" className={timedOut ? undefined : "visually-hidden"}>
-        {timedOut && "Sign-in is unavailable."}
+      <span role="status" className={unavailable ? undefined : "visually-hidden"}>
+        {unavailable && "Sign-in is unavailable."}
       </span>
-      {timedOut && (
+      {unavailable && (
         <button type="button" className="button" onClick={reloadPage}>
           Reload
         </button>
