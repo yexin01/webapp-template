@@ -1,47 +1,9 @@
 // @vitest-environment node
-import { readdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 
-import { isPublicPage, PUBLIC_PAGES } from "./page-access";
-
-/**
- * The pages meant to be reachable without signing in. Adding to this list is a
- * deliberate second step next to PUBLIC_PAGES, so a page cannot become public by
- * a one-line slip or by being created in the wrong place.
- */
-const EXPECTED_PUBLIC_ROUTES = ["/", "/sign-in", "/sign-up"];
-
-const appDir = path.resolve(import.meta.dirname, "../app");
-const ROUTE_FILE = /^(?:page|route)\.(?:[cm]?[jt]sx?)$/;
-
-type Route = { file: string; pattern: string; samples: string[] };
-
-/** Every page and route handler under src/app, with the URLs it answers (sample values for dynamic segments). */
-function routes(dir = appDir, segments: string[] = []): Route[] {
-  const found: Route[] = [];
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (entry.isDirectory()) {
-      const name = entry.name;
-      if (name.startsWith("_")) continue; // private folder: not a route
-      if (name.startsWith("@") || /^\(\.{1,3}\)/.test(name)) {
-        throw new Error(`${name}: parallel and intercepting routes are not covered; extend this test first.`);
-      }
-      found.push(...routes(path.join(dir, name), [...segments, name]));
-    } else if (ROUTE_FILE.test(entry.name)) {
-      const url = segments.filter((s) => !/^\(.*\)$/.test(s));
-      const optionalCatchAll = url.at(-1)?.startsWith("[[...");
-      const base = url.filter((s) => !s.startsWith("[[..."));
-      const sample = (s: string) => (s.startsWith("[...") ? "a/b" : s.startsWith("[") ? "a" : s);
-      const concrete = base.map(sample).join("/");
-      found.push({
-        file: path.relative(appDir, path.join(dir, entry.name)),
-        pattern: `/${base.join("/")}`,
-        samples: [`/${concrete}`, ...(optionalCatchAll ? [`/${concrete}/a/b`.replace("//", "/")] : [])],
-      });
-    }
-  }
-  return found;
-}
+import { appDir, EXPECTED_PUBLIC_ROUTES, layouts, routes } from "./app-routes.testing";
+import { isPublicPage, PUBLIC_PAGES, signInUrlFor } from "./page-access";
 
 describe("page access (default deny)", () => {
   const all = routes();
@@ -55,7 +17,7 @@ describe("page access (default deny)", () => {
     expect(
       publicRoutes.map((r) => r.pattern).sort(),
       `A page is public that should not be. New pages require sign-in; to make one public on purpose, ` +
-        `add it to PUBLIC_PAGES (src/lib/page-access.ts) and to EXPECTED_PUBLIC_ROUTES in this test.`,
+        `add it to PUBLIC_PAGES (src/lib/page-access.ts) and to EXPECTED_PUBLIC_ROUTES (src/lib/app-routes.testing.ts).`,
     ).toEqual(EXPECTED_PUBLIC_ROUTES);
     // A route is either public in every URL it answers or in none (no half-open catch-all).
     for (const route of all) {
@@ -74,6 +36,54 @@ describe("page access (default deny)", () => {
     expect(isPublicPage("/notes")).toBe(false);
     expect(isPublicPage("/notes/1")).toBe(false);
     expect(isPublicPage("/(app)/notes")).toBe(false);
+  });
+});
+
+describe("the page gate covers every page", () => {
+  const source = (file: string) => readFileSync(path.join(appDir, file), "utf8");
+
+  it("has one root layout: no route group starts a second document that the gate would not wrap", () => {
+    const documents = layouts().filter((file) => /<html[\s>]/.test(source(file)));
+    expect(documents).toEqual(["layout.tsx"]);
+  });
+
+  it("wraps whatever a page renders in the page gate, which the allowlist above decides", () => {
+    expect(source("layout.tsx")).toMatch(/<PageGate>\s*\{children\}\s*<\/PageGate>/);
+    expect(readFileSync(path.join(import.meta.dirname, "../ui/page-gate.tsx"), "utf8")).toMatch(
+      /import \{[^}]*\bisPublicPage\b[^}]*\} from "@\/lib\/page-access"/,
+    );
+  });
+});
+
+describe("signInUrlFor (SEC-14)", () => {
+  const ORIGIN = "https://app.example.com";
+
+  it.each([
+    ["/dashboard", "", "/dashboard"],
+    ["/", "", "/"],
+    ["/billing", "?plan=pro&from=email", "/billing?plan=pro&from=email"],
+    ["/billing/success", "?session=abc%2F123", "/billing/success?session=abc%2F123"],
+    // Whatever names another origin, or is not a path, becomes the home page.
+    ["//evil.example.com/dashboard", "", "/"],
+    ["//evil.example.com", "?a=1", "/"],
+    ["/\\evil.example.com", "", "/"],
+    ["/a\\b", "", "/"],
+    ["https://evil.example.com/", "", "/"],
+    ["javascript:alert(1)", "", "/"],
+    ["evil.example.com", "", "/"],
+    ["", "", "/"],
+    ["/ok\n/evil", "", "/"],
+    ["/ok\t/evil", "", "/"],
+    // A query string that cannot be sent as it is gives way to the path.
+    ["/ok", "?x=\r\ny", "/ok"],
+    ["/ok", `?${"x".repeat(2000)}`, "/ok"],
+    [`/${"p".repeat(2000)}`, "?a=1", "/"],
+  ])("sends %j with %j back to %j", (pathname, search, returnTo) => {
+    const url = signInUrlFor(pathname, search);
+    expect(url).toBe(`/sign-in?redirect_url=${encodeURIComponent(returnTo)}`);
+    // Whatever came in, the browser lands on this origin after signing in.
+    const target = new URL(url, ORIGIN).searchParams.get("redirect_url") ?? "";
+    expect(new URL(target, ORIGIN).origin).toBe(ORIGIN);
   });
 });
 

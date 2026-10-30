@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 
 import { AnalyticsProvider } from "@/lib/analytics-provider";
 import { DiagnosticsAccessProvider } from "@/lib/diagnostics-access";
+import { PageGate } from "@/ui/page-gate";
 import { SiteHeader } from "@/ui/site-header";
 
 import "./globals.css";
@@ -24,7 +25,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
             </a>
             <SiteHeader />
             <main id="main" className="container" tabIndex={-1}>
-              {children}
+              <PageGate>{children}</PageGate>
             </main>
           </DiagnosticsAccessProvider>
           <AnalyticsProvider />
