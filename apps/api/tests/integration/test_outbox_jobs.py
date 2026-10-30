@@ -57,7 +57,8 @@ def recording_responses(app: Any, order: list[str]) -> Any:
     return recording
 
 
-@pytest.mark.parametrize("outcome", ["created", "conflict"])
+# The conflict is raised by a patched service: the project routes cannot answer 409 (not evidence about the contract).
+@pytest.mark.parametrize("outcome", ["created", pytest.param("conflict", marks=pytest.mark.contract_exempt)])
 def test_events_are_dispatched_after_the_response(
     harness: Harness, monkeypatch: pytest.MonkeyPatch, outcome: str
 ) -> None:

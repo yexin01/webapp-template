@@ -71,7 +71,7 @@ def build_router(diagnostics: DiagnosticsService, environment: Environment, auth
     # Checks call external services, so no request-scoped transaction.
     router = APIRouter(tags=["diagnostics"])
     Personal = Annotated[TenantContext, Depends(auth.personal)]
-    responses = errors(401, 404, 429)
+    responses = errors(401, 403, 404, 429, 503)
 
     @router.get(
         "/diagnostics/access",

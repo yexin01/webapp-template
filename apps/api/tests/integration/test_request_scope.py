@@ -192,6 +192,7 @@ class _UpstreamDownError(DomainError):
     status = 503
 
 
+@pytest.mark.contract_exempt  # the project routes cannot raise these; the test is about the platform around them
 @pytest.mark.parametrize(
     ("error", "status", "kept"),
     [

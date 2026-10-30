@@ -76,6 +76,7 @@ def build_account_router(auth: AuthDeps, request_transaction: Any) -> APIRouter:
     router = APIRouter(
         tags=["account"],
         dependencies=[Depends(auth.authenticate), Depends(request_transaction, scope="function")],
+        responses=errors(401, 403, 503),
     )
     Personal = Annotated[TenantContext, Depends(auth.personal)]
 

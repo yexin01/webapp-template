@@ -31,6 +31,8 @@ from app.modules.billing.domain import (
 from app.modules.billing.service import BillingService
 
 ERRORS = errors(401, 403, 409, 429, 503)
+# Checkout and the portal can also be refused as a bad request (a key the service rejects, a customer Stripe lost).
+REFUSABLE_ERRORS = errors(400, 401, 403, 409, 429, 503)
 
 
 class BillingStatus(BaseModel):
@@ -78,7 +80,10 @@ def _status(billing: BillingService, summary: BillingSummary) -> BillingStatus:
 def build_read_router(billing: BillingService, clock: Clock, auth: AuthDeps, request_transaction: Any) -> APIRouter:
     """Database-only reads: one request-scoped transaction each."""
     # The token is verified before the request takes an admission place (KDB-2).
-    router = APIRouter(dependencies=[Depends(auth.authenticate), Depends(request_transaction, scope="function")])
+    router = APIRouter(
+        dependencies=[Depends(auth.authenticate), Depends(request_transaction, scope="function")],
+        responses=errors(401, 403, 503),
+    )
     Personal = Annotated[TenantContext, Depends(auth.personal)]
     Organization = Annotated[TenantContext, Depends(auth.organization)]
 
@@ -91,6 +96,7 @@ def build_read_router(billing: BillingService, clock: Clock, auth: AuthDeps, req
     @router.get(
         "/orgs/{org_id}/entitlement",
         response_model=Entitlement,
+        responses=errors(404),
         tags=["account"],
         dependencies=[requires(Access.ANY_MEMBER)],
     )
@@ -121,7 +127,7 @@ def build_read_router(billing: BillingService, clock: Clock, auth: AuthDeps, req
     @router.get(
         "/orgs/{org_id}/pro/insight",
         response_model=ProInsight,
-        responses=ERRORS,
+        responses={**ERRORS, **errors(404)},
         tags=["billing"],
         dependencies=[requires(PRO_FEATURE_USE)],
     )
@@ -139,7 +145,10 @@ def build_action_router(billing: BillingService, auth: AuthDeps) -> APIRouter:
     Personal = Annotated[TenantContext, Depends(auth.personal)]
 
     @router.post(
-        "/billing/checkout", response_model=Redirect, responses=ERRORS, dependencies=[requires(BILLING_MANAGE)]
+        "/billing/checkout",
+        response_model=Redirect,
+        responses=REFUSABLE_ERRORS,
+        dependencies=[requires(BILLING_MANAGE)],
     )
     def start_checkout(
         body: CheckoutRequest,
@@ -148,7 +157,12 @@ def build_action_router(billing: BillingService, auth: AuthDeps) -> APIRouter:
     ) -> Redirect:
         return Redirect(url=billing.start_checkout(ctx, PlanKey(body.plan), idempotency_key))
 
-    @router.post("/billing/portal", response_model=Redirect, responses=ERRORS, dependencies=[requires(BILLING_MANAGE)])
+    @router.post(
+        "/billing/portal",
+        response_model=Redirect,
+        responses=REFUSABLE_ERRORS,
+        dependencies=[requires(BILLING_MANAGE)],
+    )
     def open_portal(ctx: Personal) -> Redirect:
         return Redirect(url=billing.open_portal(ctx))
 

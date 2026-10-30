@@ -44,6 +44,7 @@ addopts = "-ra --strict-markers"
 markers = [
   "db: requires a PostgreSQL test database (TEST_DATABASE_URL)",
   "sandbox: calls the Stripe test mode with a real key; skipped unless STRIPE_SANDBOX_TESTS=1 (tests/sandbox)",
+  "contract_exempt: the test makes a route raise an error it cannot raise, so its responses are not checked against the OpenAPI document",
 ]
 
 [tool.ruff]

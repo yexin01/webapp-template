@@ -33,6 +33,7 @@ from app.modules.billing.adapters.stripe import StripeWebhookVerifier
 from app.modules.identity.adapters.fakes import StaticMembershipDirectory
 from app.modules.llm.adapters import MockLLMProvider
 from app.settings import Settings, load_settings
+from tests.openapi_contract import RECORDS, Contract, Recorder
 
 DEFAULT_TEST_DATABASE_URL = "postgresql://postgres:postgres@127.0.0.1:54329/app"
 TEST_STRIPE_WEBHOOK_SECRET = "whsec_test_only_not_a_real_secret_000000"
@@ -164,25 +165,68 @@ def _admin_url() -> str:
     return url
 
 
-def _database_required() -> bool:
-    """True in CI or when TEST_DATABASE_URL is set: database tests must run, not skip."""
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--require-db",
+        action="store_true",
+        help="fail, instead of skipping the database tests, when PostgreSQL is unreachable (pnpm test, pnpm verify)",
+    )
+
+
+@pytest.fixture(autouse=True)
+def _contract_exempt(request: pytest.FixtureRequest) -> Iterator[None]:
+    Recorder.paused = request.node.get_closest_marker("contract_exempt") is not None
+    yield
+    Recorder.paused = False
+
+
+# Every response the harness's apps sent during the run is checked against packages/contracts/openapi.json
+# (DEC-007) when the session ends: a status the document does not declare, another content type, or a body
+# that does not validate fails the run. tests/integration/test_contract_conformance.py drives every operation.
+CONTRACT_PROBLEMS = pytest.StashKey[list[str]]()
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    problems = Contract().check(RECORDS) if RECORDS else []
+    session.config.stash[CONTRACT_PROBLEMS] = problems
+    if problems and session.exitstatus == pytest.ExitCode.OK:
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+
+
+def pytest_terminal_summary(terminalreporter: Any, exitstatus: int, config: pytest.Config) -> None:
+    problems = config.stash.get(CONTRACT_PROBLEMS, [])
+    if problems:
+        terminalreporter.write_sep(
+            "=", f"{len(problems)} responses differ from packages/contracts/openapi.json", red=True
+        )
+        for problem in problems:
+            terminalreporter.write_line(problem)
+
+
+def _database_required(config: pytest.Config) -> bool:
+    """True in CI, when TEST_DATABASE_URL is set, or with --require-db: database tests must run, not skip."""
     ci = os.environ.get("CI", "").strip().lower() not in ("", "0", "false")
-    return ci or bool(os.environ.get("TEST_DATABASE_URL"))
+    return ci or bool(os.environ.get("TEST_DATABASE_URL")) or bool(config.getoption("--require-db"))
 
 
 @pytest.fixture(scope="session")
-def database_url() -> Iterator[str]:
+def database_url(request: pytest.FixtureRequest) -> Iterator[str]:
     admin = _admin_url()
     name = f"app_test_{uuid.uuid4().hex[:10]}"
     try:
         with psycopg.connect(admin, autocommit=True, connect_timeout=3) as conn:
             conn.execute(f'CREATE DATABASE "{name}"')
     except psycopg.OperationalError as error:
-        # Skipping is a local convenience only: in CI, or when a database was
-        # configured explicitly, an unreachable server must fail the run
-        # rather than let every database test silently skip.
-        if _database_required():
-            pytest.fail(f"PostgreSQL is not reachable for tests: {error}", pytrace=False)
+        # Skipping is a local convenience only: in CI, with a configured database, or with --require-db,
+        # an unreachable server must end the run, once, rather than let every database test skip (or fail).
+        if _database_required(request.config):
+            where = urlparse(admin)
+            pytest.exit(
+                f"PostgreSQL is not reachable for tests at {where.hostname}:{where.port or 5432}: {error}\n"
+                "The database tests are required here (CI, TEST_DATABASE_URL, or --require-db). "
+                "Start the local one with `pnpm db:up` (Docker), or set TEST_DATABASE_URL to a local server.",
+                returncode=2,
+            )
         pytest.skip("PostgreSQL is not available; start it with `pnpm db:up`.")
     parsed = urlparse(admin)
     url = urlunparse(parsed._replace(path=f"/{name}"))
@@ -293,7 +337,9 @@ def make_harness(db: str) -> Iterator[Callable[..., Harness]]:
         overrides.update(container_overrides)
         container = build_container(settings, **overrides)
         analytics.allowed = container.kernel.analytics_events
-        client = TestClient(create_app(container), raise_server_exceptions=False)
+        app = create_app(container)
+        app.add_middleware(Recorder, sink=RECORDS)  # outermost: sees every response, for the contract check below
+        client = TestClient(app, raise_server_exceptions=False)
         harness = Harness(container, client, verifier, directory, billing, clock, analytics, db)
         created.append(harness)
         return harness
