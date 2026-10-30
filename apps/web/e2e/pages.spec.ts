@@ -48,13 +48,15 @@ test("keyboard: the skip link comes first and moves focus to the main content", 
   await expect(page.locator("#main")).toBeFocused();
 });
 
-// The proxy does not run on a path that looks like a file, so this is how a signed-out visitor meets the 404 page.
-test("a missing file shows the 404 page", async ({ page }) => {
+// The proxy does not run on a path that looks like a file, so the server answers 404 on its own. The page gate
+// (src/ui/page-gate.tsx) treats the path like any unlisted page, the 404 page included: a signed-out visitor is
+// shown none of it, and is sent to sign-in once Clerk has loaded, which it never does without an instance.
+// The 404 page is shown to signed-in users (authenticated.spec.ts).
+test("a missing file answers 404 and its page is not shown to a signed-out visitor", async ({ page }) => {
   const response = await page.goto("/missing.png");
   expect(response?.status()).toBe(404);
-  await expect(page.getByRole("heading", { name: "Page not found", level: 1 })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Go home" })).toHaveAttribute("href", "/");
-  expect(await accessibilityFindings(page)).toEqual([]);
+  if (ACCOUNT_FREE) await expect(page.getByRole("main").getByRole("status")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Page not found" })).toHaveCount(0);
 });
 
 // Default deny (src/lib/page-access.ts): only listed pages are public, and the proxy cannot tell a page from a
