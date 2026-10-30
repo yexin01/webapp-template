@@ -23,11 +23,14 @@ class VerifiedIdentity:
 
     ``active_org_id`` is the organization the signed session names as active.
     It may prompt a membership re-check, but never grants access by itself.
+    ``actor_external_id`` names who acts as this user when the session was
+    started by someone else (an impersonation); None for the user's own session.
     """
 
     external_user_id: str
     session_id: str | None = None
     active_org_id: str | None = None
+    actor_external_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +39,7 @@ class TenantContext:
 
     Never constructed from client-supplied roles or identifiers alone: the
     organization and role are verified against the membership store first.
+    ``actor_external_id`` is carried from the session: audit entries name it.
     """
 
     user_id: UUID
@@ -44,6 +48,7 @@ class TenantContext:
     org_id: UUID | None = None
     external_org_id: str | None = None
     role: Role | None = None
+    actor_external_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.kind is ContextKind.PERSONAL:

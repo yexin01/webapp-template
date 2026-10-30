@@ -530,11 +530,13 @@ class PgTx[R]:
         repo: R,
         on_record: Callable[[UUID], None] | None,
         clock: Clock | None,
+        actor_external_id: str | None = None,
     ) -> None:
         self._conn = conn
         self._repo = repo
         self._on_record = on_record
         self._clock = clock
+        self._actor_external_id = actor_external_id
 
     @property
     def repo(self) -> R:
@@ -560,8 +562,9 @@ class PgTx[R]:
     def audit(self, entry: AuditEntry) -> None:
         self._conn.execute(
             """
-            INSERT INTO app.audit_log (actor_user_id, org_id, action, target_type, target_id, outcome, request_id)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO app.audit_log
+              (actor_user_id, org_id, action, target_type, target_id, outcome, request_id, impersonator_clerk_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 entry.actor_user_id,
@@ -571,6 +574,7 @@ class PgTx[R]:
                 entry.target_id,
                 entry.outcome,
                 entry.request_id,
+                self._actor_external_id,
             ),
         )
 
@@ -607,7 +611,7 @@ class PgTransactions[R]:
             "app.org_id": str(ctx.org_id) if ctx.org_id else "",
         }
         with self._db.transaction(API_ROLE, context) as conn:
-            yield PgTx(conn, self._factory(conn), self._on_record, self._clock)
+            yield PgTx(conn, self._factory(conn), self._on_record, self._clock, ctx.actor_external_id)
 
     @contextmanager
     def as_system(self) -> Iterator[PgTx[R]]:

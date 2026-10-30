@@ -4,6 +4,7 @@ the Clerk webhook."""
 # No ``from __future__ import annotations`` here: FastAPI must evaluate the
 # dependency aliases defined inside the router factories at definition time.
 
+import logging
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -11,7 +12,7 @@ from fastapi import APIRouter, Depends, Path, Request
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
-from app.kernel.errors import AuthenticationError
+from app.kernel.errors import AuthenticationError, ForbiddenError
 from app.kernel.http.app import bearer_token
 from app.kernel.http.auth import AuthDeps
 from app.kernel.http.schemas import WebhookAck, errors
@@ -19,18 +20,34 @@ from app.kernel.tenancy import TenantContext, VerifiedIdentity
 from app.modules.identity.ports import IdentityVerifier
 from app.modules.identity.service import ContextResolver, IdentitySyncService
 
+logger = logging.getLogger(__name__)
+
 
 class Me(BaseModel):
     user_id: UUID
 
 
-def build_auth(verifier: IdentityVerifier, resolver: ContextResolver) -> AuthDeps:
+def build_auth(
+    verifier: IdentityVerifier, resolver: ContextResolver, *, allow_actor_sessions: bool = False
+) -> AuthDeps:
     def authenticate(request: Request) -> VerifiedIdentity:
-        """Verify the bearer token. Cookies are deliberately not accepted (API-04)."""
+        """Verify the bearer token. Cookies are deliberately not accepted (API-04).
+
+        A session someone else started (an impersonation) has a valid token, so refusing it is a
+        decision about the caller, not about the token: 403, not 401 (the web would send the user
+        to sign in again, into a session that is still active).
+        """
         token = bearer_token(request.headers.get("authorization", ""))
         if token is None:
             raise AuthenticationError()
-        return verifier.verify(token)
+        identity = verifier.verify(token)
+        if identity.actor_external_id is not None:
+            if not allow_actor_sessions:
+                logger.warning("actor_session_refused")
+                raise ForbiddenError("Sessions started by someone else are not enabled for this application.")
+            # The audit log names the actor too; this line ties the request ID to it (ADM-01).
+            logger.info("actor_session", extra={"actor_external_id": identity.actor_external_id})
+        return identity
 
     Identity = Annotated[VerifiedIdentity, Depends(authenticate)]
 
