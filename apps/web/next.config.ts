@@ -19,9 +19,11 @@ import {
 const webDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(webDir, "../..");
 const isDev = process.env.NODE_ENV !== "production";
-// One repository-root .env serves both apps (see .env.example). This process
-// loads only the variables the web app reads (env.server.ts), so API secrets
-// such as STRIPE_SECRET_KEY and DATABASE_URL never enter it.
+// One repository-root .env serves both apps (see .env.example). This loader copies
+// only the variables the web app reads (env.server.ts), so a local run never gives
+// API secrets such as STRIPE_SECRET_KEY and DATABASE_URL to the web process. On
+// Vercel the platform sets the process environment, and one project gives every
+// service every variable (docs/deployment.md).
 loadEnvFiles(repoRoot, isWebVariable, process.env);
 
 function nextConfig(phase: string): NextConfig {
