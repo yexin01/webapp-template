@@ -13,6 +13,13 @@
  * an initialized copy leaves the adopter's own text alone, and that this check
  * itself passes in initialized copies after ordinary edits.
  *
+ * Adopter policy: an initialized copy no longer carries the template's own
+ * records (the DEC-001 proof, the integration notes, the evidence files) or
+ * the template owner's open-decisions regime in AGENTS.md, keeps the
+ * specification as inherited reference, drops template-only prose, and still
+ * resolves every relative Markdown link; --keep-template-material changes
+ * none of that; and a finished copy is never touched by the policy again.
+ *
  * In a copy that is already initialized, the renaming checks have nothing to
  * rename; it checks only that re-running init with the copy's own identity
  * changes nothing and that a different identity is refused. An identity edited
@@ -38,7 +45,16 @@ import {
 import { devNull, tmpdir } from "node:os";
 import path from "node:path";
 
-import { ORIGINAL_NAME, ORIGINAL_SLUG, TAKEN_PORTS, isValidName, isValidSlug } from "./lib/template.mjs";
+import { brokenLinks } from "./lib/doc-links.mjs";
+import {
+  ORIGINAL_NAME,
+  ORIGINAL_SLUG,
+  SPEC_BANNER_MARKER,
+  SPEC_FILE,
+  TAKEN_PORTS,
+  isValidName,
+  isValidSlug,
+} from "./lib/template.mjs";
 import { copyTrackedFiles as copyTracked } from "./lib/tracked-copy.mjs";
 
 const repo = path.resolve(import.meta.dirname, "..");
@@ -162,6 +178,42 @@ try {
   check(read("CODE_OF_CONDUCT.md").includes(`**${CONDUCT}**`), "conduct contact was not filled in");
   check(checkPlaceholders(dir) === 0, "check-placeholders failed after init");
 
+  // 1a. The adopter policy: the template's own records are gone, its rules for agents are neutral, links hold.
+  for (const gone of ["proofs", "docs-notes"]) check(!existsSync(path.join(dir, gone)), `${gone} was not removed`);
+  check(
+    readdirSync(path.join(dir, "dev-docs/evidence")).join() === "README.md",
+    "dev-docs/evidence should hold only the adopter's README",
+  );
+  check(existsSync(path.join(dir, "dev-docs/adr/0003-modular-architecture.md")), "the ADRs were removed");
+  check(
+    read(SPEC_FILE).split(SPEC_BANNER_MARKER).length === 2,
+    "the specification does not carry exactly one inherited-reference banner",
+  );
+  const agents = read("AGENTS.md");
+  check(agents.includes("<!-- adopter-agents -->"), "AGENTS.md was not replaced by the adopter version");
+  check(
+    !/§|\bDEC-\d|open decision|owner's open/i.test(agents),
+    "the adopter AGENTS.md still carries the template owner's decision regime",
+  );
+  for (const [rule, pattern] of [
+    ["no remote changes without authorization", /Never\*\* push, publish/],
+    ["no secrets", /Never\*\* expose, commit, print, log, or transmit secrets/],
+    ["no fabricated evidence", /Never\*\* fabricate/],
+    ["no weakened tests", /Never\*\* weaken tests/],
+    ["preserve work, ask before destructive operations", /Preserve unrelated work. Ask before destructive/],
+  ]) {
+    check(pattern.test(agents), `the adopter AGENTS.md lost the rule: ${rule}`);
+  }
+  const scripts = JSON.parse(read("package.json")).scripts;
+  for (const [, command] of agents.matchAll(/pnpm ([a-z][\w:-]*)/g)) {
+    check(command in scripts, `the adopter AGENTS.md names pnpm ${command}, which package.json does not define`);
+  }
+  const broken = brokenLinks(dir);
+  check(
+    broken.length === 0,
+    `links do not resolve in the initialized copy: ${broken.map((b) => `${b.file} -> ${b.target}`).join(", ")}`,
+  );
+
   // 1b. bootstrap.py is written first and package.json last (they mark a run in
   // progress and a finished one); timestamps cannot be out of order.
   const written = report(first)?.updated ?? [];
@@ -213,6 +265,7 @@ try {
   const pristine = snapshot(dry);
   const dryRun = init(dry, ["--name", NAME, "--slug", SLUG, "--db-port", PORT, ...CONTACTS, "--dry-run"]);
   check(dryRun.status === 0, `dry run failed: ${dryRun.stderr}`);
+  check(report(dryRun)?.removed.includes("proofs"), "the dry run did not list what init would remove");
   check(JSON.stringify(snapshot(dry)) === JSON.stringify(pristine), "dry run changed files");
   check(!existsSync(path.join(dry, ".env")), "dry run created .env");
 
@@ -280,6 +333,61 @@ try {
     `a later --db-port run in an initialized copy failed: ${later.stderr}`,
   );
   check(readIn("README.md").endsWith(credit), "a later run with the same identity rewrote the adopter's own text");
+  // The policy ran once: the adopter's AGENTS.md, and a folder they made under a removed name, stay.
+  writeFileSync(path.join(punctuated, "AGENTS.md"), "# Our own rules\n");
+  mkdirSync(path.join(punctuated, "proofs"));
+  writeFileSync(path.join(punctuated, "proofs/ours.txt"), "ours\n");
+  const again = init(punctuated, ["--name", PUNCTUATED, "--slug", SLUG, "--db-port", PORT]);
+  check(
+    report(again)?.updated.length === 0 && report(again)?.removed.length === 0,
+    "a later run applied the adopter policy again",
+  );
+  check(
+    readIn("AGENTS.md") === "# Our own rules\n" && existsSync(path.join(punctuated, "proofs/ours.txt")),
+    "a later run overwrote the adopter's own files",
+  );
+
+  // 5c. Template-only prose is dropped with its markers, and links to removed files become plain text.
+  const prose = copyTrackedFiles();
+  dirs.push(prose);
+  const block = "<!-- template-only:start -->\nTEMPLATE ONLY TEXT\n<!-- template-only:end -->\n";
+  const evidenceLink = "[the DEC-001 evidence](dev-docs/evidence/dec-001-vercel-python.md)";
+  for (const rel of ["README.md", "CONTRIBUTING.md"]) {
+    const text = readFileSync(path.join(prose, rel), "utf8");
+    writeFileSync(
+      path.join(prose, rel),
+      `${text}\n${block}\nSee ${evidenceLink} and [the ADRs](dev-docs/adr/0001-approved-recommendations.md).\n`,
+    );
+  }
+  check(init(prose, ["--name", NAME, "--slug", SLUG, ...CONTACTS]).status === 0, "init failed with template-only prose");
+  const proseText = ["README.md", "CONTRIBUTING.md"].map((rel) => readFileSync(path.join(prose, rel), "utf8")).join("\n");
+  check(!proseText.includes("TEMPLATE ONLY TEXT") && !proseText.includes("template-only:"), "template-only prose or its markers remain");
+  check(
+    proseText.includes("See the DEC-001 evidence and [the ADRs](dev-docs/adr/0001-approved-recommendations.md)."),
+    "a link to removed material was not turned into text, or a link to kept material was",
+  );
+  check(brokenLinks(prose).length === 0, "links do not resolve after template-only prose was removed");
+
+  // 5d. --keep-template-material keeps all of it: files, prose, and the template's own AGENTS.md.
+  const kept = copyTrackedFiles();
+  dirs.push(kept);
+  const keptAgents = readFileSync(path.join(kept, "AGENTS.md"), "utf8");
+  writeFileSync(path.join(kept, "README.md"), `${readFileSync(path.join(kept, "README.md"), "utf8")}\n${block}`);
+  const keptRun = init(kept, ["--name", NAME, "--slug", SLUG, ...CONTACTS, "--keep-template-material"]);
+  check(
+    keptRun.status === 0 && report(keptRun)?.removed.length === 0,
+    `init with --keep-template-material removed something: ${keptRun.stderr}`,
+  );
+  check(existsSync(path.join(kept, "proofs/dec-001/README.md")), "--keep-template-material removed the DEC-001 proof");
+  check(readdirSync(path.join(kept, "dev-docs/evidence")).length > 1, "--keep-template-material removed the template's evidence");
+  check(readFileSync(path.join(kept, "AGENTS.md"), "utf8") === keptAgents, "--keep-template-material replaced AGENTS.md");
+  check(readFileSync(path.join(kept, "README.md"), "utf8").includes("TEMPLATE ONLY TEXT"), "--keep-template-material dropped template-only prose");
+  check(
+    !readFileSync(path.join(kept, SPEC_FILE), "utf8").includes(SPEC_BANNER_MARKER),
+    "--keep-template-material added the inherited-reference banner",
+  );
+  check(brokenLinks(kept).length === 0, "links do not resolve with --keep-template-material");
+  check(checkPlaceholders(kept) === 0, "check-placeholders failed with --keep-template-material");
 
   // 6. A renamed copy that still has placeholders fails check-placeholders.
   const unfilled = copyTrackedFiles();
@@ -444,5 +552,5 @@ if (failures.length) {
   process.exit(1);
 }
 console.log(
-  "init-template check passed: renamed, contacts filled, port moved, Compose project named (an existing one kept), .env created from the example, idempotent, different re-runs refused, dry run safe, bad input rejected, punctuated names valid, adopter text kept on later runs, placeholder check enforced, part-way runs resumable, read-only targets refused up front, copies never reach back into the repository, initialized copies checked without false failures.",
+  "init-template check passed: renamed, contacts filled, port moved, adopter policy applied once (template records removed or kept on request, neutral AGENTS.md, inherited-reference banner, template-only prose dropped, links resolve), Compose project named (an existing one kept), .env created from the example, idempotent, different re-runs refused, dry run safe, bad input rejected, punctuated names valid, adopter text kept on later runs, placeholder check enforced, part-way runs resumable, read-only targets refused up front, copies never reach back into the repository, initialized copies checked without false failures.",
 );

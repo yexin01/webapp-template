@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
+from urllib.parse import urlsplit
 
 from app.kernel.diagnostics import IntegrationInfo, IntegrationKey, IntegrationMode
 from app.kernel.http.auth import AuthDeps
@@ -20,6 +21,9 @@ from app.modules.identity.probe import IdentityProbe
 from app.modules.identity.routes import build_account_router, build_auth, build_webhook_router
 from app.modules.identity.service import ContextResolver, IdentitySyncService, MembershipReconciler
 from app.modules.identity.settings import IdentitySettings, normalize_pem
+
+# The placeholders .env.example ships: the current pair, and the older "replace_me" one.
+_PLACEHOLDER_MARKERS = ("not_configured", "replace_me")
 
 
 @dataclass
@@ -93,10 +97,26 @@ def _directory(settings: IdentitySettings, contribution: Contribution) -> Member
     return directory
 
 
+def clerk_not_configured(settings: IdentitySettings) -> bool:
+    """True while a key is one of the placeholders .env.example ships: no Clerk instance is configured.
+
+    The shipped publishable key names a host under the reserved ``.invalid`` domain, which nobody can
+    register, so a deployment that keeps it cannot accept a token from anyone's Clerk instance.
+    """
+    issuer = settings.clerk_issuer or ""
+    secret = settings.clerk_secret_key.get_secret_value() if settings.clerk_secret_key else ""
+    keys = f"{settings.clerk_publishable_key or ''} {secret}".lower()
+    return (urlsplit(issuer).hostname or "").endswith(".invalid") or any(
+        marker in keys for marker in _PLACEHOLDER_MARKERS
+    )
+
+
 def describe(settings: IdentitySettings) -> IntegrationInfo:
     """Non-secret configuration facts for the diagnostics page."""
     publishable = settings.clerk_publishable_key or ""
-    if publishable.startswith("pk_live_"):
+    if clerk_not_configured(settings):
+        mode, instance = IntegrationMode.MOCK, "Not configured (placeholder keys from .env.example)"
+    elif publishable.startswith("pk_live_"):
         mode, instance = IntegrationMode.LIVE, "Production instance"
     elif publishable.startswith("pk_test_"):
         mode, instance = IntegrationMode.SANDBOX, "Development instance"

@@ -236,13 +236,34 @@ def test_an_empty_variable_never_hides_its_alias(
     assert getattr(make_settings(), field) == value
 
 
-def test_env_example_placeholders_fail_clearly(tmp_path: Path) -> None:
-    """A fresh copy of .env.example must fail fast with names, not run with placeholders."""
+def test_env_example_ships_a_pair_that_means_clerk_is_not_configured(tmp_path: Path) -> None:
+    """A fresh copy of .env.example is valid, so the app starts without accounts, and says Clerk is not configured."""
+    from app.kernel.infrastructure.config import REPO_ROOT
+    from app.modules.identity.module import clerk_not_configured, describe
+    from app.settings import load_settings
+
+    settings = load_settings(_env_file=REPO_ROOT / ".env.example")
+    assert clerk_not_configured(settings)
+    assert describe(settings).mode.value == "mock"
+
+
+def test_the_older_env_example_placeholders_fail_clearly(tmp_path: Path) -> None:
+    """The earlier pair (pk_test_replace_me) is malformed: a copy made from an older .env.example fails with names."""
     from app.kernel.infrastructure.config import REPO_ROOT
     from app.settings import load_settings
 
+    older = tmp_path / "env"
+    older.write_text(
+        "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_replace_me\nCLERK_SECRET_KEY=sk_test_replace_me\n"
+        + "\n".join(
+            line
+            for line in (REPO_ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
+            if not line.startswith(("NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=", "CLERK_SECRET_KEY="))
+        ),
+        encoding="utf-8",
+    )
     with pytest.raises(ConfigError) as excinfo:
-        load_settings(_env_file=REPO_ROOT / ".env.example")
+        load_settings(_env_file=older)
     message = str(excinfo.value)
     assert "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY is still the .env.example placeholder" in message
     assert "CLERK_SECRET_KEY is malformed or still the .env.example placeholder" in message

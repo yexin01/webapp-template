@@ -6,6 +6,7 @@ is a dry run unless ``--apply`` is given (BILL-19).
 ``migrate``, ``seed``, ``reset``, and ``api-login`` connect as the schema owner:
 ``MIGRATION_DATABASE_URL``, or ``DATABASE_URL`` when it is not set.
 ``setup-stripe`` changes only a Stripe sandbox and prints the .env lines to set.
+``check-config`` only loads the settings; ``diagnose`` runs the integration probes without signing in (see app.doctor).
 ``job <name>`` runs any registered job (the same ones Vercel Cron calls).
 """
 
@@ -141,6 +142,18 @@ def cmd_setup_stripe(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_check_config(args: argparse.Namespace) -> int:
+    from app import doctor
+
+    return doctor.check_config(args.env_file)
+
+
+def cmd_diagnose(args: argparse.Namespace) -> int:
+    from app import doctor
+
+    return doctor.diagnose(args.env_file, args.send_test_events)
+
+
 def cmd_job(args: argparse.Namespace) -> int:
     from app.bootstrap import bootstrap
 
@@ -234,6 +247,22 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--monthly", required=True, type=_amount, help="Monthly price in minor units (cents)")
     p.add_argument("--yearly", required=True, type=_amount, help="Yearly price in minor units (cents)")
     p.set_defaults(func=cmd_setup_stripe)
+
+    p = sub.add_parser("check-config", help="Validate the settings and print each integration's mode (no network)")
+    p.add_argument("--env-file", help="Read this file instead of the repository .env")
+    p.set_defaults(func=cmd_check_config)
+
+    p = sub.add_parser(
+        "diagnose",
+        help="Run the /integrations checks without signing in (not in production); prints an evidence block",
+    )
+    p.add_argument("--env-file", help="Read this file instead of the repository .env")
+    p.add_argument(
+        "--send-test-events",
+        action="store_true",
+        help="Also send one PostHog event and one Sentry issue (sandbox projects only)",
+    )
+    p.set_defaults(func=cmd_diagnose)
 
     p = sub.add_parser("job", help="Run a registered job, or list jobs when no name is given")
     p.add_argument("name", nargs="?")

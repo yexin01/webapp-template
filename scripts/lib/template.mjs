@@ -48,3 +48,24 @@ const HTTPS_URL = /^https:\/\/[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+(:\d{1,5})?(\/[A-Za
 export function isValidContact(value) {
   return typeof value === "string" && value.length <= 200 && (EMAIL.test(value) || HTTPS_URL.test(value));
 }
+
+/**
+ * The template maintainers' own records. An adopter's copy drops them by default
+ * (`--keep-template-material` keeps them): the DEC-001 deployment proof and the
+ * integration notes, and the files in the evidence folder, which describe runs
+ * of the template itself. The adopter's evidence starts empty.
+ */
+export const TEMPLATE_ONLY_PATHS = ["proofs", "docs-notes"];
+export const EVIDENCE_DIR = "dev-docs/evidence";
+
+/** The specification stays as inherited reference; this marks the banner init-template adds to it. */
+export const SPEC_FILE = "dev-docs/engineering-implementation-plan.md";
+export const SPEC_BANNER_MARKER = "<!-- inherited-reference -->";
+export const SPEC_BANNER = `> **Inherited reference.** This is the specification the template's code was built against, copied into this project when it was created. Requirement and decision IDs in the code and tests (for example \`ENV-02\`) refer to it. Its decision register (§3), phase plan (§18), status (§23), and links to evidence describe the template's own history: they do not block work in this project, and the evidence files were not copied. Record this project's decisions as ADRs in \`dev-docs/adr/\`.
+${SPEC_BANNER_MARKER}`;
+
+/** Prose that only makes sense in the template itself; an adopter's copy drops it, markers included. */
+export const TEMPLATE_ONLY_BLOCK = /<!-- template-only:start -->[\s\S]*?<!-- template-only:end -->\n?/g;
+
+/** Where init-template reads the adopter's versions of files that are the template's own. */
+export const ADOPTER_TEMPLATES = "scripts/templates/adopter";
