@@ -1,27 +1,25 @@
 "use client";
 
-import { useAuth, useOrganization } from "@clerk/nextjs";
+import { useOrganization } from "@clerk/nextjs";
 import { useCallback } from "react";
 
 import { PlanBadge } from "@/features/billing";
 import { LlmCheck } from "@/features/llm";
 import { ProjectsPanel } from "@/features/projects";
 import { useApi } from "@/lib/api/use-api";
+import { useActiveTenant } from "@/lib/use-active-tenant";
 import { useResource } from "@/lib/use-resource";
 import { OperatorOnly } from "@/ui/operator-only";
 import { ErrorState, LoadingState } from "@/ui/state-views";
 
 /**
- * The active tenant follows Clerk's organization switcher. The role shown
- * here only adjusts presentation; the API re-verifies membership and role on
- * every request (FE-05). Panels remount per user and tenant, so nothing the
- * previous user or tenant loaded or created stays on screen after a switch.
+ * The active tenant follows Clerk's organization switcher. What the user may
+ * do in it is decided by the API and shown by the panels (ARCH-03, FE-05).
  */
 export function Workspace() {
-  const { userId } = useAuth();
-  const { isLoaded, organization, membership } = useOrganization();
+  const { isLoaded, orgId } = useActiveTenant();
+  const { organization } = useOrganization();
   const api = useApi();
-  const orgId = organization?.id ?? null;
   const fetchEntitlement = useCallback(() => api.entitlement(orgId), [api, orgId]);
   const entitlement = useResource(fetchEntitlement, `entitlement:${orgId ?? "personal"}`);
   // A failed entitlement lookup is shown as Free; the server still decides access.
@@ -36,15 +34,13 @@ export function Workspace() {
     );
   }
 
-  const canDelete = orgId === null || membership?.role === "org:admin";
-
   return (
     <div className="stack">
       <div className="page-heading">
         <h1>{organization ? organization.name : "Personal workspace"}</h1>
         {plan && <PlanBadge plan={plan} />}
       </div>
-      <ProjectsPanel key={`${userId}:${orgId ?? "personal"}`} orgId={orgId} canDelete={canDelete} />
+      <ProjectsPanel />
       <OperatorOnly>
         <LlmCheck />
       </OperatorOnly>
