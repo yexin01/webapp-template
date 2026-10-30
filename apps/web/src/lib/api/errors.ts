@@ -62,11 +62,15 @@ export type ErrorPresentation = {
   action: "sign-in" | "retry" | "upgrade" | "none";
 };
 
+const GENERIC: ErrorPresentation = {
+  title: "Something went wrong",
+  message: "An unexpected error occurred.",
+  action: "retry",
+};
+
 /** One mapping from API errors to user-facing copy, used by every screen (FE-10). */
 export function presentError(error: unknown): ErrorPresentation {
-  if (!(error instanceof ApiError)) {
-    return { title: "Something went wrong", message: "An unexpected error occurred.", action: "retry" };
-  }
+  if (!(error instanceof ApiError)) return GENERIC;
   switch (error.code) {
     case "VALIDATION_FAILED":
       return { title: "Check your input", message: error.message, action: "none" };
@@ -103,7 +107,16 @@ export function presentError(error: unknown): ErrorPresentation {
     case "NETWORK_ERROR":
     case "TIMEOUT":
       return { title: "Temporarily unavailable", message: error.message, action: "retry" };
+    case "HTTP_ERROR":
+      // A response outside the contract (a proxy's page): its text is never shown.
+      return GENERIC;
     default:
-      return { title: "Something went wrong", message: "An unexpected error occurred.", action: "retry" };
+      // A module may add error codes with a 4xx or 503 status; their messages are written for users.
+      if (error.status >= 400 && error.status < 500) {
+        return { title: "Could not complete this", message: error.message, action: "none" };
+      }
+      if (error.status === 503)
+        return { title: "Temporarily unavailable", message: error.message, action: "retry" };
+      return GENERIC;
   }
 }
