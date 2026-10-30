@@ -390,7 +390,8 @@ def flush_telemetry(analytics: Analytics, timeout_seconds: float) -> None:
 # Product analytics
 # ---------------------------------------------------------------------------
 
-# OBS-03: only these events, with only these properties, are ever sent.
+# OBS-03: only these events, with only these properties, are ever sent: the template's own, which docs/data-inventory.md
+# lists, and the ones a module registers at wiring time (``AnalyticsEvents``, ``Contribution.analytics_events``).
 ANALYTICS_ALLOWLIST: Mapping[str, frozenset[str]] = {
     "project_created": frozenset({"context"}),
     "plan_changed": frozenset({"plan"}),
@@ -402,12 +403,49 @@ ANALYTICS_ALLOWLIST: Mapping[str, frozenset[str]] = {
 
 logger = logging.getLogger(__name__)
 
+_ANALYTICS_NAME = re.compile(r"[a-z][a-z0-9_]{2,63}")
+
+
+class AnalyticsEvents:
+    """The events the API may send, and the properties each may carry (OBS-03).
+
+    It starts with ``ANALYTICS_ALLOWLIST``. A module adds its own events with
+    ``Contribution.analytics_events``, which the composition root registers at startup, so adding
+    an event never edits the kernel. Registration refuses what the allowlist exists to prevent: a
+    name another event has, a property named like personal data or a secret, a name outside
+    lower-case snake case. A refusal stops the application from starting.
+    """
+
+    def __init__(self, base: Mapping[str, frozenset[str]] = ANALYTICS_ALLOWLIST) -> None:
+        self._events: dict[str, frozenset[str]] = dict(base)
+
+    def register(self, events: Mapping[str, frozenset[str]]) -> None:
+        added: dict[str, frozenset[str]] = {}
+        for name, properties in events.items():
+            problems = [f"event {name!r} is already registered"] if name in self._events else []
+            names = [name, *properties]
+            problems += [f"{n!r} is not lower-case snake case" for n in names if not _ANALYTICS_NAME.fullmatch(n)]
+            problems += [
+                f"property {p!r} is named like personal data or a secret" for p in properties if p in SENSITIVE_KEYS
+            ]
+            if problems:
+                raise ValueError(f"analytics event {name!r} cannot be registered: {'; '.join(problems)}")
+            added[name] = frozenset(properties)
+        self._events |= added
+
+    def properties(self, event: str) -> frozenset[str] | None:
+        """The properties ``event`` may carry; None if it is not allowed at all."""
+        return self._events.get(event)
+
+
 # Per process, at most 9 after-response dispatches (DATABASE_WORKER_POOL_MAX_SIZE - 1) and a drain send at once.
 _SENDING_THREADS = 10
 
 
-def _filter(event: str, properties: Mapping[str, str | int | bool]) -> dict[str, str | int | bool] | None:
-    allowed = ANALYTICS_ALLOWLIST.get(event)
+def _filter(
+    event: str, properties: Mapping[str, str | int | bool], events: AnalyticsEvents | None = None
+) -> dict[str, str | int | bool] | None:
+    allowed = ANALYTICS_ALLOWLIST.get(event) if events is None else events.properties(event)
     if allowed is None:
         logger.warning("analytics_event_not_allowlisted", extra={"analytics_event": event})
         return None
@@ -415,6 +453,9 @@ def _filter(event: str, properties: Mapping[str, str | int | bool]) -> dict[str,
 
 
 class NoopAnalytics:
+    def __init__(self, events: AnalyticsEvents | None = None) -> None:
+        self._events = events or AnalyticsEvents()
+
     def capture(
         self,
         user_id: UUID,
@@ -424,7 +465,7 @@ class NoopAnalytics:
         event_id: UUID | None = None,
         occurred_at: datetime | None = None,
     ) -> None:
-        _filter(event, properties)
+        _filter(event, properties, self._events)
 
     def flush(self) -> bool:
         return True
@@ -476,7 +517,9 @@ class PostHogAnalytics:
         confirm_timeout_seconds: float = 2.0,
         cooldown_seconds: float = 30.0,
         clock: Callable[[], float] = time.monotonic,
+        events: AnalyticsEvents | None = None,
     ) -> None:
+        self._events = events or AnalyticsEvents()
         self._flush_timeout = flush_timeout_seconds
         self._confirm_timeout = confirm_timeout_seconds
         self._cooldown = cooldown_seconds
@@ -515,7 +558,7 @@ class PostHogAnalytics:
         event_id: UUID | None = None,
         occurred_at: datetime | None = None,
     ) -> None:
-        filtered = _filter(event, properties)
+        filtered = _filter(event, properties, self._events)
         pending = self._pending.get()
         if event_id is not None:
             # An event dropped by the allowlist has nothing to confirm.
