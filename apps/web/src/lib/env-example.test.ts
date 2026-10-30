@@ -27,6 +27,12 @@ describe("the shipped .env.example", () => {
     expect(() => loadServerEnv(load(), { serving })).not.toThrow();
   });
 
+  it("cannot start in production: both keys must be live keys there", () => {
+    expect(() => loadServerEnv({ ...load(), APP_ENV: "production" }, { serving: true })).toThrow(
+      /NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY must be a live key when APP_ENV=production/,
+    );
+  });
+
   it("ships a Clerk pair that names a host nobody can register, so it can never match a real instance", () => {
     const key = load().NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ?? "";
     const origin = clerkFrontendApiOrigin(key);

@@ -69,6 +69,13 @@ def test_the_shipped_env_example_is_valid_and_reports_clerk_as_not_configured() 
     assert "placeholders" in out
 
 
+def test_the_shipped_placeholder_pair_cannot_start_in_production(env_file: Callable[[str], str]) -> None:
+    status, _, err = run(doctor.check_config, example_with(env_file, APP_ENV="production"))
+    assert status == 1
+    assert "  - NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY must be a live key when APP_ENV=production" in err
+    assert "  - CLERK_SECRET_KEY must be a live key when APP_ENV=production" in err
+
+
 def test_real_clerk_keys_are_not_reported_as_placeholders(env_file: Callable[[str], str]) -> None:
     path = example_with(
         env_file,
