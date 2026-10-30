@@ -7,8 +7,13 @@ import { SENSITIVE_QUERY_PARAMETERS, stripQuery } from "./redact";
 
 /**
  * Product analytics with an explicit allowlist (OBS-03). Events and
- * properties outside this map are dropped. Users are identified by the
- * internal user ID only — never by email or name.
+ * properties outside this map are dropped: `before_send` enforces it for
+ * everything the SDK sends, so a direct posthog.capture() is held to it too
+ * (and lint bans importing posthog-js outside this file). Users are
+ * identified by the internal user ID only — never by email or name.
+ *
+ * To add an event, add it here, and to docs/data-inventory.md; call
+ * `track("name", { property })` where it happens.
  */
 export const ANALYTICS_EVENTS = {
   upgrade_clicked: ["plan"],
@@ -52,6 +57,17 @@ const PINNED_OFF = {
   disable_web_experiments: true,
 } as const;
 
+/**
+ * The events the SDK sends on its own: a pageview on every navigation, and
+ * the identification of the signed-in user. Switching a feature in PINNED_OFF
+ * back on means adding its events here, or `before_send` drops them.
+ */
+const SDK_EVENTS: ReadonlySet<string> = new Set(["$pageview", "$identify"]);
+/** The properties every event needs to be ingested. */
+const REQUIRED_PROPERTIES = ["distinct_id", "token"];
+/** Person properties are set through `$set`, `$set_once`, and `$unset`; only `$set_once` may carry the SDK's own. */
+const PERSON_PROPERTIES = ["$set", "$set_once", "$unset"];
+
 /** Properties never sent, wherever the SDK puts them. */
 const DENYLIST = ["$current_url", "$referrer", "$initial_referrer"];
 /** Keys whose values are URLs or paths: the SDK's own (for example $session_entry_url, $initial_current_url) and any added later. */
@@ -75,6 +91,57 @@ function scrubProperties(properties: Record<string, unknown>): Properties {
       .filter(([key]) => !DENYLIST.includes(key))
       .map(([key, value]) => [key, scrubValue(key, value)]),
   ) as Properties;
+}
+
+function isAnalyticsEvent(name: string): name is AnalyticsEvent {
+  return Object.keys(ANALYTICS_EVENTS).includes(name);
+}
+
+/** The entries of person properties the SDK itself adds (`$initial_*`): its names start with "$". */
+function sdkPersonProperties(properties: unknown): Properties | undefined {
+  if (!isPlainObject(properties)) return undefined;
+  const own = Object.entries(properties).filter(([key]) => key.startsWith("$"));
+  return own.length ? (Object.fromEntries(own) as Properties) : undefined;
+}
+
+/**
+ * OBS-03 at runtime, for everything the SDK sends. An event outside
+ * ANALYTICS_EVENTS and SDK_EVENTS goes nowhere. Of the rest, only these stay:
+ * the properties the event's allowlist names (as strings), the SDK's own
+ * "$"-prefixed ones, and what ingestion needs. `$set` and `$unset` are
+ * dropped, and `$set_once` keeps the SDK's own entries, so no personal data
+ * set with register(), identify(), setPersonProperties(), or a capture option
+ * leaves the browser. Returns null to drop the event.
+ */
+function allowlistEvent(event: CaptureResult): CaptureResult | null {
+  const name: string = event.event;
+  const allowed: readonly string[] | undefined = isAnalyticsEvent(name)
+    ? ANALYTICS_EVENTS[name]
+    : SDK_EVENTS.has(name)
+      ? []
+      : undefined;
+  if (!allowed) return null;
+  const properties: Properties = {};
+  for (const [key, value] of Object.entries(event.properties)) {
+    if (key === "$set_once") {
+      const own = sdkPersonProperties(value);
+      if (own) properties[key] = own;
+    } else if (allowed.includes(key)) {
+      if (typeof value === "string") properties[key] = value;
+    } else if (
+      REQUIRED_PROPERTIES.includes(key) ||
+      (key.startsWith("$") && !PERSON_PROPERTIES.includes(key))
+    ) {
+      properties[key] = value;
+    }
+  }
+  const result: CaptureResult = { ...event, properties };
+  delete result.$set;
+  delete result.$unset;
+  const own = sdkPersonProperties(event.$set_once);
+  if (own) result.$set_once = own;
+  else delete result.$set_once;
+  return result;
 }
 
 /**
@@ -151,7 +218,8 @@ export function startAnalytics(): void {
       property_denylist: DENYLIST,
       before_send: (event) => {
         scrubStoredReferrers();
-        return scrubEvent(event);
+        const allowed = allowlistEvent(event);
+        return allowed && scrubEvent(allowed);
       },
     });
     started = true;
@@ -201,13 +269,46 @@ export function filterProperties<E extends AnalyticsEvent>(
   ) as Record<string, string>;
 }
 
-export function track<E extends AnalyticsEvent>(event: E, props: Props<E> = {}): void {
-  if (!started) return;
+/**
+ * Events tracked before analytics has started, which waits for the signed-in
+ * user's internal ID: kept, with the time they happened, and sent by
+ * flushPendingEvents() once identity is settled. At most MAX_PENDING_EVENTS are
+ * kept (OBS-06); later ones are dropped.
+ */
+const MAX_PENDING_EVENTS = 20;
+type PendingEvent = { event: AnalyticsEvent; props: Record<string, string>; at: Date };
+let pending: PendingEvent[] = [];
+
+function capture(event: AnalyticsEvent, props: Record<string, string>, at?: Date): void {
   try {
-    posthog.capture(event, filterProperties(event, props));
+    if (at) posthog.capture(event, props, { timestamp: at });
+    else posthog.capture(event, props);
   } catch {
     /* ignored */
   }
+}
+
+export function track<E extends AnalyticsEvent>(event: E, props: Props<E> = {}): void {
+  if (!analyticsEnabled() || typeof window === "undefined") return;
+  const filtered = filterProperties(event, props);
+  if (started) capture(event, filtered);
+  else if (pending.length < MAX_PENDING_EVENTS) pending.push({ event, props: filtered, at: new Date() });
+}
+
+/**
+ * Sends the events tracked before analytics started, as whoever it identified
+ * (or as the anonymous visitor). Call it once identity is settled.
+ */
+export function flushPendingEvents(): void {
+  if (!started) return;
+  const events = pending;
+  pending = [];
+  for (const { event, props, at } of events) capture(event, props, at);
+}
+
+/** Forgets the events tracked before analytics started: for a user who changed meanwhile, or who declined (consent, DEC-004). */
+export function discardPendingEvents(): void {
+  pending = [];
 }
 
 /** Sends one allowlisted test event immediately (integrations page). */

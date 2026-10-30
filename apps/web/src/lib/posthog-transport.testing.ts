@@ -9,7 +9,10 @@ export type SentRequest = { url: string; body: unknown };
 export type SentEvent = {
   event: string;
   properties: Record<string, unknown>;
+  timestamp?: string;
+  $set?: Record<string, unknown>;
   $set_once?: Record<string, unknown>;
+  $unset?: string[];
 };
 
 /** Captures every request the SDK makes (fetch, sendBeacon, XHR) instead of sending it. */
