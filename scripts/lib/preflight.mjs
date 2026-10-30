@@ -62,14 +62,18 @@ export function webProblems({ stdout, code }) {
 const CLERK_LEGACY =
   "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY and CLERK_SECRET_KEY still hold the old `replace_me` placeholders: paste your Clerk development keys, or copy the current placeholder pair from .env.example to run without an account";
 const CLERK_PLACEHOLDER =
-  "Clerk is not configured (the placeholder keys from .env.example): the app runs, but sign-in is unavailable. To sign in, paste your Clerk development keys into .env (docs/integrations.md#clerk) and restart.";
+  "Clerk is not configured (the placeholder keys from .env.example), so sign-in is unavailable. Paste your Clerk development keys into .env (docs/integrations.md#clerk).";
+// Clerk's development mode sends every page request to its Frontend API first, which a placeholder key cannot reach.
+const CLERK_NEEDED_FOR_PAGES =
+  "Clerk is not configured (the placeholder keys from .env.example). The web app cannot load a page without a Clerk instance: create a free development instance and paste its two keys into .env (docs/integrations.md#clerk).";
 
 /**
  * @returns {Promise<{ok: boolean, problems: string[], warnings: string[]}>}
  * `env` is what the API will see (process environment over .env, plus anything
- * the caller adds); `childEnv` is the environment the checks run in.
+ * the caller adds); `childEnv` is the environment the checks run in. With
+ * `requireClerk` (starting the web app), the placeholder Clerk pair is a problem, not a warning.
  */
-export async function runPreflight({ root, env, childEnv, run = capture }) {
+export async function runPreflight({ root, env, childEnv, run = capture, requireClerk = false }) {
   const problems = [];
   const warnings = [];
   if (readDotenv(root) === null && !env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY) {
@@ -81,7 +85,7 @@ export async function runPreflight({ root, env, childEnv, run = capture }) {
   }
   const clerk = clerkKeyState(env);
   if (clerk === "legacy-placeholder" || clerk === "missing") problems.push(CLERK_LEGACY);
-  if (clerk === "placeholder") warnings.push(CLERK_PLACEHOLDER);
+  if (clerk === "placeholder") (requireClerk ? problems : warnings).push(requireClerk ? CLERK_NEEDED_FOR_PAGES : CLERK_PLACEHOLDER);
 
   const [api, web] = await Promise.all([
     run("uv", ["run", "python", "-m", "app.cli", "check-config"], { cwd: path.join(root, "apps/api"), env: childEnv }),

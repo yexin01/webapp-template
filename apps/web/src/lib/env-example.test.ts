@@ -23,9 +23,12 @@ describe("the shipped .env.example", () => {
     return env;
   };
 
-  it.each([false, true])("builds and serves the web app without accounts (serving: %s)", (serving) => {
-    expect(() => loadServerEnv(load(), { serving })).not.toThrow();
-  });
+  it.each([false, true])(
+    "is accepted by the web validators, for a build and for serving (serving: %s)",
+    (serving) => {
+      expect(() => loadServerEnv(load(), { serving })).not.toThrow();
+    },
+  );
 
   it("cannot start in production: both keys must be live keys there", () => {
     expect(() => loadServerEnv({ ...load(), APP_ENV: "production" }, { serving: true })).toThrow(

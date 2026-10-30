@@ -121,8 +121,8 @@ def check_config(env_file: str | None, out: TextIO | None = None, err: TextIO | 
         print(f"{info.name:<14} {info.mode.value}{note}", file=out)
     if clerk_not_configured(settings):
         print(
-            "Note: the Clerk keys are placeholders, so sign-in is unavailable. "
-            "Paste your Clerk development keys into .env (docs/integrations.md#clerk).",
+            "Note: the Clerk keys are the placeholders from .env.example: sign-in is unavailable, and `pnpm dev` "
+            "cannot load pages. Paste your Clerk development keys into .env (docs/integrations.md#clerk).",
             file=out,
         )
     return 0

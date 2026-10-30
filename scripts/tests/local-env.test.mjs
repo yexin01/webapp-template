@@ -68,6 +68,14 @@ test("a missing or logged-out CLI gives one clear line and the run goes on witho
   }
 });
 
+test("the caller decides whether the placeholder Clerk pair may start the web app", async (t) => {
+  for (const requireClerk of [true, false]) {
+    const s = setup(t, "BILLING_MODE=mock\n");
+    await prepareLocalEnv({ ...s.options(async () => assert.fail("the CLI was called"), ok), requireClerk });
+    assert.equal(s.calls.preflight[0].requireClerk, requireClerk);
+  }
+});
+
 test("a failed preflight is reported as a short list and the run does not start", async (t) => {
   const s = setup(t, "BILLING_MODE=mock\n");
   const result = await prepareLocalEnv(

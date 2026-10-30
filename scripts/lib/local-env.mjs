@@ -11,7 +11,15 @@ import { describeFailure, runPreflight } from "./preflight.mjs";
  * @returns {Promise<{ok: boolean, apiEnv: Record<string, string>, listen: null | {apiKey: string, secret: string}}>}
  * `apiEnv` holds what only the API process gets (the signing secret). Messages go to `log`.
  */
-export async function prepareLocalEnv({ root, command, log = console.error, base = process.env, readSecret = readSigningSecret, preflight = runPreflight }) {
+export async function prepareLocalEnv({
+  root,
+  command,
+  requireClerk = false,
+  log = console.error,
+  base = process.env,
+  readSecret = readSigningSecret,
+  preflight = runPreflight,
+}) {
   const env = effectiveEnv(root, base);
   const apiEnv = {};
   let listen = null;
@@ -33,6 +41,7 @@ export async function prepareLocalEnv({ root, command, log = console.error, base
     root,
     env: { ...env, ...apiEnv },
     childEnv: { ...base, ...apiEnv },
+    requireClerk,
   });
   for (const warning of checked.warnings) log(`${command}: ${warning}`);
   if (!checked.ok) log(describeFailure(command, checked.problems));

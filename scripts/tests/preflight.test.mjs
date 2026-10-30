@@ -50,12 +50,21 @@ test("without a .env the first message says how to get one", async (t) => {
   assert.match(result.problems[0], /no \.env file: run `pnpm init-template`/);
 });
 
-test("the shipped placeholder pair passes with one plain warning that sign-in is unavailable", async (t) => {
+test("the shipped placeholder pair passes with one warning when nothing needs a page to load (check:setup)", async (t) => {
   const env = { NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: PLACEHOLDER_PUBLISHABLE_KEY, CLERK_SECRET_KEY: PLACEHOLDER_SECRET_KEY };
   const result = await runPreflight({ root: withRoot(t, ""), env, childEnv: env, run: passing });
   assert.equal(result.ok, true);
   assert.equal(result.warnings.length, 1);
   assert.match(result.warnings[0], /Clerk is not configured .*sign-in is unavailable.*docs\/integrations\.md#clerk/);
+});
+
+test("starting the web app with the placeholder pair is one problem that says to paste Clerk keys (pnpm dev)", async (t) => {
+  const env = { NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: PLACEHOLDER_PUBLISHABLE_KEY, CLERK_SECRET_KEY: PLACEHOLDER_SECRET_KEY };
+  const result = await runPreflight({ root: withRoot(t, ""), env, childEnv: env, run: passing, requireClerk: true });
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.warnings, []);
+  assert.equal(result.problems.length, 1);
+  assert.match(result.problems[0], /cannot load a page without a Clerk instance.*paste its two keys into \.env/);
 });
 
 test("the older replace_me pair is a problem that says what to paste", async (t) => {

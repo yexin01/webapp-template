@@ -149,7 +149,7 @@ function startStripeListener({ apiKey, secret }) {
 }
 
 async function main() {
-  const prepared = await prepareLocalEnv({ root, command: "dev" });
+  const prepared = await prepareLocalEnv({ root, command: "dev", requireClerk: true });
   if (stopping) return;
   if (!prepared.ok) process.exit(1);
 
