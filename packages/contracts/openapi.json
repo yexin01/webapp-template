@@ -120,6 +120,20 @@
         "title": "CheckoutRequest",
         "type": "object"
       },
+      "DiagnosticsAccess": {
+        "properties": {
+          "available": {
+            "description": "Whether this caller may use the diagnostics routes: false when diagnostics are off for them",
+            "title": "Available",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "available"
+        ],
+        "title": "DiagnosticsAccess",
+        "type": "object"
+      },
       "Entitlement": {
         "properties": {
           "context": {
@@ -999,6 +1013,38 @@
         "summary": "Sync Billing",
         "tags": [
           "billing"
+        ]
+      }
+    },
+    "/api/v1/diagnostics/access": {
+      "get": {
+        "description": "Whether the caller may use the diagnostics routes. Any signed-in caller gets an answer, never a 404;\nthe routes themselves decide again on every request.",
+        "operationId": "diagnostics_access_api_v1_diagnostics_access_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiagnosticsAccess"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          }
+        },
+        "summary": "Diagnostics Access",
+        "tags": [
+          "diagnostics"
         ]
       }
     },

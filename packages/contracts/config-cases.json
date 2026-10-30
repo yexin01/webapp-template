@@ -1,5 +1,5 @@
 {
-  "_comment": "Drift guard between the two validators (apps/api: kernel config and identity settings; apps/web: src/lib/env.server.ts). Test fixture only, read by tests/unit/test_config_cases.py and src/lib/env-cases.test.ts; nothing reads it at runtime. Each case is an environment delta over `base` (null unsets a variable) and the variables both apps must name in their problems (none: both must accept it). Values are synthetic.",
+  "_comment": "Drift guard between the two validators (apps/api: kernel config and identity settings; apps/web: src/lib/env.server.ts). Test fixture only, read by tests/unit/test_config_cases.py and src/lib/env-cases.test.ts; nothing reads it at runtime. Each case is an environment delta over `base` (null unsets a variable) and the variables both apps must name in their problems (none: both must accept it). A case that both accept may also list `authorizedParties`: the origins both apps must end up trusting for a session token's azp claim, in order. `origins` maps an address to the origin both apps must read it as (null: neither takes it as an origin), for APP_BASE_URL and CLERK_AUTHORIZED_PARTIES; the API's answers are the reference. Values are synthetic.",
   "base": {
     "APP_ENV": "local",
     "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY": "pk_test_ZXhhbXBsZS1hcHAuY2xlcmsuYWNjb3VudHMuZGV2JA==",
@@ -9,7 +9,10 @@
     {
       "name": "a valid local configuration",
       "env": {},
-      "names": []
+      "names": [],
+      "authorizedParties": [
+        "http://localhost:3000"
+      ]
     },
     {
       "name": "the platform's development environment derives local",
@@ -226,6 +229,317 @@
       "names": [
         "STRIPE_CUSTOM_DOMAIN"
       ]
+    },
+    {
+      "name": "the origin of APP_BASE_URL stands in for an unset list, in the form a browser sends it",
+      "env": {
+        "APP_BASE_URL": "HTTPS://App.Example.com:443/"
+      },
+      "names": [],
+      "authorizedParties": [
+        "https://app.example.com"
+      ]
+    },
+    {
+      "name": "separators alone name no party",
+      "env": {
+        "CLERK_AUTHORIZED_PARTIES": " , ,"
+      },
+      "names": [],
+      "authorizedParties": [
+        "http://localhost:3000"
+      ]
+    },
+    {
+      "name": "an empty list names no party",
+      "env": {
+        "CLERK_AUTHORIZED_PARTIES": ""
+      },
+      "names": [],
+      "authorizedParties": [
+        "http://localhost:3000"
+      ]
+    },
+    {
+      "name": "parties in the form a browser sends them",
+      "env": {
+        "CLERK_AUTHORIZED_PARTIES": "HTTPS://Preview.Example.com:443/, http://Localhost:3000, http://[::1]:3000"
+      },
+      "names": [],
+      "authorizedParties": [
+        "https://preview.example.com",
+        "http://localhost:3000",
+        "http://[::1]:3000"
+      ]
+    },
+    {
+      "name": "the origin of APP_BASE_URL and another are listed",
+      "env": {
+        "APP_BASE_URL": "https://stable.example.com",
+        "CLERK_AUTHORIZED_PARTIES": "https://other.example.com,https://stable.example.com"
+      },
+      "names": [],
+      "authorizedParties": [
+        "https://other.example.com",
+        "https://stable.example.com"
+      ]
+    },
+    {
+      "name": "a party without a scheme",
+      "env": {
+        "CLERK_AUTHORIZED_PARTIES": "http://localhost:3000,localhost:3000"
+      },
+      "names": [
+        "CLERK_AUTHORIZED_PARTIES"
+      ]
+    },
+    {
+      "name": "a party with a path",
+      "env": {
+        "CLERK_AUTHORIZED_PARTIES": "http://localhost:3000,https://a.example/x"
+      },
+      "names": [
+        "CLERK_AUTHORIZED_PARTIES"
+      ]
+    },
+    {
+      "name": "a party with credentials",
+      "env": {
+        "CLERK_AUTHORIZED_PARTIES": "http://localhost:3000,https://user@a.example"
+      },
+      "names": [
+        "CLERK_AUTHORIZED_PARTIES"
+      ]
+    },
+    {
+      "name": "a party that is no address",
+      "env": {
+        "CLERK_AUTHORIZED_PARTIES": "http://localhost:3000,not an origin"
+      },
+      "names": [
+        "CLERK_AUTHORIZED_PARTIES"
+      ]
+    },
+    {
+      "name": "a list that leaves out the origin of APP_BASE_URL",
+      "env": {
+        "CLERK_AUTHORIZED_PARTIES": "https://other.example.com"
+      },
+      "names": [
+        "CLERK_AUTHORIZED_PARTIES",
+        "APP_BASE_URL"
+      ]
+    },
+    {
+      "name": "an APP_BASE_URL with a path",
+      "env": {
+        "APP_BASE_URL": "https://app.example.com/x"
+      },
+      "names": [
+        "APP_BASE_URL"
+      ]
+    },
+    {
+      "name": "an APP_BASE_URL that is no origin",
+      "env": {
+        "APP_BASE_URL": "localhost:3000"
+      },
+      "names": [
+        "APP_BASE_URL"
+      ]
+    },
+    {
+      "name": "a preview deployment that does not name APP_BASE_URL",
+      "env": {
+        "APP_ENV": "preview",
+        "BILLING_MODE": "mock",
+        "LLM_MODE": "mock",
+        "ANALYTICS_MODE": "disabled",
+        "ERROR_REPORTING_MODE": "disabled"
+      },
+      "names": [
+        "APP_BASE_URL"
+      ]
+    },
+    {
+      "name": "production over http",
+      "env": {
+        "APP_ENV": "production",
+        "APP_BASE_URL": "http://app.example.com",
+        "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY": "pk_live_Y2xlcmsuZXhhbXBsZS5jb20k",
+        "CLERK_SECRET_KEY": "sk_live_not_a_real_secret"
+      },
+      "names": [
+        "APP_BASE_URL"
+      ]
+    },
+    {
+      "name": "a preview deployment trusts its own origin and its branch's",
+      "env": {
+        "APP_ENV": "preview",
+        "BILLING_MODE": "mock",
+        "LLM_MODE": "mock",
+        "ANALYTICS_MODE": "disabled",
+        "ERROR_REPORTING_MODE": "disabled",
+        "APP_BASE_URL": "https://preview.example.com",
+        "VERCEL_ENV": "preview",
+        "VERCEL_URL": "my-app-abc123-team.vercel.app",
+        "VERCEL_BRANCH_URL": "my-app-git-feature-team.vercel.app"
+      },
+      "names": [],
+      "authorizedParties": [
+        "https://preview.example.com",
+        "https://my-app-abc123-team.vercel.app",
+        "https://my-app-git-feature-team.vercel.app"
+      ]
+    },
+    {
+      "name": "the derived origins are added to a list and never replace it",
+      "env": {
+        "APP_ENV": "preview",
+        "BILLING_MODE": "mock",
+        "LLM_MODE": "mock",
+        "ANALYTICS_MODE": "disabled",
+        "ERROR_REPORTING_MODE": "disabled",
+        "APP_BASE_URL": "https://stable.example.com",
+        "VERCEL_ENV": "preview",
+        "VERCEL_URL": "my-app-abc123-team.vercel.app",
+        "VERCEL_BRANCH_URL": "my-app-git-feature-team.vercel.app",
+        "CLERK_AUTHORIZED_PARTIES": "https://stable.example.com,https://my-app-abc123-team.vercel.app"
+      },
+      "names": [],
+      "authorizedParties": [
+        "https://stable.example.com",
+        "https://my-app-abc123-team.vercel.app",
+        "https://my-app-git-feature-team.vercel.app"
+      ]
+    },
+    {
+      "name": "a staging project on Vercel production derives nothing",
+      "env": {
+        "APP_ENV": "preview",
+        "BILLING_MODE": "mock",
+        "LLM_MODE": "mock",
+        "ANALYTICS_MODE": "disabled",
+        "ERROR_REPORTING_MODE": "disabled",
+        "APP_BASE_URL": "https://preview.example.com",
+        "VERCEL_ENV": "production",
+        "VERCEL_URL": "my-app-abc123-team.vercel.app",
+        "VERCEL_BRANCH_URL": "my-app-git-feature-team.vercel.app"
+      },
+      "names": [],
+      "authorizedParties": [
+        "https://preview.example.com"
+      ]
+    },
+    {
+      "name": "only bare hostnames are taken from the platform",
+      "env": {
+        "APP_ENV": "preview",
+        "BILLING_MODE": "mock",
+        "LLM_MODE": "mock",
+        "ANALYTICS_MODE": "disabled",
+        "ERROR_REPORTING_MODE": "disabled",
+        "APP_BASE_URL": "https://preview.example.com",
+        "VERCEL_ENV": "preview",
+        "VERCEL_URL": "https://my-app-abc123-team.vercel.app/x",
+        "VERCEL_BRANCH_URL": "my-app-git-feature-team.vercel.app"
+      },
+      "names": [],
+      "authorizedParties": [
+        "https://preview.example.com",
+        "https://my-app-git-feature-team.vercel.app"
+      ]
+    },
+    {
+      "name": "automated tests need no authorized parties",
+      "env": {
+        "APP_ENV": "test"
+      },
+      "names": [],
+      "authorizedParties": []
+    },
+    {
+      "name": "automated tests do not check them",
+      "env": {
+        "APP_ENV": "test",
+        "CLERK_AUTHORIZED_PARTIES": "not an origin"
+      },
+      "names": []
     }
-  ]
+  ],
+  "origins": {
+    "http://localhost:3000": "http://localhost:3000",
+    "https://app.example.com": "https://app.example.com",
+    "HTTPS://App.Example.com:443/": "https://app.example.com",
+    "http://App.Example.com:80": "http://app.example.com",
+    "https://app.example.com:8443/": "https://app.example.com:8443",
+    "http://[::1]:3000": "http://[::1]:3000",
+    "http://[::FFFF:1.2.3.4]": "http://[::ffff:1.2.3.4]",
+    "http://[0:0:0:0:0:0:0:1]:3000": "http://[0:0:0:0:0:0:0:1]:3000",
+    "http://[fe80::1]": "http://[fe80::1]",
+    "http://[1.2.3.4]": null,
+    "http://[zz]": null,
+    "http://[::1": null,
+    "http://::1]": null,
+    "localhost:3000": null,
+    "localhost": null,
+    "https://": null,
+    "http://": null,
+    "https:///a.example": null,
+    "https:a.example": null,
+    "https:/a.example": null,
+    "https//a.example": null,
+    "ftp://a.example": null,
+    "javascript:alert(1)": null,
+    "https://a.example/x": null,
+    "https://a.example//": null,
+    "https://a.example/": "https://a.example",
+    "https://a.example?x=1": null,
+    "https://a.example#f": null,
+    "https://a.example/?": null,
+    "https://u@a.example": null,
+    "https://:@a.example": null,
+    "https://u:p@a.example": null,
+    "https://a.example.": null,
+    "https://a..example": "https://a..example",
+    "https://-a.example": null,
+    "https://a-.example": "https://a-.example",
+    "https://a_b.example": "https://a_b.example",
+    "https://a$b.example": null,
+    "https://a%2eexample": null,
+    "https://a.example%": null,
+    "https://a b.example": null,
+    "https://a.example:": "https://a.example",
+    "https://a.example:0": "https://a.example:0",
+    "https://a.example:65535": "https://a.example:65535",
+    "https://a.example:65536": null,
+    "https://a.example:99999": null,
+    "https://a.example:abc": null,
+    "https://a.example:80:90": null,
+    "https://a.example:080": "https://a.example:80",
+    "https://a.example:+80": null,
+    "https:\\\\a.example": null,
+    "https://a.example\\": null,
+    "https://m\u00fcnchen.example": null,
+    "https://xn--mnchen-3ya.example": "https://xn--mnchen-3ya.example",
+    "https://a.example\u00a0": null,
+    "\thttps://a.example": null,
+    "https://a.example\n": null,
+    "": null,
+    "https://1.2.3.4": "https://1.2.3.4",
+    "https://127.1:8000": "https://127.1:8000",
+    "https://localhost.": null,
+    "https://LOCALHOST": "https://localhost",
+    "http://a": "http://a",
+    "https://a.b.c.d.e.f.example.com:1234": "https://a.b.c.d.e.f.example.com:1234",
+    "https://a.example:00443": "https://a.example",
+    "https://a.example:0443": "https://a.example",
+    "https://*.example.com": null,
+    "https://a.example,https://b.example": null,
+    "https://[::1]:": "https://[::1]",
+    "https://[::1]:abc": null,
+    "hTTpS://A.Example": "https://a.example",
+    "https://a.example/\\": null
+  }
 }

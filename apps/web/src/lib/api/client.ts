@@ -199,6 +199,8 @@ export function createApiClient(getToken: TokenGetter, options: ApiClientOptions
           : client.GET("/api/v1/pro/insight"),
       ),
     llmCheck: () => send(client.POST("/api/v1/llm/check", viaProvider)),
+    /** Whether the signed-in user may use the operator tools. An answer for every user, never a 404. */
+    diagnosticsAccess: () => send(client.GET("/api/v1/diagnostics/access")),
     integrations: () => send(client.GET("/api/v1/diagnostics/integrations")),
     runIntegrationCheck: (key: Schemas["IntegrationKey"]) =>
       send(

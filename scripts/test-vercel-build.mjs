@@ -97,6 +97,10 @@ function buildEnvironment() {
     ...env,
     ...canaries(),
     APP_ENV: "preview",
+    // A preview names where it is served from and both telemetry modes (ENV-03). Nothing here reaches a provider.
+    APP_BASE_URL: "https://preview.invalid",
+    ANALYTICS_MODE: "disabled",
+    ERROR_REPORTING_MODE: "disabled",
     NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:
       env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ||
       `pk_test_${Buffer.from("placeholder.clerk.accounts.dev$").toString("base64")}`,

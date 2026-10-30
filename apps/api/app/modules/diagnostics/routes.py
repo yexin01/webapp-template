@@ -23,6 +23,12 @@ from app.modules.diagnostics.service import DiagnosticsService
 Environment = Literal["local", "test", "preview", "production"]
 
 
+class DiagnosticsAccess(BaseModel):
+    available: bool = Field(
+        description="Whether this caller may use the diagnostics routes: false when diagnostics are off for them"
+    )
+
+
 class IntegrationStatus(BaseModel):
     key: IntegrationKey
     name: str
@@ -66,6 +72,17 @@ def build_router(diagnostics: DiagnosticsService, environment: Environment, auth
     router = APIRouter(tags=["diagnostics"])
     Personal = Annotated[TenantContext, Depends(auth.personal)]
     responses = errors(401, 404, 429)
+
+    @router.get(
+        "/diagnostics/access",
+        response_model=DiagnosticsAccess,
+        responses=errors(401),
+        dependencies=[requires(Access.OWN_ACCOUNT)],
+    )
+    def diagnostics_access(ctx: Personal) -> DiagnosticsAccess:
+        """Whether the caller may use the diagnostics routes. Any signed-in caller gets an answer, never a 404;
+        the routes themselves decide again on every request."""
+        return DiagnosticsAccess(available=diagnostics.may_use(ctx))
 
     @router.get(
         "/diagnostics/integrations",
