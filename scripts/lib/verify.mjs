@@ -121,7 +121,8 @@ export function catalog({ root, migrations = migrationFiles(root) }) {
     pnpm("links", "Documentation links resolve", ["check:links"]),
     pnpm("new-module", "Module generator (ADR-0003)", ["test:new-module"], { db: "required", needs: ["pnpm", "uv"] }),
     pnpm("build", "Web: account-free build and bundle secret scan", ["build:check"]),
-    pnpm("web-audit", "Web: dependency audit (production)", ["audit", "--prod"], { network: true }),
+    node("audit-self-test", "web", "Web: audit scanner self-test", ["scripts/npm-audit-bulk.mjs", "--self-test"]),
+    node("web-audit", "web", "Web: dependency audit (production)", ["scripts/npm-audit-bulk.mjs"], { network: true }),
     node("licenses-self-test", "web", "Licenses: scanner self-test", ["scripts/check-licenses.mjs", "--self-test"]),
     pnpm("licenses", "Licenses: allowlist", ["security:licenses"], { needs: ["pnpm", "uv"] }),
     pnpm("e2e", "End-to-end (account-free)", ["test:e2e"], {
