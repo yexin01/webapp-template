@@ -36,6 +36,14 @@ query into a single transaction. Semantics:
 - A pooled connection that died while idle (after a pooler restart or a
   failover) fails on its first round trip, before any work has run. The
   transaction is then started again on another connection.
+
+**The login role** (DEC-008). Every transaction switches to ``app_api`` or
+``app_worker``, but a query can switch back with ``set_config('role', ...)`` and
+is then whoever the connection logged in as. In preview and production the
+first transaction of the process therefore checks that login role once, and
+every transaction after it fails with a 503 while it is a superuser, has
+BYPASSRLS, or owns the app tables (the migration role does). Local
+development and tests may log in as a superuser.
 """
 
 from __future__ import annotations
@@ -62,6 +70,7 @@ from psycopg_pool import ConnectionPool, PoolTimeout
 
 from app.kernel.errors import DependencyUnavailableError, DomainError
 from app.kernel.events import DomainEvent
+from app.kernel.infrastructure.store import describe_login_role
 from app.kernel.ports import AuditEntry, Clock
 from app.kernel.tenancy import Role, TenantContext
 
@@ -75,6 +84,10 @@ R = TypeVar("R")
 RV = TypeVar("RV")
 
 DATABASE_UNAVAILABLE = "The database is temporarily unavailable."
+UNSAFE_LOGIN_ROLE = (
+    "The database login role can skip row-level security. Set DATABASE_URL to the app_login role "
+    "(run pnpm db:api-login with the migration connection) and redeploy."
+)
 _PSYCOPG_WAIT_INTERVAL = 0.1  # psycopg's default; how often a wait wakes to notice interrupts
 
 # Threads the HTTP server runs blocking work on (AnyIO's default, set explicitly
@@ -82,6 +95,12 @@ _PSYCOPG_WAIT_INTERVAL = 0.1  # psycopg's default; how often a wait wakes to not
 REQUEST_THREADS = 40
 
 logger = logging.getLogger(__name__)
+
+
+class UnsafeLoginRoleError(DependencyUnavailableError):
+    """The login role could skip row-level security in a query that switches role, so no database work runs."""
+
+    default_message = UNSAFE_LOGIN_ROLE
 
 
 class BoundedConnection(psycopg.Connection[TupleRow]):
@@ -165,8 +184,11 @@ class Database:
         statement_timeout_ms: int,
         request_threads: int = REQUEST_THREADS,
         reserved_threads: int = 0,
+        enforce_login_role: bool = False,
     ) -> None:
         self._conninfo = conninfo
+        self._enforce_login_role = enforce_login_role
+        self._login_role_problems: tuple[str, ...] | None = None  # None: not checked yet
         self._sizes = {API_ROLE: api_pool_size, WORKER_ROLE: worker_pool_size}
         self._connect_timeout = connect_timeout
         self._statement_timeout_ms = statement_timeout_ms
@@ -241,6 +263,8 @@ class Database:
             try:
                 conn = attempt.enter_context(pool.connection())
                 attempt.enter_context(conn.transaction())
+                if self._enforce_login_role:
+                    self._require_safe_login_role(conn)
                 conn.execute(query, params)
             except BaseException as exc:
                 attempt.__exit__(type(exc), exc, exc.__traceback__)
@@ -250,6 +274,19 @@ class Database:
             stack.enter_context(attempt)
             return conn
         raise psycopg.OperationalError("Every pooled database connection was lost.")
+
+    def _require_safe_login_role(self, conn: psycopg.Connection) -> None:
+        """Check the login role on the process's first transaction, and fail every transaction while it is unsafe."""
+        problems = self._login_role_problems
+        if problems is None:
+            problems = describe_login_role(conn).problems
+            with self._lock:
+                first = self._login_role_problems is None
+                self._login_role_problems = problems
+            if problems and first:
+                logger.error("unsafe_database_login_role", extra={"problems": "; ".join(problems)})
+        if problems:
+            raise UnsafeLoginRoleError
 
     def setup_statement(self, role: str, context: Mapping[str, str]) -> tuple[sql.Composed, list[str]]:
         """The single statement that applies role, timeout, and full tenant context.

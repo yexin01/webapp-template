@@ -125,11 +125,12 @@ def empty_database(url: str) -> Iterator[str]:
         superuser_query(url, f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
 
 
-def stand_in_migrations(directory: Path, api: str, worker: str) -> list[migrations.Migration]:
-    """Every migration, written to ``directory`` with the roles named here in place of app_api and app_worker."""
+def stand_in_migrations(directory: Path, api: str, worker: str, login: str) -> list[migrations.Migration]:
+    """Every migration, written to ``directory`` with the roles named here in place of app_api, app_worker, and
+    app_login. The login role is created by the migrations: the caller drops it."""
     for migration in migrations.discover():
         text = migration.path.read_text(encoding="utf-8")
-        text = re.sub(r"\bapp_worker\b", worker, re.sub(r"\bapp_api\b", api, text))
+        text = re.sub(r"\bapp_login\b", login, re.sub(r"\bapp_worker\b", worker, re.sub(r"\bapp_api\b", api, text)))
         (directory / migration.path.name).write_text(text, encoding="utf-8")
     return migrations.discover(directory)
 
@@ -375,15 +376,20 @@ def test_migrations_stop_at_an_unsafe_role_until_it_is_fixed(
 ) -> None:
     """The scratch roles stand in for the runtime roles in every migration, so the real policies are checked. The
     migrations before the check still apply; the check is not recorded, so it runs again after the fix."""
+    login = f"app_test_login_{uuid.uuid4().hex[:10]}"
     with scratch_role(db, inherit=True) as api, scratch_role(db) as worker, empty_database(db) as url:
-        superuser_query(db, unsafe.format(api=api, worker=worker))
-        every = stand_in_migrations(tmp_path, api, worker)
-        [check] = [m for m in every if m.path.name == CHECK.name]
-        with pytest.raises(psycopg.errors.RaiseException) as raised:
-            migrations.migrate(url, tmp_path)
-        assert raised.value.diag.message_primary == PREFIX + problem.format(api=api, worker=worker)
-        recorded = superuser_query(url, "SELECT version FROM public.app_schema_migrations ORDER BY version")
-        assert recorded == [(m.version,) for m in every if int(m.version) < int(check.version)]
+        try:
+            superuser_query(db, unsafe.format(api=api, worker=worker))
+            every = stand_in_migrations(tmp_path, api, worker, login)
+            [check] = [m for m in every if m.path.name == CHECK.name]
+            with pytest.raises(psycopg.errors.RaiseException) as raised:
+                migrations.migrate(url, tmp_path)
+            assert raised.value.diag.message_primary == PREFIX + problem.format(api=api, worker=worker)
+            recorded = superuser_query(url, "SELECT version FROM public.app_schema_migrations ORDER BY version")
+            assert recorded == [(m.version,) for m in every if int(m.version) < int(check.version)]
 
-        superuser_query(db, fix.format(api=api, worker=worker))
-        assert migrations.migrate(url, tmp_path) == [m.path.name for m in every if int(m.version) >= int(check.version)]
+            superuser_query(db, fix.format(api=api, worker=worker))
+            applied = migrations.migrate(url, tmp_path)
+            assert applied == [m.path.name for m in every if int(m.version) >= int(check.version)]
+        finally:
+            superuser_query(db, f"DROP ROLE IF EXISTS {login}")

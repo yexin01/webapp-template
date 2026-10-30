@@ -64,9 +64,11 @@ def secret(value: SecretStr | None) -> str:
     return value.get_secret_value() if value is not None else ""
 
 
-DATABASE_URL_INVALID = (
-    "DATABASE_URL is not a valid PostgreSQL connection string (percent-encode special characters in the password)"
-)
+def database_url_invalid(name: str) -> str:
+    return f"{name} is not a valid PostgreSQL connection string (percent-encode special characters in the password)"
+
+
+DATABASE_URL_INVALID = database_url_invalid("DATABASE_URL")
 
 
 def database_url_is_valid(url: str) -> bool:
@@ -205,6 +207,8 @@ class DatabaseSettings(BaseSettings):
     )
 
     database_url: SecretStr | None = None
+    # The schema owner's connection, for migrations and local seed and reset. The running API never reads it.
+    migration_database_url: SecretStr | None = None
     # No default: destructive commands need APP_ENV set explicitly (ENV-05).
     app_env: AppEnv | None = None
 
@@ -227,10 +231,25 @@ def require_development_environment(operation: str) -> None:
         raise ConfigError(f"Refusing to {operation}: APP_ENV={app_env.value}; this command needs local or test.")
 
 
+def requires_restricted_login_role(app_env: AppEnv) -> bool:
+    """Preview and production refuse a login role that could skip row-level security (DEC-008)."""
+    return app_env in (AppEnv.PREVIEW, AppEnv.PRODUCTION)
+
+
 def load_database_url() -> str:
     url = DatabaseSettings().database_url
     if url is None or not url.get_secret_value().strip():
         raise ConfigError("Invalid configuration: DATABASE_URL is required")
     if not database_url_is_valid(url.get_secret_value()):
         raise ConfigError(f"Invalid configuration: {DATABASE_URL_INVALID}")
+    return url.get_secret_value()
+
+
+def load_migration_database_url() -> str:
+    """The connection for migrate, seed, reset, and api-login: MIGRATION_DATABASE_URL, else DATABASE_URL."""
+    url = DatabaseSettings().migration_database_url
+    if url is None or not url.get_secret_value().strip():
+        return load_database_url()
+    if not database_url_is_valid(url.get_secret_value()):
+        raise ConfigError(f"Invalid configuration: {database_url_invalid('MIGRATION_DATABASE_URL')}")
     return url.get_secret_value()

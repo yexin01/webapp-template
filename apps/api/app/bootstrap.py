@@ -25,7 +25,7 @@ from app.kernel.http.app import build_fastapi
 from app.kernel.http.request_scope import AfterResponseDispatch, note_recorded_event, request_transaction
 from app.kernel.http.routes import build_health_router, build_jobs_router
 from app.kernel.infrastructure.clock import SystemClock
-from app.kernel.infrastructure.config import AppEnv, Mode
+from app.kernel.infrastructure.config import AppEnv, Mode, requires_restricted_login_role
 from app.kernel.infrastructure.db import REQUEST_THREADS, Database, PgTransactions
 from app.kernel.infrastructure.integrations import describe_analytics, describe_database, describe_error_reporting
 from app.kernel.infrastructure.migrations import with_tls_default
@@ -139,7 +139,9 @@ def build_container(settings: Settings, **overrides: Any) -> Container:
     # new:module:build
     llm = build_llm(settings, kernel, identity.auth, overrides)
     probes = [
-        DatabaseProbe(describe_database(settings), store),
+        DatabaseProbe(
+            describe_database(settings), store, restricted_login=requires_restricted_login_role(settings.app_env)
+        ),
         *identity.contribution.probes,
         *billing.contribution.probes,
         *llm.contribution.probes,
@@ -204,6 +206,7 @@ def _database(settings: Settings) -> Database:
         statement_timeout_ms=settings.database_statement_timeout_ms,
         request_threads=REQUEST_THREADS,
         reserved_threads=reserved_request_threads(settings),
+        enforce_login_role=requires_restricted_login_role(settings.app_env),
     )
 
 

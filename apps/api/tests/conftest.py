@@ -51,6 +51,7 @@ _ENV_PREFIXES = (
     "SENTRY_",
     "VERCEL_GIT_COMMIT_SHA",
     "MEMBERSHIP_",
+    "MIGRATION_",
     "CHECKOUTS_",
     "PORTAL_",
     "MAX_REQUEST_",

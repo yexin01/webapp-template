@@ -27,6 +27,7 @@
     "db:up": "docker compose up -d --wait postgres",
     "db:down": "docker compose down",
     "db:migrate": "cd apps/api && uv run python -m app.cli migrate",
+    "db:api-login": "cd apps/api && uv run python -m app.cli api-login",
     "db:seed": "cd apps/api && uv run python -m app.cli seed",
     "db:reset": "cd apps/api && uv run python -m app.cli reset --seed",
     "db:restore-drill": "node scripts/restore-drill.mjs",

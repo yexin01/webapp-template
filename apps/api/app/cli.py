@@ -3,6 +3,8 @@
 Destructive and development-only commands refuse non-local databases, need
 ``APP_ENV`` set to local or test, and need ``--yes`` (ENV-05). Reconciliation
 is a dry run unless ``--apply`` is given (BILL-19).
+``migrate``, ``seed``, ``reset``, and ``api-login`` connect as the schema owner:
+``MIGRATION_DATABASE_URL``, or ``DATABASE_URL`` when it is not set.
 ``job <name>`` runs any registered job (the same ones Vercel Cron calls).
 """
 
@@ -10,21 +12,23 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import getpass
 import json
+import os
 import sys
 from pathlib import Path
 from uuid import UUID
 
 from app.kernel.infrastructure import migrations
-from app.kernel.infrastructure.config import ConfigError, load_database_url, require_development_environment
+from app.kernel.infrastructure.config import ConfigError, load_migration_database_url, require_development_environment
 from app.settings import load_settings
 
 
 def _database_url(args: argparse.Namespace) -> str:
-    url = load_database_url()
+    url = load_migration_database_url()
     if not migrations.is_local_database(url) and not getattr(args, "allow_remote", False):
         raise migrations.UnsafeTargetError(
-            "DATABASE_URL is not local. Re-run with --allow-remote only with explicit owner authorization."
+            "The database is not local. Re-run with --allow-remote only with explicit owner authorization."
         )
     return url
 
@@ -32,6 +36,34 @@ def _database_url(args: argparse.Namespace) -> str:
 def cmd_migrate(args: argparse.Namespace) -> int:
     applied = migrations.migrate(_database_url(args))
     print(json.dumps({"applied": applied}))
+    return 0
+
+
+def _login_password() -> str:
+    """The runtime login's password: ``API_DB_PASSWORD``, else typed twice. Never echoed or written anywhere."""
+    password = os.environ.get("API_DB_PASSWORD", "")
+    if password:
+        return password
+    if not sys.stdin.isatty():
+        raise ConfigError("Set API_DB_PASSWORD, or run this command in a terminal to type the password.")
+    password = getpass.getpass(f"New password for {migrations.APP_LOGIN_ROLE}: ")
+    if getpass.getpass("Repeat it: ") != password:
+        raise ConfigError("The two passwords differ.")
+    return password
+
+
+def cmd_api_login(args: argparse.Namespace) -> int:
+    url = _database_url(args)
+    migrations.enable_api_login(url, _login_password(), migrations.APP_LOGIN_ROLE)
+    print(json.dumps({"login_role": migrations.APP_LOGIN_ROLE, "login": True}))
+    template = migrations.runtime_url_template(url, migrations.APP_LOGIN_ROLE)
+    where = f"postgresql://{migrations.APP_LOGIN_ROLE}:<password>@<same host, port, and database>"
+    print(
+        f"{migrations.APP_LOGIN_ROLE} can log in. In the environment where the API runs, set DATABASE_URL to "
+        f"{template or where} (percent-encode special characters in the password). "
+        "Keep MIGRATION_DATABASE_URL out of that environment.",
+        file=sys.stderr,
+    )
     return 0
 
 
@@ -139,6 +171,13 @@ def main(argv: list[str] | None = None) -> int:
         "--allow-remote", action="store_true", help="Permit a non-local DATABASE_URL (requires authorization)"
     )
     p.set_defaults(func=cmd_migrate)
+
+    p = sub.add_parser(
+        "api-login",
+        help="Let the app_login role log in with a password (typed, or API_DB_PASSWORD); the server gets only a hash",
+    )
+    p.add_argument("--allow-remote", action="store_true", help="Permit a non-local database (requires authorization)")
+    p.set_defaults(func=cmd_api_login)
 
     p = sub.add_parser("seed", help="Load deterministic synthetic data (local only)")
     p.add_argument("--yes", action="store_true", help="Confirm writing into the local database")
