@@ -84,10 +84,3 @@ def test_user_syncs_per_hour_are_bounded(value: int) -> None:
     with pytest.raises(ConfigError, match="BILLING_SYNCS_PER_USER_PER_HOUR"):
         make_settings(billing_syncs_per_user_per_hour=value)
     assert make_settings().billing_syncs_per_user_per_hour == 30
-
-
-@pytest.mark.parametrize("value", [0, 100_001])
-def test_user_syncs_for_all_users_together_are_bounded(value: int) -> None:
-    with pytest.raises(ConfigError, match="BILLING_SYNCS_GLOBAL_PER_HOUR"):
-        make_settings(billing_syncs_global_per_hour=value)
-    assert make_settings().billing_syncs_global_per_hour == 600

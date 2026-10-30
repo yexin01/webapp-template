@@ -490,21 +490,31 @@ def test_a_user_sync_counts_against_the_per_instance_bound_that_checkout_and_the
     assert sync(h, second).status_code == 200
 
 
-def test_user_syncs_are_limited_for_all_users_together_after_each_users_own_allowance(make_harness: Any) -> None:
-    h = make_harness({"billing_syncs_per_user_per_hour": 1, "billing_syncs_global_per_hour": 2})
-    users = [h.login(name) for name in ("user_a", "user_b", "user_c")]
-    for headers in users:
+def sync_buckets(h: Harness) -> list[str]:
+    rows = superuser_query(
+        h.database_url,
+        "SELECT DISTINCT bucket_key FROM app.rate_limit_counters WHERE bucket_key LIKE 'billing-sync:%%' ORDER BY 1",
+    )
+    return [r[0] for r in rows]
+
+
+def test_no_user_sync_limit_is_shared_so_a_crowd_of_accounts_cannot_lock_others_out(make_harness: Any) -> None:
+    """Whatever a sync is refused for, and whether or not the user has a billing account, it counts only
+    against the caller's own allowance: a bucket shared by all users is one any crowd of free accounts could fill."""
+    h = make_harness({"billing_syncs_per_user_per_hour": 1, "database_worker_pool_max_size": 2})
+    with_account = [h.login("user_a"), h.login("user_b")]
+    without_account = [h.login(f"crowd_{i}") for i in range(3)]
+    for headers in with_account:
         start_checkout(h, headers)
-    reads = h.billing.calls.count("list_customer_subscriptions")
-    a, b, c = users
-    # user_a's second ask is over their own allowance and does not use the shared one.
-    assert [sync(h, a).status_code, sync(h, a).status_code, sync(h, b).status_code, sync(h, c).status_code] == [
-        200,
-        429,
-        200,
-        429,
-    ]
-    assert h.billing.calls.count("list_customer_subscriptions") == reads + 2
+    # Two worker connections leave one slot, which is the webhooks': a sync from a user with an account is refused.
+    answers = [sync(h, headers).status_code for headers in [*with_account, *without_account]]
+    assert answers == [503, 503, 200, 200, 200]
+    assert sync(h, without_account[0]).status_code == 429  # over their own allowance
+    users = {r[0] for r in superuser_query(h.database_url, "SELECT id::text FROM app.users")}
+    assert set(sync_buckets(h)) == {f"billing-sync:{user}" for user in users}  # one per user, none shared
+    legit = h.login("legit")
+    assert sync(h, legit).status_code == 200  # none of the above counted against them
+    assert sync(h, legit).status_code == 429
 
 
 def test_a_sync_and_a_webhook_for_the_same_customer_converge_and_record_the_plan_change_once(harness: Harness) -> None:

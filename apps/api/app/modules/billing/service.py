@@ -136,7 +136,6 @@ class BillingService:
         checkouts_per_hour: int,
         portal_sessions_per_hour: int,
         syncs_per_hour: int,
-        syncs_global_per_hour: int,
         max_concurrent_stripe_calls: int,
         sync_slots: int = 1,
         sync_wait_seconds: float = 5.0,
@@ -153,7 +152,6 @@ class BillingService:
         self._checkouts_per_hour = checkouts_per_hour
         self._portal_sessions_per_hour = portal_sessions_per_hour
         self._syncs_per_hour = syncs_per_hour
-        self._syncs_global_per_hour = syncs_global_per_hour
         self._stripe_calls = threading.BoundedSemaphore(max_concurrent_stripe_calls)
         self.sync_slots = sync_slots
         self.sync_wait_seconds = sync_wait_seconds
@@ -238,12 +236,14 @@ class BillingService:
         customer lock, so they converge on one state. Users cannot crowd out
         the other two: this counts against the per-instance bound that
         checkout and the portal share, it never takes the last synchronization
-        slot (``_Slots.admit_user``), and it is limited per user and overall.
+        slot (``_Slots.admit_user``), and it is limited per user. There is no
+        limit shared by all users: any crowd of free accounts could fill one and
+        lock everyone out, and the bound on concurrent Stripe calls already caps
+        the rate this instance sends.
         """
         authorize(ctx, BILLING_MANAGE)
         self._require_provider()
         self._rate_limiter.hit(f"billing-sync:{ctx.user_id}", self._syncs_per_hour, 3600)
-        self._rate_limiter.hit("billing-sync:all", self._syncs_global_per_hour, 3600)
         with self._tx.as_tenant(ctx) as t:
             customer_id = t.repo.get_billing_customer_id(ctx.user_id)
         if customer_id is not None:
