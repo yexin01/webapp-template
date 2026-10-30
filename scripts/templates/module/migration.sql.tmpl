@@ -21,14 +21,40 @@ CREATE INDEX __module___owner_page_idx ON app.__module__ (owner_user_id, created
 ALTER TABLE app.__module__ ENABLE ROW LEVEL SECURITY;
 ALTER TABLE app.__module__ FORCE ROW LEVEL SECURITY;
 
--- The policy picks its branch with CASE on the context, so it stays a plain
+-- Each policy picks its branch with CASE on the context, so it stays a plain
 -- filter and the queries' own tenant predicates drive the page indexes: a list
 -- page reads one page of rows (DB-02). Written as an OR of the two branches, it
 -- would let the planner build index conditions from them and read the whole
 -- tenant on every page. Every query on this table must keep its own tenant
 -- predicate, as the generated adapter does.
+--
+-- One policy per command: a FOR ALL policy would apply its WITH CHECK (the
+-- creator check) to UPDATE as well. The creator is checked on INSERT only; an
+-- UPDATE keeps the row in the caller's tenant.
+-- To let members edit, grant UPDATE on the editable columns only: RLS cannot
+-- keep id, org_id, owner_user_id, created_by, or created_at unchanged, and a
+-- column grant can.
+--   GRANT UPDATE (name) ON app.__module__ TO app_api;
 GRANT SELECT, INSERT, DELETE ON app.__module__ TO app_api;
-CREATE POLICY __module___api_access ON app.__module__ FOR ALL TO app_api
+CREATE POLICY __module___api_select ON app.__module__ FOR SELECT TO app_api
+  USING (
+    CASE WHEN app.ctx_org_id() IS NULL
+      THEN org_id IS NULL AND owner_user_id = app.ctx_user_id()
+      ELSE org_id = app.ctx_org_id() AND EXISTS (
+        SELECT 1 FROM app.organization_memberships membership
+        WHERE membership.org_id = app.__module__.org_id AND membership.user_id = app.ctx_user_id())
+    END
+  );
+CREATE POLICY __module___api_insert ON app.__module__ FOR INSERT TO app_api
+  WITH CHECK (
+    created_by = app.ctx_user_id() AND CASE WHEN app.ctx_org_id() IS NULL
+      THEN org_id IS NULL AND owner_user_id = app.ctx_user_id()
+      ELSE org_id = app.ctx_org_id() AND EXISTS (
+        SELECT 1 FROM app.organization_memberships membership
+        WHERE membership.org_id = app.__module__.org_id AND membership.user_id = app.ctx_user_id())
+    END
+  );
+CREATE POLICY __module___api_update ON app.__module__ FOR UPDATE TO app_api
   USING (
     CASE WHEN app.ctx_org_id() IS NULL
       THEN org_id IS NULL AND owner_user_id = app.ctx_user_id()
@@ -38,7 +64,16 @@ CREATE POLICY __module___api_access ON app.__module__ FOR ALL TO app_api
     END
   )
   WITH CHECK (
-    created_by = app.ctx_user_id() AND CASE WHEN app.ctx_org_id() IS NULL
+    CASE WHEN app.ctx_org_id() IS NULL
+      THEN org_id IS NULL AND owner_user_id = app.ctx_user_id()
+      ELSE org_id = app.ctx_org_id() AND EXISTS (
+        SELECT 1 FROM app.organization_memberships membership
+        WHERE membership.org_id = app.__module__.org_id AND membership.user_id = app.ctx_user_id())
+    END
+  );
+CREATE POLICY __module___api_delete ON app.__module__ FOR DELETE TO app_api
+  USING (
+    CASE WHEN app.ctx_org_id() IS NULL
       THEN org_id IS NULL AND owner_user_id = app.ctx_user_id()
       ELSE org_id = app.ctx_org_id() AND EXISTS (
         SELECT 1 FROM app.organization_memberships membership

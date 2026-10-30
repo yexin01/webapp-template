@@ -21,6 +21,9 @@ ALICE = "00000000-0000-4000-8000-00000000a11c"
 BOB = "00000000-0000-4000-8000-0000000000b0"
 ACME = "00000000-0000-4000-8000-0000000a0001"  # alice admin, bob member
 GLOBEX = "00000000-0000-4000-8000-0000000a0002"  # bob admin only
+ACME_ROADMAP = "00000000-0000-4000-8000-000000000201"  # created by alice, in acme
+ALICE_PERSONAL = "00000000-0000-4000-8000-000000000101"
+EDIT_GRANT = "GRANT UPDATE (name, org_id, owner_user_id) ON app.projects TO app_api"
 
 
 @pytest.fixture
@@ -48,6 +51,20 @@ def billed(seeded: str) -> str:
 @contextmanager
 def as_role(url: str, role: str, **ctx: str) -> Iterator[psycopg.Connection]:
     with psycopg.connect(url) as conn, conn.transaction():
+        conn.execute(f"SET LOCAL ROLE {role}")
+        for key, value in ctx.items():
+            conn.execute("SELECT set_config(%s, %s, true)", (f"app.{key}", value))
+        yield conn
+
+
+@contextmanager
+def as_role_with_edit_grant(url: str, role: str, **ctx: str) -> Iterator[psycopg.Connection]:
+    """``as_role`` with UPDATE granted on the columns an adopter would let members edit, and everything rolled back.
+
+    The grant covers the tenant keys too, so a refusal comes from the policy, not from a missing column privilege.
+    """
+    with psycopg.connect(url) as conn, conn.transaction(force_rollback=True):
+        conn.execute(EDIT_GRANT)
         conn.execute(f"SET LOCAL ROLE {role}")
         for key, value in ctx.items():
             conn.execute("SELECT set_config(%s, %s, true)", (f"app.{key}", value))
@@ -124,6 +141,71 @@ def test_cannot_insert_rows_created_by_someone_else(seeded: str) -> None:
         as_role(seeded, "app_api", user_id=ALICE, org_id=ACME) as conn,
     ):
         conn.execute("INSERT INTO app.projects (org_id, created_by, name) VALUES (%s, %s, 'x')", (ACME, BOB))
+
+
+def test_a_member_may_update_a_row_another_member_created(seeded: str) -> None:
+    """The creator is checked on INSERT only: a FOR ALL policy would have refused Bob here."""
+    with as_role_with_edit_grant(seeded, "app_api", user_id=BOB, org_id=ACME) as conn:
+        renamed = conn.execute(
+            "UPDATE app.projects SET name = 'Acme roadmap v2' WHERE org_id = app.ctx_org_id() AND id = %s",
+            (ACME_ROADMAP,),
+        )
+        assert renamed.rowcount == 1
+        assert conn.execute("SELECT name, created_by::text FROM app.projects").fetchall() == [
+            ("Acme roadmap v2", ALICE)
+        ]
+
+
+@pytest.mark.parametrize(
+    ("context", "project", "change"),
+    [
+        ({"user_id": BOB, "org_id": ACME}, ACME_ROADMAP, f"org_id = '{GLOBEX}'"),  # Bob is a member of both
+        ({"user_id": BOB, "org_id": ACME}, ACME_ROADMAP, f"org_id = NULL, owner_user_id = '{BOB}'"),
+        ({"user_id": ALICE}, ALICE_PERSONAL, f"owner_user_id = NULL, org_id = '{ACME}'"),
+        ({"user_id": ALICE}, ALICE_PERSONAL, f"owner_user_id = '{BOB}'"),
+    ],
+    ids=[
+        "organization to another organization",
+        "organization to personal",
+        "personal to organization",
+        "personal to another user",
+    ],
+)
+def test_an_update_cannot_move_a_row_out_of_the_callers_tenant(
+    seeded: str, context: dict[str, str], project: str, change: str
+) -> None:
+    with (
+        pytest.raises(psycopg.errors.InsufficientPrivilege, match="row-level security"),
+        as_role_with_edit_grant(seeded, "app_api", **context) as conn,
+    ):
+        conn.execute(f"UPDATE app.projects SET {change} WHERE id = %s", (project,))
+
+
+@pytest.mark.parametrize(
+    ("context", "project"),
+    [
+        ({"user_id": ALICE, "org_id": GLOBEX}, ACME_ROADMAP),  # not a member of that organization
+        ({"user_id": ALICE}, ACME_ROADMAP),  # an organization row in the personal context
+        ({"user_id": BOB, "org_id": ACME}, ALICE_PERSONAL),  # a personal row in an organization context
+        ({"user_id": BOB}, ALICE_PERSONAL),  # someone else's personal row
+        ({}, ACME_ROADMAP),  # no context
+    ],
+    ids=["not a member", "wrong context kind", "personal row in organization", "other user", "no context"],
+)
+def test_an_update_matches_nothing_outside_the_callers_tenant(
+    seeded: str, context: dict[str, str], project: str
+) -> None:
+    with as_role_with_edit_grant(seeded, "app_api", **context) as conn:
+        assert conn.execute("UPDATE app.projects SET name = 'x' WHERE id = %s", (project,)).rowcount == 0
+
+
+def test_tenant_keys_are_never_updatable_by_the_request_role(seeded: str) -> None:
+    """RLS cannot keep these columns unchanged; only the absence of a column grant does. A table-wide UPDATE grant
+    on a tenant table fails here."""
+    with psycopg.connect(seeded) as conn:
+        for column in ("id", "org_id", "owner_user_id", "created_by", "created_at"):
+            row = conn.execute("SELECT has_column_privilege('app_api', 'app.projects', %s, 'UPDATE')", (column,))
+            assert row.fetchone() == (False,), column
 
 
 def test_cannot_delete_other_tenant_rows(seeded: str) -> None:

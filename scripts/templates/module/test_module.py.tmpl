@@ -47,6 +47,20 @@ def api_role(url: str, **context: str) -> Iterator[psycopg.Connection[Any]]:
         yield conn
 
 
+@contextmanager
+def api_role_with_edit_grant(url: str, **context: str) -> Iterator[psycopg.Connection[Any]]:
+    """``api_role`` with UPDATE granted on the columns an adopter would let members edit, and everything rolled back.
+
+    The grant covers the tenant keys too, so a refusal comes from the policy, not from a missing column privilege.
+    """
+    with psycopg.connect(url) as conn, conn.transaction(force_rollback=True):
+        conn.execute("GRANT UPDATE (name, org_id, owner_user_id) ON app.__module__ TO app_api")
+        conn.execute("SET LOCAL ROLE app_api")
+        for key, value in context.items():
+            conn.execute("SELECT set_config(%s, %s, true)", (f"app.{key}", value))
+        yield conn
+
+
 def one_id(url: str, sql: str, value: str) -> str:
     rows = superuser_query(url, sql, (value,))
     assert len(rows) == 1, (sql, value)
@@ -195,6 +209,52 @@ def test_database_keeps_personal_items_to_their_owner(harness: Harness, people: 
             conn.execute(insert, (admin, outsider))
     with api_role(url, user_id=admin) as conn:  # permitted, and nothing above changed it
         assert conn.execute("SELECT id::text FROM app.__module__").fetchall() == [(item["id"],)]
+
+
+def test_database_lets_a_member_update_a_row_another_member_created(harness: Harness, people: dict[str, Any]) -> None:
+    """The creator is checked on INSERT only, so granting UPDATE on the editable columns is enough to edit."""
+    item = harness.client.post(IN_ORG, json={"name": "shared"}, headers=people["admin"]).json()
+    assert harness.client.get(IN_ORG, headers=people["member"]).status_code == 200  # provisions the member
+    url = harness.database_url
+    org = one_id(url, "SELECT id FROM app.organizations WHERE clerk_org_id = %s", ORG)
+    member = one_id(url, "SELECT id FROM app.users WHERE clerk_user_id = %s", "user_member")
+    with api_role_with_edit_grant(url, user_id=member, org_id=org) as conn:
+        renamed = conn.execute(
+            "UPDATE app.__module__ SET name = 'renamed' WHERE org_id = app.ctx_org_id() AND id = %s", (item["id"],)
+        )
+        assert renamed.rowcount == 1
+
+
+def test_database_keeps_an_update_in_the_callers_tenant(harness: Harness, people: dict[str, Any]) -> None:
+    """DB-07: a row cannot be moved between the personal and the organization tenant, and other tenants' rows
+    are not found."""
+    personal = harness.client.post(PERSONAL, json={"name": "mine"}, headers=people["admin"]).json()
+    shared = harness.client.post(IN_ORG, json={"name": "shared"}, headers=people["admin"]).json()
+    url = harness.database_url
+    admin = one_id(url, "SELECT id FROM app.users WHERE clerk_user_id = %s", "user_admin")
+    org = one_id(url, "SELECT id FROM app.organizations WHERE clerk_org_id = %s", ORG)
+    moves = (
+        ({"user_id": admin}, personal["id"], "owner_user_id = NULL, org_id = %s", org),
+        ({"user_id": admin, "org_id": org}, shared["id"], "org_id = NULL, owner_user_id = %s", admin),
+    )
+    for context, row, change, value in moves:
+        with pytest.raises(psycopg.errors.InsufficientPrivilege), api_role_with_edit_grant(url, **context) as conn:
+            conn.execute(f"UPDATE app.__module__ SET {change} WHERE id = %s", (value, row))
+    elsewhere = (
+        ({"user_id": admin, "org_id": org}, personal["id"]),  # a personal row in the organization context
+        ({"user_id": admin}, shared["id"]),  # an organization row in the personal context
+        ({}, shared["id"]),  # no context
+    )
+    for context, row in elsewhere:
+        with api_role_with_edit_grant(url, **context) as conn:
+            assert conn.execute("UPDATE app.__module__ SET name = 'x' WHERE id = %s", (row,)).rowcount == 0, context
+
+
+def test_request_role_cannot_update_tenant_keys(harness: Harness) -> None:
+    """RLS cannot keep these columns unchanged; only the absence of a column grant does."""
+    for column in ("id", "org_id", "owner_user_id", "created_by", "created_at"):
+        sql = "SELECT has_column_privilege('app_api', 'app.__module__', %s, 'UPDATE')"
+        assert superuser_query(harness.database_url, sql, (column,)) == [(False,)], column
 
 
 def test_list_reads_one_page_through_the_page_index(harness: Harness) -> None:
