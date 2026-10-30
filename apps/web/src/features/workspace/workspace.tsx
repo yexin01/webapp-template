@@ -18,7 +18,7 @@ import { ErrorState, LoadingState } from "@/ui/state-views";
  */
 export function Workspace() {
   const { isLoaded, orgId } = useActiveTenant();
-  const { organization } = useOrganization();
+  const { organization } = useOrganization(); // for the heading only
   const api = useApi();
   const fetchEntitlement = useCallback(() => api.entitlement(orgId), [api, orgId]);
   const entitlement = useResource(fetchEntitlement, `entitlement:${orgId ?? "personal"}`);
