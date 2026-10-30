@@ -7,7 +7,7 @@ from collections.abc import Callable
 from uuid import UUID
 
 from app.kernel.errors import InvalidRequestError
-from app.modules.billing.domain import SubscriptionSnapshot
+from app.modules.billing.domain import PortalConfiguration, SubscriptionSnapshot
 from app.modules.billing.ports import PriceDescription
 
 
@@ -19,6 +19,7 @@ class InMemoryBillingProvider:
         self._subscriptions: dict[str, list[SubscriptionSnapshot]] = {}
         self._prices: dict[str, PriceDescription] = {}
         self._deleted_customers: set[str] = set()
+        self._portal: PortalConfiguration | Exception | None = None
         self.calls: list[str] = []
         # The arguments of each session created, so tests can check what Stripe would be asked for.
         self.checkout_requests: list[dict[str, object]] = []
@@ -97,7 +98,19 @@ class InMemoryBillingProvider:
             raise InvalidRequestError("The billing request was rejected.")
         return price
 
+    def describe_portal(self) -> PortalConfiguration | None:
+        self._maybe_fail("describe_portal")
+        with self._lock:
+            portal = self._portal
+        if isinstance(portal, Exception):
+            raise portal
+        return portal
+
     # Test helpers -----------------------------------------------------------
+
+    def set_portal(self, portal: PortalConfiguration | Exception | None) -> None:
+        with self._lock:
+            self._portal = portal
 
     def set_price(self, price: PriceDescription) -> None:
         with self._lock:

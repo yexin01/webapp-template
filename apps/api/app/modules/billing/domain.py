@@ -196,6 +196,65 @@ class PriceCatalog:
         return self.retained.get(price_id, PlanKey.UNKNOWN)
 
 
+@dataclass(frozen=True, slots=True)
+class PortalConfiguration:
+    """What the Customer Portal's default configuration lets customers do (DEC-010, ADR-0001).
+
+    The portal is configured in the Stripe Dashboard; this only describes it.
+    """
+
+    active: bool
+    payment_method_update: bool
+    invoice_history: bool
+    cancel_enabled: bool
+    cancel_mode: str
+    switch_enabled: bool
+    allowed_updates: tuple[str, ...]
+    # Every price a customer can switch between, across all products.
+    switch_prices: frozenset[str]
+
+
+_PORTAL_FIX = "Settings > Billing > Customer portal"
+
+
+def portal_problems(portal: PortalConfiguration | None, catalog: PriceCatalog) -> list[str]:
+    """How the default portal configuration departs from DEC-010; empty when it matches.
+
+    Proration, promotion codes, and customer details are product choices and are not checked.
+    """
+    if portal is None:
+        return [f"no default Customer Portal configuration is saved in this mode (save one in {_PORTAL_FIX})"]
+    problems: list[str] = []
+    if not portal.active:
+        problems.append("the default Customer Portal configuration is inactive")
+    if not portal.payment_method_update:
+        problems.append("the portal does not let customers update their payment method")
+    if not portal.invoice_history:
+        problems.append("the portal does not show invoice history")
+    if not portal.cancel_enabled:
+        problems.append("the portal does not let customers cancel")
+    elif portal.cancel_mode != "at_period_end":
+        problems.append("the portal cancels immediately instead of at the end of the billing period")
+    if not portal.switch_enabled or "price" not in portal.allowed_updates:
+        problems.append("the portal does not let customers switch between the Pro prices")
+        return problems
+    wanted = {key: catalog.price_for(key) for key in (PlanKey.PRO_MONTHLY, PlanKey.PRO_YEARLY)}
+    for key, price in wanted.items():
+        if price is not None and price not in portal.switch_prices:
+            problems.append(f"the portal cannot switch to the {key.value} price {price}")
+    for price in sorted(portal.switch_prices - {p for p in wanted.values() if p}):
+        known = catalog.key_for(price)
+        problems.append(
+            f"the portal also offers {price}, "
+            + (
+                f"a replaced {known.value} price that is no longer sold"
+                if known is not PlanKey.UNKNOWN
+                else "a price outside the catalog that grants no Pro"
+            )
+        )
+    return problems
+
+
 # Billing is owned by individuals, so it is never managed from an organization
 # context. Pro features are used in any context (DEC-002 option (b)).
 BILLING_MANAGE = Permission("billing:manage", personal=True)

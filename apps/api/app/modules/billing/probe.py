@@ -1,10 +1,11 @@
-"""Diagnostics probe for Stripe: the API key works and the Pro prices are configured correctly."""
+"""Diagnostics probe for Stripe: the API key works, the Pro prices exist, and the Customer Portal matches DEC-010."""
 
 from __future__ import annotations
 
 from app.kernel.diagnostics import IntegrationInfo, IntegrationMode, Outcome, Verdict
+from app.kernel.errors import ForbiddenError
 from app.kernel.tenancy import TenantContext
-from app.modules.billing.domain import PlanKey, PriceCatalog
+from app.modules.billing.domain import PlanKey, PriceCatalog, portal_problems
 from app.modules.billing.ports import BillingProvider
 
 _EXPECTED_INTERVALS = {PlanKey.PRO_MONTHLY: "month", PlanKey.PRO_YEARLY: "year"}
@@ -48,6 +49,17 @@ class BillingProbe:
             found.append(f"{label.lower()} ({price.recurring_interval or 'one-time'}, {price.currency or '?'})")
         if len(currencies) > 1:
             problems.append("the monthly and yearly prices use different currencies")
-        if problems:
-            return Verdict(Outcome.FAILED, "Stripe is reachable, but " + "; ".join(problems) + ".", "price_mismatch")
-        return Verdict(Outcome.PASSED, "API key accepted; Pro prices verified: " + ", ".join(found) + ".")
+        portal_note = "Customer Portal default configuration matches DEC-010"
+        portal_issues: list[str] = []
+        try:
+            portal_issues = portal_problems(self._provider.describe_portal(), self._catalog)
+        except ForbiddenError:
+            portal_note = "Customer Portal: not checked (the API key cannot read portal configurations)"
+        if problems or portal_issues:
+            summary = "Stripe is reachable, but " + "; ".join([*problems, *portal_issues]) + "."
+            return Verdict(Outcome.FAILED, summary, "price_mismatch" if problems else "portal_mismatch")
+        return Verdict(
+            Outcome.PASSED,
+            "API key accepted; Pro prices verified: " + ", ".join(found) + f". {portal_note}."
+            " Webhook endpoint and signing secret: not checked (confirm with a test checkout).",
+        )

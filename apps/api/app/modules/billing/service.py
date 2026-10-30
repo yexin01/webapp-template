@@ -593,8 +593,11 @@ def _log_anomalies(customer_id: str, subs: Sequence[SubscriptionSnapshot], now: 
             logger.warning("billing_trialing_anomaly", extra={"stripe_subscription_id": sub.stripe_subscription_id})
         if sub.plan_key is PlanKey.UNKNOWN and sub.status not in _FINAL_STATUSES:
             # A price outside the catalog never grants Pro: for example, a replaced
-            # price that is not listed in STRIPE_PRICE_PRO_*_RETAINED.
-            logger.warning(
+            # price that is not listed in STRIPE_PRICE_PRO_*_RETAINED. While the
+            # subscription is paid, a user pays without Pro, so it is an error.
+            paid = sub.status in (SubscriptionStatus.ACTIVE, SubscriptionStatus.PAST_DUE)
+            logger.log(
+                logging.ERROR if paid else logging.WARNING,
                 "billing_unknown_price",
                 extra={"stripe_subscription_id": sub.stripe_subscription_id, "price_id": sub.price_id},
             )

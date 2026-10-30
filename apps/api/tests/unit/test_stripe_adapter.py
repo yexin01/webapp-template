@@ -8,18 +8,26 @@ Stripe, how answers map to domain values, and which failures are rejections
 
 from __future__ import annotations
 
+import logging
 import socket
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, ClassVar
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
-from app.kernel.errors import DependencyUnavailableError, InvalidRequestError
+from app.kernel.errors import DependencyUnavailableError, ForbiddenError, InvalidRequestError, NotConfiguredError
 from app.modules.billing.adapters.stripe import StripeBillingProvider
-from app.modules.billing.domain import PlanKey, PriceCatalog, SubscriptionSnapshot, SubscriptionStatus
+from app.modules.billing.domain import (
+    PlanKey,
+    PortalConfiguration,
+    PriceCatalog,
+    SubscriptionSnapshot,
+    SubscriptionStatus,
+    portal_problems,
+)
 from tests.stub_server import Recorded, stub_server
 
 CATALOG = PriceCatalog({PlanKey.PRO_MONTHLY: "price_m", PlanKey.PRO_YEARLY: "price_y"})
@@ -164,7 +172,7 @@ class TestErrors:
 
     @pytest.mark.parametrize(
         ("status", "error_type", "attempts"),
-        [(401, "invalid_request_error", 1), (429, "invalid_request_error", 1), (500, "api_error", 3)],
+        [(429, "invalid_request_error", 1), (500, "api_error", 3)],
     )
     def test_other_failures_are_outages(self, status: int, error_type: str, attempts: int) -> None:
         body = {"error": {"type": error_type, "message": "Stripe could not answer"}}
@@ -201,3 +209,155 @@ class TestCustomerAdoption:
         with stub_server(lambda req: (200, body)) as stub:
             assert provider(stub.url).get_customer_app_user_id("cus_1") == expected
         assert (stub.requests[0].method, stub.requests[0].path) == ("GET", "/v1/customers/cus_1")
+
+
+class TestConfigurationErrors:
+    """A rejected key, or a rejected request built only from server values, is a setup mistake: it must be heard."""
+
+    CALLS: ClassVar[dict[str, Read]] = {
+        "customer": lambda p: p.create_customer(USER),
+        "checkout": lambda p: p.create_checkout_session(
+            customer_id="cus_1",
+            price_id="price_m",
+            user_id=USER,
+            success_url="https://app.test/s",
+            cancel_url="https://app.test/c",
+            idempotency_key="checkout-key-1",
+        ),
+        "portal": lambda p: p.create_portal_session(customer_id="cus_1", return_url="https://app.test/billing"),
+    }
+
+    @staticmethod
+    def stripe_says(status: int, error_type: str, **fields: str) -> tuple[int, dict[str, Any]]:
+        leaked = "secret detail: price_attacker for cus_victim"
+        return status, {"error": {"type": error_type, "message": leaked, **fields}}
+
+    @pytest.mark.parametrize("call", CALLS)
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            ("authentication", (401, "invalid_request_error")),
+            ("permission", (403, "invalid_request_error")),
+            ("rejected", (400, "invalid_request_error")),
+        ],
+        ids=lambda a: a[0],
+    )
+    def test_each_is_a_503_not_configured_and_one_error_without_stripes_message(
+        self, call: str, answer: tuple[str, tuple[int, str]], caplog: pytest.LogCaptureFixture
+    ) -> None:
+        status, error_type = answer[1]
+        respond = lambda req: self.stripe_says(status, error_type, code="x_code", param="line_items")  # noqa: E731
+        with stub_server(respond) as stub, caplog.at_level(logging.WARNING), pytest.raises(NotConfiguredError):
+            self.CALLS[call](provider(stub.url))
+        errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+        assert [r.getMessage() for r in errors] == ["stripe_configuration_error"]
+        assert "price_attacker" not in caplog.text
+        assert "cus_victim" not in caplog.text
+        assert errors[0].http_status == status  # type: ignore[attr-defined]
+
+    @pytest.mark.parametrize("call", ["checkout", "portal"])
+    def test_a_customer_stripe_does_not_have_stays_a_rejection(
+        self, call: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A deleted customer is the one server-built input that goes stale; sync and reconciliation own that case."""
+        missing = (404, {"error": {**MISSING["error"], "param": "customer"}})
+        with (
+            stub_server(lambda req: missing) as stub,
+            caplog.at_level(logging.WARNING),
+            pytest.raises(InvalidRequestError),
+        ):
+            self.CALLS[call](provider(stub.url))
+        assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
+
+    @pytest.mark.parametrize("read", READS)
+    def test_reads_still_treat_a_rejection_as_a_rejection(self, read: str) -> None:
+        body = {"error": {"type": "invalid_request_error", "message": "m", "param": "customer"}}
+        with stub_server(lambda req: (400, body)) as stub, pytest.raises(InvalidRequestError):
+            READS[read](provider(stub.url))
+
+    @pytest.mark.parametrize("read", READS)
+    def test_a_rejected_key_is_a_configuration_error_for_reads_too(
+        self, read: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        rejected = (401, {"error": {"type": "invalid_request_error", "message": "m"}})
+        with (
+            stub_server(lambda req: rejected) as stub,
+            caplog.at_level(logging.ERROR),
+            pytest.raises(NotConfiguredError),
+        ):
+            READS[read](provider(stub.url))
+        assert [r.getMessage() for r in caplog.records] == ["stripe_configuration_error"]
+
+
+def _portal(**features: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "payment_method_update": {"enabled": True},
+        "invoice_history": {"enabled": True},
+        "subscription_cancel": {"enabled": True, "mode": "at_period_end"},
+        "subscription_update": {
+            "enabled": True,
+            "default_allowed_updates": ["price"],
+            "products": [{"product": "prod_1", "prices": ["price_m", "price_y"]}],
+        },
+    }
+    return {"id": "bpc_1", "object": "billing_portal.configuration", "active": True, "is_default": True,
+            "features": {**base, **features}}  # fmt: skip
+
+
+def _listing(*configs: dict[str, Any]) -> dict[str, Any]:
+    return {"object": "list", "url": "/v1/billing_portal/configurations", "has_more": False, "data": list(configs)}
+
+
+class TestPortalConfiguration:
+    def test_the_default_configuration_is_read_with_nothing_written(self) -> None:
+        with stub_server(lambda req: (200, _listing(_portal()))) as stub:
+            portal = provider(stub.url).describe_portal()
+        [request] = stub.requests
+        assert (request.method, urlsplit(request.path).path) == ("GET", "/v1/billing_portal/configurations")
+        assert parse_qs(urlsplit(request.path).query) == {"is_default": ["true"], "limit": ["1"]}
+        assert portal == PortalConfiguration(
+            active=True,
+            payment_method_update=True,
+            invoice_history=True,
+            cancel_enabled=True,
+            cancel_mode="at_period_end",
+            switch_enabled=True,
+            allowed_updates=("price",),
+            switch_prices=frozenset({"price_m", "price_y"}),
+        )
+        assert portal_problems(portal, CATALOG) == []
+
+    def test_every_price_of_every_product_counts(self) -> None:
+        products = [{"product": "a", "prices": ["price_m"]}, {"product": "b", "prices": ["price_y", "price_x"]}]
+        update = {"enabled": True, "default_allowed_updates": ["price"], "products": products}
+        with stub_server(lambda req: (200, _listing(_portal(subscription_update=update)))) as stub:
+            portal = provider(stub.url).describe_portal()
+        assert portal is not None
+        assert portal.switch_prices == {"price_m", "price_y", "price_x"}
+
+    def test_a_mode_without_a_default_configuration_has_none(self) -> None:
+        with stub_server(lambda req: (200, _listing())) as stub:
+            assert provider(stub.url).describe_portal() is None
+
+    def test_switching_turned_off_reads_as_no_prices(self) -> None:
+        update = {"enabled": False, "default_allowed_updates": [], "products": None}
+        with stub_server(lambda req: (200, _listing(_portal(subscription_update=update)))) as stub:
+            portal = provider(stub.url).describe_portal()
+        assert portal is not None
+        assert (portal.switch_enabled, portal.allowed_updates, portal.switch_prices) == (False, (), frozenset())
+
+    @pytest.mark.parametrize(
+        ("status", "error", "message"),
+        [
+            (401, DependencyUnavailableError, "rejected the API key"),
+            (403, ForbiddenError, "cannot read Customer Portal"),
+            (400, InvalidRequestError, "portal configuration"),
+            (500, DependencyUnavailableError, "temporarily unavailable"),
+        ],
+    )
+    def test_errors_are_specific_and_never_echo_the_key(self, status: int, error: type, message: str) -> None:
+        body = {"error": {"type": "invalid_request_error" if status < 500 else "api_error", "message": FAKE_KEY}}
+        with stub_server(lambda req: (status, body)) as stub, pytest.raises(error) as caught:
+            provider(stub.url).describe_portal()
+        assert message in caught.value.public_message  # type: ignore[attr-defined]
+        assert FAKE_KEY not in caught.value.public_message  # type: ignore[attr-defined]

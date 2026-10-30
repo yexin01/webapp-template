@@ -10,8 +10,20 @@ from uuid import UUID
 
 import stripe
 
-from app.kernel.errors import DependencyUnavailableError, InvalidRequestError, WebhookSignatureError
-from app.modules.billing.domain import PlanKey, PriceCatalog, SubscriptionSnapshot, SubscriptionStatus
+from app.kernel.errors import (
+    DependencyUnavailableError,
+    ForbiddenError,
+    InvalidRequestError,
+    NotConfiguredError,
+    WebhookSignatureError,
+)
+from app.modules.billing.domain import (
+    PlanKey,
+    PortalConfiguration,
+    PriceCatalog,
+    SubscriptionSnapshot,
+    SubscriptionStatus,
+)
 from app.modules.billing.ports import BillingWebhookEvent, PriceDescription
 
 logger = logging.getLogger(__name__)
@@ -72,6 +84,21 @@ def to_snapshot(sub: Any, catalog: PriceCatalog) -> SubscriptionSnapshot:
     )
 
 
+def _configuration_error(exc: stripe.StripeError) -> NotConfiguredError:
+    # ERROR reaches error reporting. Stripe's message text never does: it can quote request values.
+    logger.error(
+        "stripe_configuration_error",
+        extra={
+            "error_type": type(exc).__name__,
+            "code": exc.code,
+            "param": getattr(exc, "param", None),
+            "http_status": exc.http_status,
+            "request_id": exc.request_id,
+        },
+    )
+    return NotConfiguredError("Billing is not configured correctly for this Stripe account.")
+
+
 class StripeBillingProvider:
     def __init__(
         self,
@@ -92,10 +119,21 @@ class StripeBillingProvider:
             base_addresses={"api": api_base} if api_base else None,
         )
 
-    def _call(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
+    def _call(self, fn: Any, *args: Any, server_built: bool = False, **kwargs: Any) -> Any:
+        """Call Stripe and map its failures.
+
+        A rejected key is a configuration error. So is a rejected request whose
+        every input the server built itself (``server_built``): it cannot be the
+        caller's fault, and a deleted customer is the one input that can go stale.
+        Both reach error reporting; messages from Stripe never do.
+        """
         try:
             return fn(*args, **kwargs)
+        except (stripe.AuthenticationError, stripe.PermissionError) as exc:
+            raise _configuration_error(exc) from exc
         except stripe.InvalidRequestError as exc:
+            if server_built and exc.param != "customer":
+                raise _configuration_error(exc) from exc
             logger.warning("stripe_invalid_request", extra={"code": exc.code, "http_status": exc.http_status})
             raise InvalidRequestError("The billing request was rejected.") from exc
         except stripe.StripeError as exc:
@@ -107,6 +145,7 @@ class StripeBillingProvider:
             self._client.v1.customers.create,
             params={"metadata": {_METADATA_USER_KEY: str(user_id)}},
             options={"idempotency_key": f"customer-create-{user_id}"},
+            server_built=True,
         )
         return str(customer.id)
 
@@ -132,6 +171,7 @@ class StripeBillingProvider:
                 "subscription_data": {"metadata": {_METADATA_USER_KEY: str(user_id)}},
             },
             options={"idempotency_key": idempotency_key},
+            server_built=True,
         )
         if not session.url:
             raise DependencyUnavailableError("Billing is temporarily unavailable.")
@@ -141,6 +181,7 @@ class StripeBillingProvider:
         session = self._call(
             self._client.v1.billing_portal.sessions.create,
             params={"customer": customer_id, "return_url": return_url},
+            server_built=True,
         )
         return str(session.url)
 
@@ -175,6 +216,38 @@ class StripeBillingProvider:
             recurring_interval=str(_get(recurring, "interval")) if recurring else None,
             currency=str(currency) if currency else None,
             livemode=bool(_get(price, "livemode")),
+        )
+
+    def describe_portal(self) -> PortalConfiguration | None:
+        # Diagnostics only, like describe_price. Read only: the portal's configuration is owned by
+        # the Stripe Dashboard (ADR-0001) and is never created or changed from here.
+        try:
+            found = self._client.v1.billing_portal.configurations.list(params={"is_default": True, "limit": 1})
+        except stripe.AuthenticationError as exc:
+            raise DependencyUnavailableError("Stripe rejected the API key.") from exc
+        except stripe.PermissionError as exc:
+            raise ForbiddenError("The Stripe API key cannot read Customer Portal configurations.") from exc
+        except stripe.InvalidRequestError as exc:
+            raise InvalidRequestError("Stripe rejected the request for the portal configuration.") from exc
+        except stripe.StripeError as exc:
+            raise DependencyUnavailableError("Stripe is temporarily unavailable.") from exc
+        if not found.data:
+            return None
+        config = found.data[0]
+        features = _get(config, "features")
+        cancel = _get(features, "subscription_cancel")
+        update = _get(features, "subscription_update")
+        return PortalConfiguration(
+            active=bool(_get(config, "active")),
+            payment_method_update=bool(_get(_get(features, "payment_method_update"), "enabled")),
+            invoice_history=bool(_get(_get(features, "invoice_history"), "enabled")),
+            cancel_enabled=bool(_get(cancel, "enabled")),
+            cancel_mode=str(_get(cancel, "mode") or ""),
+            switch_enabled=bool(_get(update, "enabled")),
+            allowed_updates=tuple(str(u) for u in _get(update, "default_allowed_updates") or []),
+            switch_prices=frozenset(
+                str(price) for product in _get(update, "products") or [] for price in _get(product, "prices") or []
+            ),
         )
 
     def get_customer_app_user_id(self, customer_id: str) -> UUID | None:

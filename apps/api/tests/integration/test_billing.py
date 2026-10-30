@@ -1058,7 +1058,22 @@ def test_an_active_subscription_on_an_unknown_price_is_logged(
     )
     with caplog.at_level("WARNING"):
         send_webhook(harness, event_payload(customer))
-    assert "billing_unknown_price" in {r.getMessage() for r in caplog.records}
+    # A user who pays without Pro is an error, which reaches error reporting.
+    assert [r.levelname for r in caplog.records if r.getMessage() == "billing_unknown_price"] == ["ERROR"]
+
+
+@pytest.mark.parametrize("status", [SubscriptionStatus.PAST_DUE, SubscriptionStatus.UNPAID])
+def test_an_unknown_price_is_an_error_only_while_the_user_is_paying(
+    harness: Harness, caplog: pytest.LogCaptureFixture, status: SubscriptionStatus
+) -> None:
+    customer = make_pro(harness, "user_a")
+    harness.billing.set_subscriptions(
+        customer, [snapshot(customer, status, plan_key=PlanKey.UNKNOWN, price_id="price_replaced")]
+    )
+    with caplog.at_level("WARNING"):
+        send_webhook(harness, event_payload(customer))
+    levels = [r.levelname for r in caplog.records if r.getMessage() == "billing_unknown_price"]
+    assert levels == (["ERROR"] if status is SubscriptionStatus.PAST_DUE else ["WARNING"])
 
 
 def test_a_webhook_burst_waits_in_the_event_loop_not_on_threads(make_harness: Any) -> None:

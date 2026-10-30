@@ -8,7 +8,7 @@ from typing import Protocol
 from uuid import UUID
 
 from app.kernel.webhooks import EventStatus
-from app.modules.billing.domain import SubscriptionSnapshot
+from app.modules.billing.domain import PortalConfiguration, SubscriptionSnapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +79,9 @@ class BillingProvider(Protocol):
     def retrieve_subscription(self, subscription_id: str) -> SubscriptionSnapshot: ...
     def get_customer_app_user_id(self, customer_id: str) -> UUID | None: ...
     def describe_price(self, price_id: str) -> PriceDescription: ...
+    def describe_portal(self) -> PortalConfiguration | None:
+        """The default Customer Portal configuration, read only. ``None`` if none is saved in this mode."""
+        ...
 
 
 class BillingWebhookVerifier(Protocol):
