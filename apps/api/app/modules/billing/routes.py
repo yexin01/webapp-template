@@ -152,7 +152,9 @@ def build_action_router(billing: BillingService, auth: AuthDeps) -> APIRouter:
     def open_portal(ctx: Personal) -> Redirect:
         return Redirect(url=billing.open_portal(ctx))
 
-    @router.post("/billing/sync", response_model=BillingStatus, responses=ERRORS)
+    @router.post(
+        "/billing/sync", response_model=BillingStatus, responses=ERRORS, dependencies=[requires(BILLING_MANAGE)]
+    )
     def sync_billing(ctx: Personal) -> BillingStatus:
         """Re-read the caller's own subscriptions from Stripe, then return the status. Takes no input (BILL-02)."""
         return _status(billing, billing.sync_from_stripe(ctx))
