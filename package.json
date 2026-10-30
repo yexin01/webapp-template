@@ -41,6 +41,7 @@
     "test:init-template": "node scripts/test-init-template.mjs",
     "test:scripts": "node --test \"scripts/tests/*.test.mjs\"",
     "check:placeholders": "node scripts/check-placeholders.mjs",
+    "check:links": "node scripts/check-doc-links.mjs",
     "check:setup": "node scripts/check-setup.mjs",
     "new:module": "node scripts/new-module.mjs",
     "test:new-module": "node scripts/test-new-module.mjs",

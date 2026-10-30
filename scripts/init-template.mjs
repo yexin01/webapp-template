@@ -10,7 +10,7 @@
  *
  *   pnpm init-template --name "Acme Cloud" --slug acme-cloud \
  *     --security-contact security@acme.example --conduct-contact conduct@acme.example \
- *     [--db-port 54330] [--dry-run]
+ *     [--db-port 54330] [--keep-template-material] [--dry-run]
  *
  * The contact options are required while the placeholders are still present.
  * A copy is renamed once: a re-run with the same values changes nothing (a
@@ -20,19 +20,45 @@
  * initialized copy) is written last, so a run that still fails part-way can be
  * repeated with the same options to finish.
  *
- * The specification and evidence under dev-docs/ describe the template itself
- * and are intentionally left unchanged.
+ * The template's own records are not the adopter's: unless
+ * `--keep-template-material` is given, the first run also removes the DEC-001
+ * deployment proof (proofs/), the integration notes (docs-notes/), and the
+ * template's evidence files (dev-docs/evidence/, which then holds only a README
+ * for the adopter's own); replaces AGENTS.md with a neutral version that keeps the
+ * engineering rules but not the template owner's open-decisions regime; adds a
+ * banner to the specification, which stays as inherited reference with the ADRs;
+ * drops prose wrapped in template-only markers from the Markdown files; and
+ * turns links to the removed files into plain text. A copy that has finished
+ * initializing is not touched again, so the adopter's later edits stay.
  */
-import { accessSync, constants, copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  accessSync,
+  constants,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
 
+import { markdownFiles, unlinkRemoved } from "./lib/doc-links.mjs";
 import {
+  ADOPTER_TEMPLATES,
+  EVIDENCE_DIR,
   ORIGINAL_DB_PORT,
   ORIGINAL_NAME,
   ORIGINAL_SLUG,
   PLACEHOLDERS,
+  SPEC_BANNER,
+  SPEC_BANNER_MARKER,
+  SPEC_FILE,
   TAKEN_PORTS,
+  TEMPLATE_ONLY_BLOCK,
+  TEMPLATE_ONLY_PATHS,
   isValidContact,
   isValidName,
   isValidSlug,
@@ -67,7 +93,7 @@ const PORT_FILES = [
 function usage(message) {
   console.error(message);
   console.error(
-    'Usage: pnpm init-template --name "Product Name" --slug product-slug --security-contact <email|https-url> --conduct-contact <email|https-url> [--db-port 54330] [--dry-run]',
+    'Usage: pnpm init-template --name "Product Name" --slug product-slug --security-contact <email|https-url> --conduct-contact <email|https-url> [--db-port 54330] [--keep-template-material] [--dry-run]',
   );
   process.exit(2);
 }
@@ -79,6 +105,7 @@ const { values } = parseArgs({
     "db-port": { type: "string" },
     "security-contact": { type: "string" },
     "conduct-contact": { type: "string" },
+    "keep-template-material": { type: "boolean", default: false },
     "dry-run": { type: "boolean", default: false },
   },
 });
@@ -87,6 +114,7 @@ const name = values.name?.trim();
 const slug = values.slug?.trim();
 const dbPort = values["db-port"]?.trim();
 const dryRun = values["dry-run"];
+const keepTemplateMaterial = values["keep-template-material"];
 
 if (!isValidName(name)) {
   usage(
@@ -188,16 +216,47 @@ if (initialized && composeName === undefined) {
   );
 }
 
+/** Files and folders the adopter's copy drops (repository-relative), computed before anything is removed. */
+const removals = [];
+function create(rel, text) {
+  const file = path.join(root, rel);
+  if (!existsSync(file) || readFileSync(file, "utf8") !== text) pending.set(rel, text);
+  else pending.delete(rel);
+}
+// Applies until the copy has finished initializing (package.json, written last, is renamed): a run that failed
+// part-way repeats it harmlessly, and a finished copy keeps whatever its owner has done since.
+if (!renameDone && !keepTemplateMaterial) {
+  for (const rel of TEMPLATE_ONLY_PATHS) if (existsSync(path.join(root, rel))) removals.push(rel);
+  if (existsSync(path.join(root, EVIDENCE_DIR))) {
+    for (const entry of readdirSync(path.join(root, EVIDENCE_DIR))) {
+      if (entry !== "README.md") removals.push(`${EVIDENCE_DIR}/${entry}`);
+    }
+  }
+  const adopterAgents = read(`${ADOPTER_TEMPLATES}/AGENTS.md`);
+  if (adopterAgents) create("AGENTS.md", adopterAgents);
+  const evidenceReadme = read(`${ADOPTER_TEMPLATES}/evidence-README.md`);
+  if (evidenceReadme) create(`${EVIDENCE_DIR}/README.md`, evidenceReadme);
+  rewrite(SPEC_FILE, (text) =>
+    text.includes(SPEC_BANNER_MARKER) ? text : text.replace(/^(# .*\n)/, `$1\n${SPEC_BANNER}\n`),
+  );
+  const removedAbsolute = removals.map((rel) => path.join(root, rel));
+  for (const rel of markdownFiles(root)) {
+    if (removals.some((gone) => rel === gone || rel.startsWith(`${gone}/`))) continue;
+    rewrite(rel, (text) => unlinkRemoved(text.replace(TEMPLATE_ONLY_BLOCK, ""), rel, root, removedAbsolute));
+  }
+}
+
 const envFile = path.join(root, ".env");
 const envCreated = !existsSync(envFile);
 
 if (!dryRun) {
   // Check every target first, so a permission problem changes nothing.
   const targets = [...pending.keys()].map((rel) => [rel, constants.W_OK]);
+  for (const rel of removals) targets.push([path.dirname(rel), constants.W_OK | constants.X_OK]);
   if (envCreated) targets.push([".", constants.W_OK | constants.X_OK]);
   for (const [rel, mode] of targets) {
     try {
-      accessSync(path.join(root, rel), mode);
+      accessSync(path.join(root, existsSync(path.join(root, rel)) ? rel : path.dirname(rel)), mode);
     } catch {
       console.error(`${rel === "." ? "The project folder" : rel} is not writable; nothing was changed.`);
       process.exit(2);
@@ -207,12 +266,16 @@ if (!dryRun) {
   // a finished one (see the identity check above).
   const rank = (rel) => (rel === "apps/api/app/bootstrap.py" ? 0 : rel === "package.json" ? 2 : 1);
   const order = [...pending.keys()].sort((a, b) => rank(a) - rank(b));
-  for (const rel of order) writeFileSync(path.join(root, rel), pending.get(rel));
+  for (const rel of removals) rmSync(path.join(root, rel), { recursive: true, force: true });
+  for (const rel of order) {
+    mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
+    writeFileSync(path.join(root, rel), pending.get(rel));
+  }
   if (envCreated) copyFileSync(path.join(root, ".env.example"), envFile);
 }
 
 const changes = new Set(pending.keys());
-console.log(JSON.stringify({ dryRun, updated: [...changes].sort(), envCreated }, null, 2));
+console.log(JSON.stringify({ dryRun, updated: [...changes].sort(), removed: removals.sort(), envCreated }, null, 2));
 if (envCreated) {
   console.log("Next: fill in .env with your own sandbox keys (see docs/integrations.md).");
 } else if (dbPort && changes.has(".env.example")) {
