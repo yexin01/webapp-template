@@ -148,9 +148,12 @@ jobs:
           node scripts/check-bundle-secrets.mjs --self-test
           pnpm check:bundle-secrets
       # Any severity, matching pip-audit, which has no severity filter. Scope
-      # and reasons: scripts/security-audit.mjs.
+      # and reasons: scripts/security-audit.mjs. Not `pnpm audit --prod`: pnpm 9
+      # uses an advisory endpoint that is being retired (scripts/npm-audit-bulk.mjs).
       - name: Dependency audit (production)
-        run: pnpm audit --prod
+        run: |
+          node scripts/npm-audit-bulk.mjs --self-test
+          node scripts/npm-audit-bulk.mjs
       - name: License compliance (allowlist)
         run: |
           node scripts/check-licenses.mjs --self-test
