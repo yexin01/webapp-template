@@ -41,9 +41,16 @@ _JWKS_MIN_REFRESH_INTERVAL_SECONDS = 5.0
 _JWKS_TIMEOUT_SECONDS = 3.0
 # While a usable key set is cached, the requests with an unknown key ID that may
 # wait for a fetch in flight. The rest get 503 at once, so made-up key IDs cannot
-# park request threads (§16.4). With no usable set (a fresh instance), every
-# request needs the fetch, so each one waits for it.
+# park request threads (§16.4).
 _JWKS_MAX_WAITERS = 4
+# With no usable key set, every request needs the fetch in flight, so more may
+# wait for it, still well under the 40 request threads (db.REQUEST_THREADS). After
+# a recent failed attempt (an outage), none wait.
+_JWKS_MAX_COLD_WAITERS = 16
+# A failed attempt this recent means an outage is ongoing: while requests keep
+# coming, attempts are _JWKS_MIN_REFRESH_INTERVAL_SECONDS apart. An older one,
+# followed by a quiet spell, is not taken for an outage.
+_JWKS_RECENT_FAILURE_SECONDS = 30.0
 _AUTH_UNAVAILABLE = "Authentication service is unavailable."
 
 _DIRECTORY_UNAVAILABLE = "Organization directory is unavailable."
@@ -77,10 +84,13 @@ class JwksKeySet:
     The cache is one immutable snapshot, read without a lock: a request whose
     key is cached never waits on Clerk (§16.4). Fetches are single-flight and
     throttled, and a failed or unusable fetch never replaces a good snapshot.
-    While a usable snapshot exists, only a few requests wait for a fetch in
-    flight; without one, every request waits for it. The refresh ahead of
-    expiry runs on its own thread. Once the snapshot expires without a
-    successful refresh, verification fails closed.
+    Waiting for a fetch in flight is bounded, so no flood of tokens can park
+    every request thread: while a usable snapshot exists, a few requests wait;
+    without one, more may wait, since every request needs the fetch, unless
+    an attempt failed in the last 30 s (an outage), when none wait. Past the
+    bound, a request gets 503 at once, and the refusal is logged. The refresh
+    ahead of expiry runs on its own thread. Once the snapshot expires without
+    a successful refresh, verification fails closed.
     """
 
     def __init__(
@@ -98,6 +108,7 @@ class JwksKeySet:
         self._snapshot: _KeySnapshot | None = None
         self._last_attempt: float | None = None  # guarded by _lock
         self._last_attempt_failed = False  # written under _lock
+        self._last_failure = float("-inf")  # monotonic, when a failed attempt last ended; written under _lock
         self._waiting = 0  # guarded by _waiting_lock
         self._waiting_lock = threading.Lock()
 
@@ -125,19 +136,30 @@ class JwksKeySet:
         return key
 
     def _acquire_for_refresh(self) -> bool:
-        """Take the fetch lock. While a fetch holds it, only a few requests may wait, unless no key set is usable."""
+        """Take the fetch lock, or wait for the fetch holding it if fewer than the bound already do."""
         if self._lock.acquire(blocking=False):
             return True
-        capped = self._usable(self._snapshot)
+        bound = self._waiter_bound()
         with self._waiting_lock:
-            if capped and self._waiting >= _JWKS_MAX_WAITERS:
-                raise DependencyUnavailableError(_AUTH_UNAVAILABLE)
-            self._waiting += 1
+            admitted = self._waiting < bound
+            if admitted:
+                self._waiting += 1
+        if not admitted:  # logged outside the lock, so a slow log write never holds up the waiters
+            logger.warning("clerk_jwks_waiters_exhausted", extra={"limit": bound})
+            raise DependencyUnavailableError(_AUTH_UNAVAILABLE)
         try:
             return self._lock.acquire(timeout=_JWKS_TIMEOUT_SECONDS)
         finally:
             with self._waiting_lock:
                 self._waiting -= 1
+
+    def _waiter_bound(self) -> int:
+        """How many requests may wait for the fetch in flight."""
+        if self._usable(self._snapshot):
+            return _JWKS_MAX_WAITERS
+        if self._clock() - self._last_failure < _JWKS_RECENT_FAILURE_SECONDS:
+            return 0  # an outage: the attempt in flight most likely fails too
+        return _JWKS_MAX_COLD_WAITERS
 
     def _usable(self, snapshot: _KeySnapshot | None) -> bool:
         return snapshot is not None and self._age(snapshot) < _JWKS_LIFESPAN_SECONDS
@@ -184,6 +206,8 @@ class JwksKeySet:
             self._last_attempt_failed = not keys
             if keys:
                 self._snapshot = _KeySnapshot(keys, started)
+            else:
+                self._last_failure = self._clock()
         finally:
             self._lock.release()
 
