@@ -2,7 +2,9 @@
 validated together (ENV-02 to ENV-05).
 
 To add a module's settings, inherit its settings class here and add its
-``*_problems`` function to ``_validate``.
+``*_problems`` function to ``_validate``. A module whose calls hold request
+threads until a provider answers must add its concurrency bound to
+``reserved_request_threads``.
 """
 
 from __future__ import annotations
@@ -12,10 +14,16 @@ from typing import Self
 from pydantic import ValidationError, model_validator
 
 from app.kernel.infrastructure.config import ConfigError, CoreSettings, core_problems
+from app.kernel.infrastructure.db import REQUEST_THREADS
 from app.modules.billing.settings import BillingSettings, billing_problems
 from app.modules.diagnostics.settings import DiagnosticsSettings
 from app.modules.identity.settings import IdentitySettings, identity_problems
 from app.modules.llm.settings import LLMSettings, llm_problems
+
+# The fewest request threads that must stay free for threads waiting for a database connection.
+MIN_WAITER_PLACES = 8
+# Request threads a Clerk key-set lookup may hold until Clerk answers: the fetch and its capped waiters.
+CLERK_KEY_SET_THREADS = 5
 
 
 class Settings(CoreSettings, IdentitySettings, BillingSettings, LLMSettings, DiagnosticsSettings):
@@ -26,10 +34,57 @@ class Settings(CoreSettings, IdentitySettings, BillingSettings, LLMSettings, Dia
             *identity_problems(self, self),
             *billing_problems(self, self),
             *llm_problems(self, self),
+            *thread_budget_problems(self),
         ]
         if problems:
             raise ValueError("; ".join(problems))
         return self
+
+
+def reserved_request_threads(s: Settings) -> int:
+    """The request threads that bounded external work may hold at once, each until its provider answers.
+
+    LLM checks; checkout and portal calls to Stripe; Clerk membership reads,
+    with the requests waiting for one; billing synchronizations, which hold
+    all but one worker connection across Stripe calls (BILL-10); and, while
+    session tokens are verified with keys fetched from Clerk (CLERK_JWT_KEY
+    empty), key-set lookups. The database keeps these threads out of its
+    connection-waiter budget.
+
+    Work that no concurrency limit caps is not counted (see ``Database``):
+    operator diagnostics, cron job runs, and key-set lookups while no usable
+    key set is cached.
+    """
+    return (
+        s.llm_max_concurrent_checks
+        + s.billing_max_concurrent_stripe_calls
+        + s.clerk_max_concurrent_reads
+        + (s.database_worker_pool_max_size - 1)
+        + (CLERK_KEY_SET_THREADS if _fetches_clerk_keys(s) else 0)
+    )
+
+
+def _fetches_clerk_keys(s: Settings) -> bool:
+    """Whether the identity module verifies session tokens with keys it fetches from Clerk."""
+    return s.clerk_issuer is not None and bool(s.clerk_authorized_parties) and not s.clerk_jwt_key
+
+
+def thread_budget_problems(s: Settings) -> list[str]:
+    """Admitted scoped requests and bounded external work must leave threads for connection waiters."""
+    left = REQUEST_THREADS - s.database_pool_max_size - reserved_request_threads(s)
+    if left >= MIN_WAITER_PLACES:
+        return []
+    key_set = (
+        f", with the {CLERK_KEY_SET_THREADS} threads kept for Clerk key-set lookups while CLERK_JWT_KEY is empty,"
+        if _fetches_clerk_keys(s)
+        else " together"
+    )
+    return [
+        "DATABASE_POOL_MAX_SIZE, DATABASE_WORKER_POOL_MAX_SIZE, LLM_MAX_CONCURRENT_CHECKS, "
+        f"BILLING_MAX_CONCURRENT_STRIPE_CALLS and CLERK_MAX_CONCURRENT_READS{key_set} leave "
+        f"{max(left, 0)} of the {REQUEST_THREADS} request threads for threads waiting for a database "
+        f"connection, fewer than {MIN_WAITER_PLACES}: lower them by {MIN_WAITER_PLACES - left} in total"
+    ]
 
 
 def load_settings(**overrides: object) -> Settings:

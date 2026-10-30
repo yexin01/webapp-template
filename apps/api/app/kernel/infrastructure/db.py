@@ -115,28 +115,44 @@ class BoundedConnection(psycopg.Connection[TupleRow]):
 class Database:
     """Lazily opened, concurrency-safe connection pools (one per process).
 
-    **Threads waiting for connections.** A scoped request holds an ``app_api``
-    connection across several threadpool hops, and needs a thread for each.
-    Threads that block waiting for a connection outside a request scope, from
-    either pool, must therefore never fill the threadpool, or the holders they
-    wait for cannot finish. At most ``request_threads - api_pool_size``
-    threads may wait at once, for ``app_api`` and ``app_worker`` connections
-    together; past that, a call fails at once with a 503, holding no thread.
-    With at most ``api_pool_size`` scoped requests admitted, scoped holders
-    plus API waiters plus worker waiters never exceed ``request_threads``.
+    **The thread budget.** A scoped request holds an ``app_api`` connection
+    across several threadpool hops, and needs a thread for each. Threads that
+    block outside a request scope must therefore never fill the threadpool,
+    or the holders they wait for cannot finish::
 
-    Within that budget, each pool's waiters may take every place except
-    those kept for the other pool: as many as the other pool has
-    connections, but never more than half the budget. A burst of short
-    worker transactions (rate limits, on a pool still opening its
+        scoped holders + connection waiters + bounded external work <= request_threads
+
+    - Scoped holders: at most ``api_pool_size`` scoped requests are admitted.
+    - Bounded external work: ``reserved_threads``, the threads that calls
+      capped by their own concurrency limits may hold until their provider
+      answers: LLM checks, Stripe calls, Clerk membership reads and key-set
+      lookups, and webhook synchronization
+      (``app.settings.reserved_request_threads``).
+    - Connection waiters: at most
+      ``request_threads - api_pool_size - reserved_threads`` threads may wait
+      for a connection outside a request scope at once, for ``app_api`` and
+      ``app_worker`` connections together; past that, a call fails at once
+      with a 503, holding no thread.
+
+    Not counted:
+
+    - threads using a connection they took outside a request scope: each of
+      their round trips ends within the client-side deadline
+      (``BoundedConnection``);
+    - blocking work that no concurrency limit caps, which can delay a
+      holder's next hop while it runs: operator diagnostics and cron job runs
+      (trusted callers), and Clerk key-set lookups while no usable key set is
+      cached. Every token then waits for the fetch, so no new scoped request
+      is admitted before it ends.
+
+    Within the connection waiters' budget, each pool's waiters may take
+    every place except those kept for the other pool: as many as the other
+    pool has connections, but never more than half the budget. A burst of
+    short worker transactions (rate limits, on a pool still opening its
     connections) is therefore served, not refused, while places are free.
     When one pool stalls (its connections held across slow calls, its
     callers queueing), only its own excess callers fail fast: calls on the
     other pool still find the places kept for it.
-
-    Other blocking work holds threads too: bounded external calls (LLM
-    checks, Stripe, Clerk, webhook synchronization) can delay a scoped
-    holder's next hop, but only for their own bounded duration.
     """
 
     def __init__(
@@ -148,6 +164,7 @@ class Database:
         connect_timeout: float,
         statement_timeout_ms: int,
         request_threads: int = REQUEST_THREADS,
+        reserved_threads: int = 0,
     ) -> None:
         self._conninfo = conninfo
         self._sizes = {API_ROLE: api_pool_size, WORKER_ROLE: worker_pool_size}
@@ -155,7 +172,7 @@ class Database:
         self._statement_timeout_ms = statement_timeout_ms
         # Longer than any statement the server allows, plus a connect timeout of slack.
         self.round_trip_timeout = statement_timeout_ms / 1000 + connect_timeout
-        self.waiters_limit = max(1, request_threads - api_pool_size)
+        self.waiters_limit = max(1, request_threads - api_pool_size - reserved_threads)
         kept = {role: min(size, self.waiters_limit // 2) for role, size in self._sizes.items()}
         self.role_waiters_limits = {
             API_ROLE: max(1, self.waiters_limit - kept[WORKER_ROLE]),

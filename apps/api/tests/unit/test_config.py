@@ -97,12 +97,15 @@ def test_type_errors_do_not_echo_input() -> None:
 
 def test_the_request_pool_stays_well_below_the_request_threads() -> None:
     """Admitted scoped requests (one per request connection) plus threads waiting for a connection
-    must fit in the request threads, or connection holders could find no thread to finish on."""
-    settings = make_settings(database_pool_max_size=28, database_worker_pool_max_size=2)
-    assert settings.database_pool_max_size == 28
-    with pytest.raises(ConfigError) as excinfo:
-        make_settings(database_pool_max_size=31)
-    assert "DATABASE_POOL_MAX_SIZE" in str(excinfo.value)
+    must fit in the request threads, or connection holders could find no thread to finish on. The
+    threads that bounded external work may hold count too: with the default bounds and a worker pool
+    of 2, 40 - 15 - (4 + 4 + 8 + 1) leaves the minimum of 8 for connection waiters."""
+    settings = make_settings(database_pool_max_size=15, database_worker_pool_max_size=2)
+    assert settings.database_pool_max_size == 15
+    for size in (16, 28, 31):
+        with pytest.raises(ConfigError) as excinfo:
+            make_settings(database_pool_max_size=size, database_worker_pool_max_size=2)
+        assert "DATABASE_POOL_MAX_SIZE" in str(excinfo.value)
 
 
 def test_the_worker_pool_is_capped_below_the_request_threads() -> None:
@@ -115,9 +118,13 @@ def test_the_worker_pool_is_capped_below_the_request_threads() -> None:
 
 
 def test_both_pools_together_leave_request_threads_for_everything_else() -> None:
+    """Billing synchronization holds a request thread in all but one worker connection, so a larger
+    worker pool leaves room for a smaller request pool: 40 - 7 - (4 + 4 + 8 + 9) = 8."""
     defaults = make_settings()
     assert defaults.database_pool_max_size + defaults.database_worker_pool_max_size <= 30
-    assert make_settings(database_pool_max_size=20, database_worker_pool_max_size=10).database_pool_max_size == 20
+    assert make_settings(database_pool_max_size=7, database_worker_pool_max_size=10).database_pool_max_size == 7
+    with pytest.raises(ConfigError, match="DATABASE_POOL_MAX_SIZE, DATABASE_WORKER_POOL_MAX_SIZE"):
+        make_settings(database_pool_max_size=8, database_worker_pool_max_size=10)
     with pytest.raises(ConfigError) as excinfo:
         make_settings(database_pool_max_size=21, database_worker_pool_max_size=10)
     message = str(excinfo.value)

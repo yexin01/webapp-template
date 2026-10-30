@@ -47,7 +47,7 @@ from app.modules.llm.module import LLMModule, build_llm
 from app.modules.projects.module import ProjectsModule, build_projects
 
 # new:module:imports (pnpm new:module adds imports above this line)
-from app.settings import Settings, load_settings
+from app.settings import Settings, load_settings, reserved_request_threads
 
 API_TITLE = "SaaS Template API"
 
@@ -202,6 +202,7 @@ def _database(settings: Settings) -> Database:
         connect_timeout=settings.database_connect_timeout_seconds,
         statement_timeout_ms=settings.database_statement_timeout_ms,
         request_threads=REQUEST_THREADS,
+        reserved_threads=reserved_request_threads(settings),
     )
 
 
