@@ -17,7 +17,7 @@ from app.kernel.infrastructure.config import ConfigError, CoreSettings, core_pro
 from app.kernel.infrastructure.db import REQUEST_THREADS
 from app.modules.billing.settings import BillingSettings, billing_problems
 from app.modules.diagnostics.settings import DiagnosticsSettings
-from app.modules.identity.settings import IdentitySettings, identity_problems
+from app.modules.identity.settings import IdentitySettings, authorized_parties, identity_problems
 from app.modules.llm.settings import LLMSettings, llm_problems
 
 # The fewest request threads that must stay free for threads waiting for a database connection.
@@ -29,6 +29,7 @@ CLERK_KEY_SET_THREADS = 5
 class Settings(CoreSettings, IdentitySettings, BillingSettings, LLMSettings, DiagnosticsSettings):
     @model_validator(mode="after")
     def _validate(self) -> Self:
+        self.clerk_authorized_parties = authorized_parties(self, self)
         problems = [
             *core_problems(self),
             *identity_problems(self, self),

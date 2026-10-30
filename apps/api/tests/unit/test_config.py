@@ -243,7 +243,69 @@ def test_env_example_placeholders_fail_clearly(tmp_path: Path) -> None:
 
     with pytest.raises(ConfigError) as excinfo:
         load_settings(_env_file=REPO_ROOT / ".env.example")
-    assert "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY is malformed" in str(excinfo.value)
+    message = str(excinfo.value)
+    assert "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY is still the .env.example placeholder" in message
+    assert "CLERK_SECRET_KEY is malformed or still the .env.example placeholder" in message
+
+
+def test_the_web_apps_verdict_on_the_clerk_keys_is_the_apis() -> None:
+    """The same .env gets the same Clerk verdicts from both apps (env.server.test.ts has the mirror cases)."""
+    for secret_key in ("sk_test_replace_me", "hello", "sk_test_", "sk_live_x y"):
+        with pytest.raises(ConfigError) as excinfo:
+            make_settings(**{**LOCAL_CLERK, "clerk_secret_key": secret_key})
+        assert "CLERK_SECRET_KEY is malformed or still the .env.example placeholder" in str(excinfo.value)
+        assert secret_key not in str(excinfo.value)
+    for publishable in ("not-a-key", "pk_test_%%%"):
+        with pytest.raises(ConfigError, match="NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY is malformed"):
+            make_settings(**{**LOCAL_CLERK, "clerk_publishable_key": publishable})
+    assert make_settings(**{**LOCAL_CLERK, "clerk_secret_key": "sk_test_abc123"}).clerk_secret_key is not None
+
+
+def test_automated_tests_need_no_clerk_secret_key() -> None:
+    assert make_settings(clerk_secret_key="hello").clerk_secret_key is not None
+
+
+@pytest.mark.parametrize(
+    "dsn", ["not-a-dsn", "https://o1.ingest.sentry.io/2", "ftp://key@host/1", "https://key@host/abc"]
+)
+def test_a_malformed_sentry_dsn_is_refused_by_name_at_startup(dsn: str) -> None:
+    """Otherwise sentry_sdk.init raises BadDsn from bootstrap, naming no variable (ENV-03)."""
+    for mode in ("disabled", "sandbox"):
+        with pytest.raises(ConfigError) as excinfo:
+            make_settings(error_reporting_mode=mode, sentry_dsn=dsn)
+        message = str(excinfo.value)
+        assert "SENTRY_DSN must be a Sentry DSN" in message
+        assert dsn not in message
+        assert "Unsupported scheme" not in message
+        assert "Missing public key" not in message
+
+
+@pytest.mark.parametrize("host", ["not a url", "eu.i.posthog.com", "ftp://eu.i.posthog.com", "https://"])
+def test_a_malformed_posthog_host_is_refused_by_name(host: str) -> None:
+    with pytest.raises(ConfigError) as excinfo:
+        make_settings(posthog_host=host)
+    assert "NEXT_PUBLIC_POSTHOG_HOST (or POSTHOG_HOST) must be an absolute http(s) URL" in str(excinfo.value)
+    assert make_settings(posthog_host="https://eu.i.posthog.com").posthog_host == "https://eu.i.posthog.com"
+
+
+@pytest.mark.parametrize("prefix", ["phx", "phs", "pha", "phr"])
+@pytest.mark.parametrize("mode", ["disabled", "sandbox"])
+def test_a_secret_posthog_credential_never_reaches_the_browser_bundle(prefix: str, mode: str) -> None:
+    """NEXT_PUBLIC_POSTHOG_KEY is inlined into every browser bundle, whatever ANALYTICS_MODE says."""
+    key = f"{prefix}_{SECRET_MARKER}"
+    with pytest.raises(ConfigError) as excinfo:
+        make_settings(analytics_mode=mode, posthog_project_api_key=key)
+    message = str(excinfo.value)
+    assert "holds a secret PostHog credential" in message
+    assert key not in message
+    assert SECRET_MARKER not in message
+
+
+@pytest.mark.parametrize("key", ["pk_live_x", "sk_test_x", "phc", "phc_ x", "token"])
+def test_a_posthog_key_must_be_a_project_token(key: str) -> None:
+    with pytest.raises(ConfigError, match="must be a PostHog project token"):
+        make_settings(posthog_project_api_key=key)
+    assert make_settings(posthog_project_api_key="phc_x").posthog_project_api_key == "phc_x"
 
 
 def test_live_clerk_keys_rejected_in_tests_too() -> None:

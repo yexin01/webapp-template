@@ -86,6 +86,72 @@ def test_rejected_claims(verifier: ClerkTokenVerifier, keys: tuple[Any, str], ov
         verifier.verify(token(keys[0], **overrides))
 
 
+def azp_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if r.message == "clerk_azp_refused"]
+
+
+def test_a_refused_origin_is_logged_with_its_cause_and_never_the_token(
+    verifier: ClerkTokenVerifier, keys: tuple[Any, str], caplog: pytest.LogCaptureFixture
+) -> None:
+    """A preview's origin that CLERK_AUTHORIZED_PARTIES does not list is otherwise an anonymous 401."""
+    jwt_value = token(keys[0], azp="https://my-app-git-feature-team.vercel.app")
+    with caplog.at_level(logging.WARNING, logger=clerk.logger.name), pytest.raises(AuthenticationError):
+        verifier.verify(jwt_value)
+    [record] = azp_records(caplog)
+    assert record.levelno == logging.WARNING
+    assert record.cause == "azp_not_authorized"  # type: ignore[attr-defined]
+    assert record.azp == "https://my-app-git-feature-team.vercel.app"  # type: ignore[attr-defined]
+    for part in jwt_value.split("."):
+        assert part not in caplog.text
+
+
+def test_a_missing_origin_is_logged_with_its_cause(
+    verifier: ClerkTokenVerifier, keys: tuple[Any, str], caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level(logging.WARNING, logger=clerk.logger.name), pytest.raises(AuthenticationError):
+        verifier.verify(token(keys[0], azp=None))
+    [record] = azp_records(caplog)
+    assert record.cause == "azp_missing"  # type: ignore[attr-defined]
+    assert record.azp is None  # type: ignore[attr-defined]
+
+
+def test_a_claim_that_is_no_origin_is_not_echoed(
+    verifier: ClerkTokenVerifier, keys: tuple[Any, str], caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level(logging.WARNING, logger=clerk.logger.name), pytest.raises(AuthenticationError):
+        verifier.verify(token(keys[0], azp="https://x.example/\nforged log line"))
+    [record] = azp_records(caplog)
+    assert record.cause == "azp_not_authorized"  # type: ignore[attr-defined]
+    assert record.azp is None  # type: ignore[attr-defined]
+
+
+def test_refused_origins_are_logged_at_most_once_a_minute(
+    verifier: ClerkTokenVerifier,
+    keys: tuple[Any, str],
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = [1_000.0]
+    monkeypatch.setattr(clerk, "time", type("T", (), {"monotonic": staticmethod(lambda: now[0])}))
+    with caplog.at_level(logging.WARNING, logger=clerk.logger.name):
+        for _ in range(3):
+            with pytest.raises(AuthenticationError):
+                verifier.verify(token(keys[0], azp="https://evil.example"))
+        assert len(azp_records(caplog)) == 1
+        now[0] += 61
+        with pytest.raises(AuthenticationError):
+            verifier.verify(token(keys[0], azp="https://evil.example"))
+        assert len(azp_records(caplog)) == 2
+
+
+def test_an_accepted_origin_logs_nothing(
+    verifier: ClerkTokenVerifier, keys: tuple[Any, str], caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level(logging.WARNING, logger=clerk.logger.name):
+        verifier.verify(token(keys[0]))
+    assert azp_records(caplog) == []
+
+
 def test_wrong_signing_key(verifier: ClerkTokenVerifier) -> None:
     other = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     with pytest.raises(AuthenticationError):
