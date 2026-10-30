@@ -21,7 +21,7 @@ from app.modules.billing.ports import PriceDescription
 from app.modules.identity.domain import ExternalMembership
 from app.modules.llm.adapters import MockLLMProvider
 from app.settings import Settings
-from tests.conftest import PRICE_MONTHLY, PRICE_YEARLY, Harness, superuser_query
+from tests.conftest import PRICE_MONTHLY, PRICE_YEARLY, Harness, grant_to_administrator, superuser_query
 
 pytestmark = pytest.mark.db
 
@@ -190,6 +190,7 @@ def scratch_role(url: str, attributes: str) -> Iterator[str]:
     role = f"app_test_role_{uuid.uuid4().hex[:10]}"
     superuser_query(url, f"CREATE ROLE {role} NOLOGIN NOINHERIT {attributes}")
     try:
+        grant_to_administrator(url, role)  # so the test can SET ROLE to it
         yield role
     finally:
         superuser_query(url, f"DROP ROLE {role}")
@@ -211,7 +212,16 @@ def scratch_table(url: str, *changes: str) -> Iterator[None]:
     superuser_query(url, f"CREATE TABLE app.{SCRATCH_TABLE} (id integer)")
     try:
         for change in changes:
-            superuser_query(url, f"ALTER TABLE app.{SCRATCH_TABLE} {change}")
+            if change.startswith("OWNER TO "):
+                # Without superuser rights, the new owner needs CREATE on the schema, as in the core schema's hand-over.
+                owner = change.removeprefix("OWNER TO ")
+                superuser_query(url, f"GRANT CREATE ON SCHEMA app TO {owner}")
+                try:
+                    superuser_query(url, f"ALTER TABLE app.{SCRATCH_TABLE} {change}")
+                finally:
+                    superuser_query(url, f"REVOKE CREATE ON SCHEMA app FROM {owner}")
+            else:
+                superuser_query(url, f"ALTER TABLE app.{SCRATCH_TABLE} {change}")
         yield
     finally:
         superuser_query(url, f"DROP TABLE app.{SCRATCH_TABLE}")

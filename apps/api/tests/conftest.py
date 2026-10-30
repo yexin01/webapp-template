@@ -21,6 +21,7 @@ from urllib.parse import urlparse, urlunparse
 import psycopg
 import pytest
 from fastapi.testclient import TestClient
+from psycopg import sql
 
 from app.bootstrap import Container, build_container, create_app
 from app.kernel.errors import AuthenticationError
@@ -198,9 +199,28 @@ def db(database_url: str) -> Iterator[str]:
 
 
 def superuser_query(url: str, sql: str, params: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:
+    """Run ``sql`` as the test database's administrator: a superuser on plain PostgreSQL, and the non-superuser
+    ``postgres`` (CREATEROLE, BYPASSRLS) on Supabase's image, so it can do no more than a migration role can."""
     with psycopg.connect(url, autocommit=True) as conn:
         cur = conn.execute(sql, params)  # type: ignore[arg-type]
         return cur.fetchall() if cur.description is not None else []
+
+
+def require_superuser(url: str) -> None:
+    """Skip a test that needs the administrator to be a superuser (to create or alter one)."""
+    if superuser_query(url, "SELECT rolsuper FROM pg_roles WHERE rolname = current_user") != [(True,)]:
+        pytest.skip("the test database's administrator is not a superuser (Supabase's image)")
+
+
+def grant_to_administrator(url: str, role: str) -> None:
+    """Let the administrator SET ROLE to ``role`` and use its privileges.
+
+    A non-superuser that creates a role is given ADMIN on it but neither SET nor INHERIT, and cannot hand it
+    relations or switch to it. The grant names both roles: ``TO CURRENT_USER`` crashes old Supabase images.
+    """
+    with psycopg.connect(url, autocommit=True) as conn:
+        [(administrator,)] = conn.execute("SELECT current_user::text").fetchall()
+        conn.execute(sql.SQL("GRANT {} TO {}").format(sql.Identifier(role), sql.Identifier(administrator)))
 
 
 # ---------------------------------------------------------------------------

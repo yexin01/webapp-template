@@ -39,6 +39,7 @@
     "check:placeholders": "node scripts/check-placeholders.mjs",
     "new:module": "node scripts/new-module.mjs",
     "test:new-module": "node scripts/test-new-module.mjs",
+    "test:supabase": "node scripts/test-supabase-image.mjs",
     "security:licenses": "node scripts/check-licenses.mjs",
     "perf:server": "cd apps/api && uv run python ../../perf/server.py",
     "perf:run": "node scripts/perf.mjs"

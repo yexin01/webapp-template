@@ -20,7 +20,7 @@ import psycopg
 import pytest
 
 from app.kernel.infrastructure import migrations
-from tests.conftest import superuser_query
+from tests.conftest import grant_to_administrator, require_superuser, superuser_query
 
 pytestmark = pytest.mark.db
 
@@ -79,9 +79,12 @@ def scratch_role(url: str, attributes: str = "", *, inherit: bool = False) -> It
 
     Dropping it also revokes every membership it has or grants.
     """
+    if "SUPERUSER" in attributes:
+        require_superuser(url)
     role = f"app_test_role_{uuid.uuid4().hex[:10]}"
     superuser_query(url, f"CREATE ROLE {role} {'INHERIT' if inherit else 'NOINHERIT'} {attributes}")
     try:
+        grant_to_administrator(url, role)  # so the relations below can be handed to it
         yield role
     finally:
         superuser_query(url, f"DROP ROLE {role}")
@@ -94,7 +97,12 @@ def owned_relation(url: str, owner: str, kind: str, schema: str = "app") -> Iter
     name = f"{schema}.roles_scratch_{uuid.uuid4().hex[:10]}"
     superuser_query(url, f"CREATE {keyword} {name} {definition}")
     try:
-        superuser_query(url, f"ALTER {keyword} {name} OWNER TO {owner}")
+        # Without superuser rights, the new owner needs CREATE on the schema, as in the core schema's own hand-over.
+        superuser_query(url, f"GRANT CREATE ON SCHEMA {schema} TO {owner}")
+        try:
+            superuser_query(url, f"ALTER {keyword} {name} OWNER TO {owner}")
+        finally:
+            superuser_query(url, f"REVOKE CREATE ON SCHEMA {schema} FROM {owner}")
         yield name
     finally:
         superuser_query(url, f"DROP {keyword} {name}")

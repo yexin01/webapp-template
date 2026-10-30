@@ -31,7 +31,7 @@ from app.kernel.infrastructure.db import UNSAFE_LOGIN_ROLE, Database, PgTransact
 from app.kernel.infrastructure.store import PgKernelStore
 from app.kernel.ports import KernelStore
 from app.kernel.tenancy import ContextKind, TenantContext
-from tests.conftest import Harness, superuser_query
+from tests.conftest import Harness, grant_to_administrator, require_superuser, superuser_query
 
 pytestmark = pytest.mark.db
 
@@ -83,8 +83,8 @@ def scratch_role(url: str, attributes: str = "", *, password: str | None = None)
     role = f"app_test_role_{uuid.uuid4().hex[:10]}"
     login = f"LOGIN PASSWORD '{password}'" if password else "NOLOGIN"
     superuser_query(url, f"CREATE ROLE {role} {login} NOINHERIT {attributes}")
-    superuser_query(url, f'GRANT {role} TO "{migration_user(url)}"')
     try:
+        grant_to_administrator(url, role)
         yield role
     finally:
         superuser_query(url, f"DROP ROLE {role}")
@@ -162,6 +162,8 @@ def test_the_login_role_migration_can_run_again(db: str) -> None:
     ],
 )
 def test_a_login_role_with_an_unsafe_attribute_is_refused(db: str, attribute: str, problem: str) -> None:
+    if attribute == "SUPERUSER":
+        require_superuser(db)
     with login_role(db, enabled=False) as (role, _):
         run_sql(db, sql_for(CHECK, role))
         superuser_query(db, f"ALTER ROLE {role} {attribute}")
