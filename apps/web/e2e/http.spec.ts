@@ -53,6 +53,8 @@ test("integration diagnostics require authentication", async ({ request }) => {
   expect(report.status()).toBe(401);
   const check = await request.post("/api/v1/diagnostics/integrations/database/check");
   expect(check.status()).toBe(401);
+  const access = await request.get("/api/v1/diagnostics/access");
+  expect(access.status()).toBe(401);
 });
 
 // API-04 with a valid token: test_api_security.py::test_api04_a_valid_token_in_the_session_cookie_is_refused

@@ -76,7 +76,7 @@ def build_router(diagnostics: DiagnosticsService, environment: Environment, auth
     @router.get(
         "/diagnostics/access",
         response_model=DiagnosticsAccess,
-        responses=errors(401),
+        responses=errors(401, 403, 503),
         dependencies=[requires(Access.OWN_ACCOUNT)],
     )
     def diagnostics_access(ctx: Personal) -> DiagnosticsAccess:

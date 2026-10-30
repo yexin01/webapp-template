@@ -107,6 +107,7 @@ def test_every_operation_answers_as_the_document_says_when_signed_in(sweep: Swee
     sweep("GET", f"{api}/orgs/{ORG}/pro/insight", 200, headers=a)
 
     sweep("POST", f"{api}/llm/check", 200, headers=a)
+    sweep("GET", f"{api}/diagnostics/access", 200, headers=a)
     sweep("GET", f"{api}/diagnostics/integrations", 200, headers=a)
     sweep("POST", f"{api}/diagnostics/integrations/database/check", 200, headers=a)
 
