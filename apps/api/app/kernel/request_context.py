@@ -22,6 +22,8 @@ class RequestTelemetry:
     request_id: str
     user_id: UUID | None = None
     org_id: UUID | None = None
+    # Set when the request queued an error event or an analytics event that no one has sent yet.
+    unsent_telemetry: bool = False
 
 
 request_telemetry_var: contextvars.ContextVar[RequestTelemetry | None] = contextvars.ContextVar(
@@ -35,3 +37,10 @@ def bind_tenant(user_id: UUID, org_id: UUID | None) -> None:
     if telemetry is not None:
         telemetry.user_id = user_id
         telemetry.org_id = org_id
+
+
+def note_unsent_telemetry() -> None:
+    """Records that the current request queued telemetry, so the middleware sends it before the instance idles."""
+    telemetry = request_telemetry_var.get()
+    if telemetry is not None:
+        telemetry.unsent_telemetry = True

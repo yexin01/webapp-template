@@ -35,7 +35,8 @@ from app.kernel.infrastructure.redaction import (
     strip_query,
     strip_url_queries,
 )
-from app.kernel.request_context import request_id_var, request_telemetry_var
+from app.kernel.ports import Analytics
+from app.kernel.request_context import note_unsent_telemetry, request_id_var, request_telemetry_var
 
 _STANDARD_RECORD_FIELDS = frozenset(vars(logging.LogRecord("", 0, "", 0, "", None, None)).keys()) | {
     "message",
@@ -199,6 +200,7 @@ def _scrub_common(event: Any, *, keep_trace_data: bool) -> None:
 
 def scrub_event(event: Any, _hint: Any) -> Any:
     """Sentry ``before_send``: remove secrets, bodies, and personal data; tag the request ID."""
+    note_unsent_telemetry()  # the SDK sends in the background: the middleware flushes before the instance idles
     _scrub_common(event, keep_trace_data=False)
     for exc in (event.get("exception") or {}).get("values", []) or []:
         if isinstance(exc.get("value"), str):
@@ -366,6 +368,24 @@ def report_server_error(exc: DomainError, *, level: Literal["error", "warning"])
         logger.warning("error_report_failed")
 
 
+def flush_telemetry(analytics: Analytics, timeout_seconds: float) -> None:
+    """Send now what this process queued for Sentry and PostHog. Never raises.
+
+    For a serverless instance that can be frozen once its invocation ends: both clients
+    send in the background, on a schedule (PostHog: every 5 s). The request middleware
+    calls this from a thread, after the response, and stops waiting after its budget.
+    """
+    if sentry_sdk.is_initialized():
+        try:
+            sentry_sdk.flush(timeout=timeout_seconds)
+        except Exception:  # noqa: BLE001 - telemetry must never break requests
+            logger.warning("telemetry_flush_failed", extra={"service": "sentry"})
+    try:
+        analytics.flush()
+    except Exception:  # noqa: BLE001
+        logger.warning("telemetry_flush_failed", extra={"service": "posthog"})
+
+
 # ---------------------------------------------------------------------------
 # Product analytics
 # ---------------------------------------------------------------------------
@@ -508,6 +528,7 @@ class PostHogAnalytics:
         self, user_id: UUID, event: str, properties: dict[str, str | int | bool], occurred_at: datetime | None
     ) -> bool:
         """Queue the event for the background export. False if the client refused it."""
+        note_unsent_telemetry()
         try:
             # A timestamp of None means the current time.
             return (

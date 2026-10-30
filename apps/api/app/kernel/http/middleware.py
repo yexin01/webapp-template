@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 import time
 import uuid
+from collections.abc import Callable
 
+import anyio
+from anyio.lowlevel import RunVar
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.kernel.http.problem import PayloadTooLargeError, internal_error_response
@@ -16,6 +20,9 @@ logger = logging.getLogger("app.access")
 errors_logger = logging.getLogger("app.errors")
 
 _REQUEST_ID = re.compile(r"^[A-Za-z0-9._-]{8,64}$")
+
+# The most a request that queued telemetry waits for it to be sent, after its response (OBS-06).
+TELEMETRY_FLUSH_SECONDS = 2.0
 
 SECURITY_HEADERS: tuple[tuple[bytes, bytes], ...] = (
     (b"x-content-type-options", b"nosniff"),
@@ -41,10 +48,23 @@ class RequestContextMiddleware:
 
     Logs and error reports carry the request ID and, once the request is
     authenticated, the internal user and organization IDs (OBS-04, OBS-05).
+
+    A serverless instance can be frozen as soon as its invocation ends, and
+    the Sentry and PostHog clients send in the background. So a request that
+    queued an error event or an analytics event hands ``flush_telemetry`` to a
+    thread once its response (or its 500) is out, and waits for it at most
+    ``TELEMETRY_FLUSH_SECONDS``. That bounds what an outage of either service
+    costs the invocation, and never changes the response (OBS-06). A request
+    that queued nothing does not wait or switch threads.
     """
 
-    def __init__(self, app: ASGIApp) -> None:
+    def __init__(self, app: ASGIApp, flush_telemetry: Callable[[float], None] | None = None) -> None:
         self.app = app
+        self._flush_telemetry = flush_telemetry
+        # Outside the request threads (a limiter belongs to one event loop). A thread whose wait was
+        # given up on keeps running, so a flush does not start while another is still sending.
+        self._flush_threads: RunVar[anyio.CapacityLimiter] = RunVar(f"telemetry_flush_{id(self)}")
+        self._sending = threading.Lock()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -98,8 +118,36 @@ class RequestContextMiddleware:
                     "duration_ms": int((time.monotonic() - started) * 1000),
                 },
             )
+            if telemetry.unsent_telemetry and self._flush_telemetry is not None:
+                await self._flush(self._flush_telemetry)
             request_telemetry_var.reset(telemetry_token)
             request_id_var.reset(token)
+
+    async def _flush(self, flush: Callable[[float], None]) -> None:
+        """Runs ``flush`` on a thread of its own, waiting at most ``TELEMETRY_FLUSH_SECONDS`` for it."""
+
+        def send() -> None:
+            if not self._sending.acquire(blocking=False):
+                logger.warning("telemetry_flush_skipped")  # the one sending now may take this request's events too
+                return
+            try:
+                flush(TELEMETRY_FLUSH_SECONDS)
+            finally:
+                self._sending.release()
+
+        try:
+            limiter = self._flush_threads.get()
+        except LookupError:
+            limiter = anyio.CapacityLimiter(1)
+            self._flush_threads.set(limiter)
+        # Shielded: a request cancelled after its response (a server shutting down) still hands its events over.
+        with anyio.move_on_after(TELEMETRY_FLUSH_SECONDS, shield=True) as scope:
+            try:
+                await anyio.to_thread.run_sync(send, limiter=limiter, abandon_on_cancel=True)
+            except Exception:  # noqa: BLE001 - telemetry must never break requests
+                logger.warning("telemetry_flush_failed")
+        if scope.cancelled_caught:
+            logger.warning("telemetry_flush_incomplete", extra={"budget_seconds": TELEMETRY_FLUSH_SECONDS})
 
 
 class BodySizeLimitMiddleware:

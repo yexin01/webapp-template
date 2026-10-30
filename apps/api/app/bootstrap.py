@@ -35,6 +35,7 @@ from app.kernel.infrastructure.observability import (
     PostHogAnalytics,
     SentryErrorReporter,
     configure_logging,
+    flush_telemetry,
     init_error_reporting,
 )
 from app.kernel.infrastructure.store import PgKernelStore
@@ -192,6 +193,7 @@ def create_app(container: Container) -> FastAPI:
         inner_middleware=[Middleware(AfterResponseDispatch, dispatcher=kernel.outbox, database=kernel.database)],
         worker_threads=REQUEST_THREADS,
         on_shutdown=container.close,
+        flush_telemetry=lambda seconds: flush_telemetry(kernel.analytics, seconds),
     )
     app.state.container = container
     return app
