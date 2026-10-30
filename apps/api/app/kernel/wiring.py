@@ -19,6 +19,7 @@ from app.kernel.diagnostics import IntegrationProbe
 from app.kernel.events import EventHandlers
 from app.kernel.http.auth import AuthDeps
 from app.kernel.infrastructure.db import Database, PgTransactions
+from app.kernel.infrastructure.observability import AnalyticsEvents
 from app.kernel.jobs import JobRegistry
 from app.kernel.ports import Analytics, Clock, ErrorReporter, KernelStore
 
@@ -33,6 +34,7 @@ class Kernel:
     database: Database
     clock: Clock
     analytics: Analytics
+    analytics_events: AnalyticsEvents
     error_reporter: ErrorReporter
     rate_limiter: RateLimiter
     store: PgTransactions[KernelStore]
@@ -54,6 +56,8 @@ class Contribution:
 
     routers: list[APIRouter] = field(default_factory=list)
     probes: list[IntegrationProbe] = field(default_factory=list)
+    # Product-analytics events the module sends, with the properties of each (OBS-03). See ``AnalyticsEvents``.
+    analytics_events: Mapping[str, frozenset[str]] = field(default_factory=dict)
     closers: list[Callable[[], None]] = field(default_factory=list)
 
 

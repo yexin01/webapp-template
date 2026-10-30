@@ -62,9 +62,13 @@ def build_fastapi(
     inner_middleware: Sequence[Middleware] = (),
     worker_threads: int,
     on_shutdown: Callable[[], None] = lambda: None,
+    flush_telemetry: Callable[[float], None] | None = None,
 ) -> FastAPI:
     """``inner_middleware`` wraps the routes, inside the platform middleware (request
-    context, body-size limit, CORS), in Starlette's order: the first entry is the outermost."""
+    context, body-size limit, CORS), in Starlette's order: the first entry is the outermost.
+
+    ``flush_telemetry(seconds)`` sends the telemetry queued in the background; the request
+    context middleware calls it after the response of a request that queued some."""
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -101,7 +105,7 @@ def build_fastapi(
         max_age=600,
     )
     app.add_middleware(BodySizeLimitMiddleware, max_bytes=settings.max_request_body_bytes)
-    app.add_middleware(RequestContextMiddleware)  # outermost: wraps every response
+    app.add_middleware(RequestContextMiddleware, flush_telemetry=flush_telemetry)  # outermost: wraps every response
     return app
 
 

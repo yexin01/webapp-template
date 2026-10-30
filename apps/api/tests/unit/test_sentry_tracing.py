@@ -431,6 +431,22 @@ def test_at_a_rate_of_0_no_caller_can_have_a_request_traced() -> None:
 
 
 @pytest.mark.parametrize(
+    ("headers", "traced"),
+    [
+        pytest.param({}, True, id="no trace"),
+        pytest.param({"sentry-trace": f"{TRACE_ID}-b6b1f6f6f6f6f6f6"}, True, id="a trace without a decision"),
+        pytest.param({"sentry-trace": f"{TRACE_ID}-b6b1f6f6f6f6f6f6-0"}, False, id="a trace the caller declined"),
+    ],
+)
+def test_the_api_samples_a_request_unless_its_caller_declined(headers: dict[str, str], traced: bool) -> None:
+    """The browser sends no decision (no tracesSampleRate in apps/web/src/instrumentation-client.ts), so
+    SENTRY_TRACES_SAMPLE_RATE applies to the requests pages make. A browser rate of 0 would send "-0",
+    which no API rate overrides (sentry-sdk inherits the caller's decision)."""
+    sent, _ = _send_requests(1.0, headers)
+    assert ("transaction" in {kind for _, kind, _ in sent}) is traced
+
+
+@pytest.mark.parametrize(
     ("sample_rate", "headers"),
     [
         pytest.param(0.01, CALLER_SAMPLED, id="a trace the caller sent as sampled"),

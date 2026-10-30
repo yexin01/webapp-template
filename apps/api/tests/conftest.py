@@ -26,6 +26,7 @@ from psycopg import sql
 from app.bootstrap import Container, build_container, create_app
 from app.kernel.errors import AuthenticationError
 from app.kernel.infrastructure import migrations
+from app.kernel.infrastructure.observability import AnalyticsEvents
 from app.kernel.tenancy import VerifiedIdentity
 from app.modules.billing.adapters.fakes import InMemoryBillingProvider
 from app.modules.billing.adapters.stripe import StripeWebhookVerifier
@@ -120,6 +121,7 @@ class TokenTableVerifier:
 
 class RecordingAnalytics:
     def __init__(self) -> None:
+        self.allowed: AnalyticsEvents | None = None  # the container's, once built: events modules register count too
         self.events: list[tuple[str, str, dict[str, Any]]] = []
         # The (event_id, occurred_at) each recorded event carried, in the order of ``events``.
         self.identities: list[tuple[uuid.UUID | None, datetime | None]] = []
@@ -136,7 +138,7 @@ class RecordingAnalytics:
     ) -> None:
         from app.kernel.infrastructure.observability import _filter
 
-        filtered = _filter(event, properties)
+        filtered = _filter(event, properties, self.allowed) if self.allowed else _filter(event, properties)
         if filtered is not None:
             self.events.append((str(user_id), event, filtered))
             self.identities.append((event_id, occurred_at))
@@ -287,6 +289,7 @@ def make_harness(db: str) -> Iterator[Callable[..., Harness]]:
         }
         overrides.update(container_overrides)
         container = build_container(settings, **overrides)
+        analytics.allowed = container.kernel.analytics_events
         client = TestClient(create_app(container), raise_server_exceptions=False)
         harness = Harness(container, client, verifier, directory, billing, clock, analytics, db)
         created.append(harness)

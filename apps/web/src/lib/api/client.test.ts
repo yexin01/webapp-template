@@ -178,6 +178,36 @@ describe("api client", () => {
     expect(presentError(new ApiError(status, code, message, null))).toEqual({ title, message, action });
   });
 
+  it("shows the server's message for a 4xx code it does not know, and offers a retry for a 503", () => {
+    // A module adds error codes with a 4xx or 503 status (ApiError.code is not limited to the contract's).
+    expect(
+      presentError(new ApiError(404, "REPORT_NOT_READY", "The report is still being prepared.", null)),
+    ).toEqual({
+      title: "Could not complete this",
+      message: "The report is still being prepared.",
+      action: "none",
+    });
+    expect(
+      presentError(new ApiError(503, "EXPORT_UNAVAILABLE", "Exports are paused. Try again soon.", null)),
+    ).toEqual({
+      title: "Temporarily unavailable",
+      message: "Exports are paused. Try again soon.",
+      action: "retry",
+    });
+    // Anything else, and a response outside the contract, keeps the generic copy and never echoes the response.
+    for (const error of [
+      new ApiError(500, "INTERNAL_ERROR", "Database exploded at db.internal:5432", null),
+      new ApiError(502, "BAD_GATEWAY", "upstream said no", null),
+      ApiError.unexpectedResponse(404),
+    ]) {
+      expect(presentError(error)).toEqual({
+        title: "Something went wrong",
+        message: "An unexpected error occurred.",
+        action: "retry",
+      });
+    }
+  });
+
   it("still lets forms show every rejected value next to the field", () => {
     for (const code of ["VALIDATION_FAILED", "INVALID_REQUEST", "CONFLICT"]) {
       expect(isInputError(new ApiError(400, code, "Name is already taken.", null))).toBe(true);

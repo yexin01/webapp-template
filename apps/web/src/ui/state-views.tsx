@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 
-import { presentError } from "@/lib/api/errors";
+import { ApiError, presentError } from "@/lib/api/errors";
 
 export function LoadingState({ label = "Loading…" }: { label?: string }) {
   return (
@@ -31,6 +31,10 @@ export function ErrorState({ error, onRetry }: { error: unknown; onRetry?: () =>
     <div className="state state-error" role="alert">
       <p className="state-title">{view.title}</p>
       <p>{view.message}</p>
+      {error instanceof ApiError && error.status >= 500 && error.requestId && (
+        // The API's X-Request-ID: what support asks for, and what its logs and error reports carry (OBS-05).
+        <p className="muted">Reference: {error.requestId}</p>
+      )}
       {view.action === "sign-in" && (
         <Link className="button" href={`/sign-in?redirect_url=${encodeURIComponent(pathname)}`}>
           Sign in

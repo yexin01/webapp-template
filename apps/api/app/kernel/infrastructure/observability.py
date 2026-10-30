@@ -35,7 +35,8 @@ from app.kernel.infrastructure.redaction import (
     strip_query,
     strip_url_queries,
 )
-from app.kernel.request_context import request_id_var
+from app.kernel.ports import Analytics
+from app.kernel.request_context import note_unsent_telemetry, request_id_var, request_telemetry_var
 
 _STANDARD_RECORD_FIELDS = frozenset(vars(logging.LogRecord("", 0, "", 0, "", None, None)).keys()) | {
     "message",
@@ -60,6 +61,13 @@ class JsonFormatter(logging.Formatter):
         request_id = request_id_var.get()
         if request_id:
             payload["request_id"] = request_id
+        telemetry = request_telemetry_var.get()
+        if telemetry is not None:
+            # Internal, pseudonymous IDs (OBS-04); a log line's own ``extra`` keys win below.
+            if telemetry.user_id is not None:
+                payload["user_id"] = str(telemetry.user_id)
+            if telemetry.org_id is not None:
+                payload["org_id"] = str(telemetry.org_id)
         extras = {k: v for k, v in vars(record).items() if k not in _STANDARD_RECORD_FIELDS}
         if extras:
             payload.update(redact(extras))
@@ -166,6 +174,11 @@ def _scrub_common(event: Any, *, keep_trace_data: bool) -> None:
         # Lets an operator go from a user's X-Request-ID to the event (OBS-05).
         tags = event.get("tags")
         event["tags"] = {**(tags if isinstance(tags, dict) else {}), "request_id": request_id}
+        telemetry = request_telemetry_var.get()
+        if telemetry is not None:
+            # Internal, pseudonymous IDs: which user and tenant an error affects (OBS-04). Never the ``user`` field.
+            ids = {"user_id": telemetry.user_id, "org_id": telemetry.org_id}
+            event["tags"].update({name: str(value) for name, value in ids.items() if value is not None})
     if isinstance(event.get("transaction"), str):
         event["transaction"] = _scrub_trace_text(event["transaction"])
     request = event.get("request")
@@ -187,6 +200,7 @@ def _scrub_common(event: Any, *, keep_trace_data: bool) -> None:
 
 def scrub_event(event: Any, _hint: Any) -> Any:
     """Sentry ``before_send``: remove secrets, bodies, and personal data; tag the request ID."""
+    note_unsent_telemetry()  # the SDK sends in the background: the middleware flushes before the instance idles
     _scrub_common(event, keep_trace_data=False)
     for exc in (event.get("exception") or {}).get("values", []) or []:
         if isinstance(exc.get("value"), str):
@@ -354,11 +368,30 @@ def report_server_error(exc: DomainError, *, level: Literal["error", "warning"])
         logger.warning("error_report_failed")
 
 
+def flush_telemetry(analytics: Analytics, timeout_seconds: float) -> None:
+    """Send now what this process queued for Sentry and PostHog. Never raises.
+
+    For a serverless instance that can be frozen once its invocation ends: both clients
+    send in the background, on a schedule (PostHog: every 5 s). The request middleware
+    calls this from a thread, after the response, and stops waiting after its budget.
+    """
+    if sentry_sdk.is_initialized():
+        try:
+            sentry_sdk.flush(timeout=timeout_seconds)
+        except Exception:  # noqa: BLE001 - telemetry must never break requests
+            logger.warning("telemetry_flush_failed", extra={"service": "sentry"})
+    try:
+        analytics.flush()
+    except Exception:  # noqa: BLE001
+        logger.warning("telemetry_flush_failed", extra={"service": "posthog"})
+
+
 # ---------------------------------------------------------------------------
 # Product analytics
 # ---------------------------------------------------------------------------
 
-# OBS-03: only these events, with only these properties, are ever sent.
+# OBS-03: only these events, with only these properties, are ever sent: the template's own, which docs/data-inventory.md
+# lists, and the ones a module registers at wiring time (``AnalyticsEvents``, ``Contribution.analytics_events``).
 ANALYTICS_ALLOWLIST: Mapping[str, frozenset[str]] = {
     "project_created": frozenset({"context"}),
     "plan_changed": frozenset({"plan"}),
@@ -370,12 +403,49 @@ ANALYTICS_ALLOWLIST: Mapping[str, frozenset[str]] = {
 
 logger = logging.getLogger(__name__)
 
+_ANALYTICS_NAME = re.compile(r"[a-z][a-z0-9_]{2,63}")
+
+
+class AnalyticsEvents:
+    """The events the API may send, and the properties each may carry (OBS-03).
+
+    It starts with ``ANALYTICS_ALLOWLIST``. A module adds its own events with
+    ``Contribution.analytics_events``, which the composition root registers at startup, so adding
+    an event never edits the kernel. Registration refuses what the allowlist exists to prevent: a
+    name another event has, a property named like personal data or a secret, a name outside
+    lower-case snake case. A refusal stops the application from starting.
+    """
+
+    def __init__(self, base: Mapping[str, frozenset[str]] = ANALYTICS_ALLOWLIST) -> None:
+        self._events: dict[str, frozenset[str]] = dict(base)
+
+    def register(self, events: Mapping[str, frozenset[str]]) -> None:
+        added: dict[str, frozenset[str]] = {}
+        for name, properties in events.items():
+            problems = [f"event {name!r} is already registered"] if name in self._events else []
+            names = [name, *properties]
+            problems += [f"{n!r} is not lower-case snake case" for n in names if not _ANALYTICS_NAME.fullmatch(n)]
+            problems += [
+                f"property {p!r} is named like personal data or a secret" for p in properties if p in SENSITIVE_KEYS
+            ]
+            if problems:
+                raise ValueError(f"analytics event {name!r} cannot be registered: {'; '.join(problems)}")
+            added[name] = frozenset(properties)
+        self._events |= added
+
+    def properties(self, event: str) -> frozenset[str] | None:
+        """The properties ``event`` may carry; None if it is not allowed at all."""
+        return self._events.get(event)
+
+
 # Per process, at most 9 after-response dispatches (DATABASE_WORKER_POOL_MAX_SIZE - 1) and a drain send at once.
 _SENDING_THREADS = 10
 
 
-def _filter(event: str, properties: Mapping[str, str | int | bool]) -> dict[str, str | int | bool] | None:
-    allowed = ANALYTICS_ALLOWLIST.get(event)
+def _filter(
+    event: str, properties: Mapping[str, str | int | bool], events: AnalyticsEvents | None = None
+) -> dict[str, str | int | bool] | None:
+    allowed = ANALYTICS_ALLOWLIST.get(event) if events is None else events.properties(event)
     if allowed is None:
         logger.warning("analytics_event_not_allowlisted", extra={"analytics_event": event})
         return None
@@ -383,6 +453,9 @@ def _filter(event: str, properties: Mapping[str, str | int | bool]) -> dict[str,
 
 
 class NoopAnalytics:
+    def __init__(self, events: AnalyticsEvents | None = None) -> None:
+        self._events = events or AnalyticsEvents()
+
     def capture(
         self,
         user_id: UUID,
@@ -392,7 +465,7 @@ class NoopAnalytics:
         event_id: UUID | None = None,
         occurred_at: datetime | None = None,
     ) -> None:
-        _filter(event, properties)
+        _filter(event, properties, self._events)
 
     def flush(self) -> bool:
         return True
@@ -444,7 +517,9 @@ class PostHogAnalytics:
         confirm_timeout_seconds: float = 2.0,
         cooldown_seconds: float = 30.0,
         clock: Callable[[], float] = time.monotonic,
+        events: AnalyticsEvents | None = None,
     ) -> None:
+        self._events = events or AnalyticsEvents()
         self._flush_timeout = flush_timeout_seconds
         self._confirm_timeout = confirm_timeout_seconds
         self._cooldown = cooldown_seconds
@@ -483,7 +558,7 @@ class PostHogAnalytics:
         event_id: UUID | None = None,
         occurred_at: datetime | None = None,
     ) -> None:
-        filtered = _filter(event, properties)
+        filtered = _filter(event, properties, self._events)
         pending = self._pending.get()
         if event_id is not None:
             # An event dropped by the allowlist has nothing to confirm.
@@ -496,6 +571,7 @@ class PostHogAnalytics:
         self, user_id: UUID, event: str, properties: dict[str, str | int | bool], occurred_at: datetime | None
     ) -> bool:
         """Queue the event for the background export. False if the client refused it."""
+        note_unsent_telemetry()
         try:
             # A timestamp of None means the current time.
             return (

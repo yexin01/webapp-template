@@ -31,11 +31,13 @@ from app.kernel.infrastructure.db import REQUEST_THREADS, Database, PgTransactio
 from app.kernel.infrastructure.integrations import describe_analytics, describe_database, describe_error_reporting
 from app.kernel.infrastructure.migrations import with_tls_default
 from app.kernel.infrastructure.observability import (
+    AnalyticsEvents,
     NoopAnalytics,
     NoopErrorReporter,
     PostHogAnalytics,
     SentryErrorReporter,
     configure_logging,
+    flush_telemetry,
     init_error_reporting,
 )
 from app.kernel.infrastructure.store import PgKernelStore
@@ -115,7 +117,8 @@ def build_container(settings: Settings, **adapters: Any) -> Container:
     database: Database = pick(overrides, "database", lambda: _database(settings))
     closers.append(database.close)
     store: PgTransactions[KernelStore] = PgTransactions(database, PgKernelStore, note_recorded_event, clock)
-    analytics: Analytics = pick(overrides, "analytics", lambda: _analytics(settings))
+    analytics_events = AnalyticsEvents()
+    analytics: Analytics = pick(overrides, "analytics", lambda: _analytics(settings, analytics_events))
     error_reporter: ErrorReporter = pick(overrides, "error_reporter", lambda: _error_reporter(settings))
     handlers = EventHandlers()
     jobs = JobRegistry()
@@ -131,6 +134,7 @@ def build_container(settings: Settings, **adapters: Any) -> Container:
         database=database,
         clock=clock,
         analytics=analytics,
+        analytics_events=analytics_events,
         error_reporter=error_reporter,
         rate_limiter=rate_limiter,
         store=store,
@@ -171,6 +175,12 @@ def build_container(settings: Settings, **adapters: Any) -> Container:
         closers=closers,
     )
     container.diagnostics  # noqa: B018 - built now, so a duplicate probe fails at startup
+    try:
+        for contribution in container.contributions():
+            analytics_events.register(contribution.analytics_events)
+    except ValueError:
+        container.close()
+        raise
     if unread := overrides.unread():
         container.close()
         raise TypeError(f"build_container() got unknown overrides: {', '.join(unread)}")
@@ -197,14 +207,15 @@ def create_app(container: Container) -> FastAPI:
         inner_middleware=[Middleware(AfterResponseDispatch, dispatcher=kernel.outbox, database=kernel.database)],
         worker_threads=REQUEST_THREADS,
         on_shutdown=container.close,
+        flush_telemetry=lambda seconds: flush_telemetry(kernel.analytics, seconds),
     )
     app.state.container = container
     return app
 
 
-def bootstrap() -> Container:
-    """Load configuration, configure telemetry, and build the production container."""
-    settings = load_settings()
+def bootstrap(settings: Settings | None = None) -> Container:
+    """Load configuration (unless given, for the telemetry wire test), configure telemetry, and build the container."""
+    settings = settings or load_settings()
     configure_logging(settings.log_level)
     init_error_reporting(settings)
     return build_container(settings)
@@ -225,10 +236,10 @@ def _database(settings: Settings) -> Database:
     )
 
 
-def _analytics(settings: Settings) -> Analytics:
+def _analytics(settings: Settings, events: AnalyticsEvents) -> Analytics:
     if settings.analytics_mode in (Mode.SANDBOX, Mode.LIVE) and settings.posthog_project_api_key:
-        return PostHogAnalytics(api_key=settings.posthog_project_api_key, host=settings.posthog_host)
-    return NoopAnalytics()
+        return PostHogAnalytics(api_key=settings.posthog_project_api_key, host=settings.posthog_host, events=events)
+    return NoopAnalytics(events)
 
 
 def _error_reporter(settings: Settings) -> ErrorReporter:

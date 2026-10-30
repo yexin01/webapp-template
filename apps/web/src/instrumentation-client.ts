@@ -1,13 +1,8 @@
 import * as Sentry from "@sentry/nextjs";
 
 import { publicEnv } from "./lib/env";
-import {
-  scrubBreadcrumb,
-  scrubEnvelopeHeaders,
-  scrubEvent,
-  scrubSpan,
-  scrubTraceContext,
-} from "./lib/redact";
+import { prepareReport } from "./lib/error-reporting";
+import { scrubBreadcrumb, scrubEnvelopeHeaders, scrubSpan, scrubTraceContext } from "./lib/redact";
 
 if (publicEnv.errorReporting.enabled) {
   Sentry.init({
@@ -26,11 +21,14 @@ if (publicEnv.errorReporting.enabled) {
       queues: false,
       stackFrameVariables: false,
     },
-    tracesSampleRate: 0,
+    // No tracesSampleRate or tracesSampler, on purpose: the browser records no spans, but its same-origin
+    // /api/v1 requests still carry sentry-trace and baggage without a sampling decision, so the API samples
+    // them at SENTRY_TRACES_SAMPLE_RATE and browser errors share the API trace ID. Any defined rate, even 0,
+    // would decide for the API ("not sampled") and still record spans under a sampled server-rendered page.
     // Session replay is not enabled; it would require an approved privacy review.
-    beforeSend: scrubEvent,
+    beforeSend: prepareReport,
     beforeBreadcrumb: scrubBreadcrumb,
-    // Tracing is off here; this keeps URLs out of spans if it is ever turned on.
+    // The browser records no spans; this keeps URLs out of them if tracing is ever turned on.
     beforeSendSpan: scrubSpan,
   });
   // The trace context still travels in envelope headers and in the baggage header of /api/v1 requests.
@@ -38,3 +36,6 @@ if (publicEnv.errorReporting.enabled) {
   client?.on("createDsc", scrubTraceContext);
   client?.on("beforeEnvelope", scrubEnvelopeHeaders);
 }
+
+// Sentry's App Router navigation hook. It does nothing while Sentry is disabled: no handler is registered.
+export const onRouterTransitionStart = Sentry.captureRouterTransitionStart;

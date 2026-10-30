@@ -17,6 +17,7 @@ from app.kernel.errors import AuthenticationError, ForbiddenError
 from app.kernel.http.app import bearer_token
 from app.kernel.http.auth import AuthDeps, requires
 from app.kernel.http.schemas import WebhookAck, errors
+from app.kernel.request_context import bind_tenant
 from app.kernel.tenancy import TenantContext, VerifiedIdentity
 from app.modules.identity.ports import IdentityVerifier
 from app.modules.identity.service import ContextResolver, IdentitySyncService
@@ -26,6 +27,12 @@ logger = logging.getLogger(__name__)
 
 class Me(BaseModel):
     user_id: UUID
+
+
+def _bound(ctx: TenantContext) -> TenantContext:
+    """Puts the internal user and organization IDs, not the identity provider's, on this request's logs (OBS-04)."""
+    bind_tenant(ctx.user_id, ctx.org_id)
+    return ctx
 
 
 def build_auth(
@@ -53,13 +60,13 @@ def build_auth(
     Identity = Annotated[VerifiedIdentity, Depends(authenticate)]
 
     def personal(identity: Identity) -> TenantContext:
-        return resolver.personal(identity)
+        return _bound(resolver.personal(identity))
 
     def organization(
         identity: Identity,
         org_id: Annotated[str, Path(min_length=1, max_length=80, description="Clerk organization ID")],
     ) -> TenantContext:
-        return resolver.organization(identity, org_id)
+        return _bound(resolver.organization(identity, org_id))
 
     return AuthDeps(authenticate=authenticate, personal=personal, organization=organization)
 
