@@ -13,8 +13,13 @@
 // .next/server/pages. Server JavaScript and build manifests there never reach
 // a browser and are not scanned.
 //
-//   node scripts/check-bundle-secrets.mjs              scan apps/web/.next
-//   node scripts/check-bundle-secrets.mjs --self-test  prove planted secrets are caught
+//   node scripts/check-bundle-secrets.mjs                   scan apps/web/.next
+//   node scripts/check-bundle-secrets.mjs --require-values  also fail when no value was available to compare
+//   node scripts/check-bundle-secrets.mjs --self-test       prove planted secrets are caught
+//
+// On Vercel (Services), every project variable reaches the web service's build
+// and runtime, API secrets included, so the values to compare exist there even
+// though the web app never reads them.
 import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -30,6 +35,7 @@ const SERVER_ONLY_NAMES = [
   "STRIPE_WEBHOOK_SECRET",
   "DATABASE_URL",
   "MIGRATION_DATABASE_URL",
+  "API_DB_PASSWORD",
   "LLM_API_KEY",
   "SENTRY_AUTH_TOKEN",
   "CRON_SECRET",
@@ -119,14 +125,39 @@ export function parseEnvFile(text) {
   return values;
 }
 
+const URL_NAMES = ["DATABASE_URL", "MIGRATION_DATABASE_URL"];
+
+/** The password of a connection URL, as written and decoded: a bundle can hold it without the rest of the URL. */
+function urlPasswords(value) {
+  try {
+    const { password } = new URL(value);
+    return password ? [...new Set([password, decodeURIComponent(password)])] : [];
+  } catch {
+    return [];
+  }
+}
+
 function serverOnlyValues(envText, environment) {
   const values = [];
   for (const [name, candidates] of parseEnvFile(envText)) {
     if (SERVER_ONLY_NAMES.includes(name)) for (const value of candidates) values.push([name, value]);
   }
   for (const name of SERVER_ONLY_NAMES) if (environment[name]) values.push([name, environment[name].trim()]);
+  for (const [name, value] of [...values]) {
+    if (URL_NAMES.includes(name)) for (const password of urlPasswords(value)) values.push([name, password]);
+  }
   // Ignore empty and very short values to avoid meaningless matches.
   return values.filter(([, value]) => value.length >= 12);
+}
+
+/**
+ * A scan that compared no value checked only the secret-shaped patterns. With
+ * --require-values that is a failure: the build environment held no secrets to compare.
+ * @returns a message, or null when the scan may proceed
+ */
+export function comparisonProblem(secrets, required) {
+  if (!required || secrets.length) return null;
+  return "No server-only value was available to compare: set them in the build environment, or drop --require-values.";
 }
 
 /**
@@ -176,6 +207,8 @@ function selfTest() {
     const llmKey = `${token(16)} # ${token(16)}`;
     const databaseUrl = token(24);
     const webhookSecret = `${token(16)}#${token(16)}`;
+    const migrationPassword = token(24);
+    const encodedPassword = `${token(10)}@${token(10)}/${token(4)}`;
     const envText = [
       `export CRON_SECRET=${cronSecret}   # set by the operator`,
       `LLM_API_KEY="${llmKey}"`,
@@ -190,6 +223,9 @@ function selfTest() {
       "value of CLERK_WEBHOOK_SIGNING_SECRET": webhookSecret,
       "value of CLERK_WEBHOOK_SIGNING_SECRET ": webhookSecret.split("#")[0],
       "value of STRIPE_SECRET_KEY": `stripe-${token(30)}`,
+      // Only the password of a connection URL reaches the bundle, as written or decoded.
+      "value of MIGRATION_DATABASE_URL": migrationPassword,
+      "value of DATABASE_URL ": encodedPassword,
       "sk-ant-": `sk-${"ant"}-api03-${token(40)}`,
       "sk-proj-": `sk-${"proj"}-${token(40)}`,
       sntrys_: `${"sntrys"}_${token(40)}`,
@@ -197,7 +233,11 @@ function selfTest() {
       whsec_: `${"whsec"}_${token(24)}`,
       "postgres": `postgresql://app:${token(16)}@db.example.internal/app`,
     };
-    const secrets = serverOnlyValues(envText, { STRIPE_SECRET_KEY: planted["value of STRIPE_SECRET_KEY"] });
+    const secrets = serverOnlyValues(envText, {
+      STRIPE_SECRET_KEY: planted["value of STRIPE_SECRET_KEY"],
+      MIGRATION_DATABASE_URL: `postgresql://postgres.ref:${migrationPassword}@pooler.example.internal:5432/postgres`,
+      DATABASE_URL: `postgresql://app_login.ref:${encodeURIComponent(encodedPassword)}@pooler.example.internal/postgres`,
+    });
 
     writeFileSync(path.join(staticDir, "chunks", "clean.js"), 'console.log("process.env.CLERK_SECRET_KEY");\n');
     writeFileSync(path.join(appDir, "pricing.html"), "<p>Pricing</p>\n");
@@ -242,6 +282,11 @@ function selfTest() {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+  if (comparisonProblem([], true) === null) failures.push("--require-values accepted a scan with no values");
+  if (comparisonProblem([], false) !== null) failures.push("a scan without --require-values refused no values");
+  if (comparisonProblem([["CRON_SECRET", "x".repeat(20)]], true) !== null) {
+    failures.push("--require-values refused a scan that had values");
+  }
   if (failures.length) {
     console.error(`Bundle secret scan self-test FAILED:\n  - ${failures.join("\n  - ")}`);
     process.exit(1);
@@ -261,6 +306,11 @@ if (!isDirectory(path.join(nextDir, "static"))) {
 }
 
 const secrets = serverOnlyValues(readEnvFile(), process.env);
+const problem = comparisonProblem(secrets, process.argv.includes("--require-values"));
+if (problem) {
+  console.error(problem);
+  process.exit(1);
+}
 const findings = scan(nextDir, secrets);
 if (findings.length) {
   console.error("Server-only values found in browser-facing build output (values not shown):");
