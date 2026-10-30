@@ -234,7 +234,7 @@ jobs:
         run: |
           set -eu
           planted="$(mktemp -d)"
-          printf 'aws_access_key_id = "AKIA%s"\n' "$(openssl rand -base64 48 | tr -dc 'A-Z2-7' | head -c 16)" > "$planted/planted.env"
+          printf 'aws_access_key_id = "AKIA%s"\n' "$(openssl rand -base64 96 | tr -dc 'A-Z2-7' | head -c 16)" > "$planted/planted.env"
           if gitleaks dir "$planted" --config .gitleaks.toml --redact --no-banner; then
             echo "::error::gitleaks did not flag a planted secret, so a clean scan would mean nothing."
             exit 1
