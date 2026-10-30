@@ -10,13 +10,17 @@ print their values.
 
 from __future__ import annotations
 
+import ipaddress
 import logging
+import re
 from enum import StrEnum
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import psycopg
+import sentry_sdk.utils
 from psycopg.conninfo import conninfo_to_dict
-from pydantic import AliasChoices, Field, SecretStr, model_validator
+from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.kernel.infrastructure.db import REQUEST_THREADS
@@ -45,6 +49,22 @@ class AppEnv(StrEnum):
     TEST = "test"
     PREVIEW = "preview"
     PRODUCTION = "production"
+
+
+class VercelEnv(StrEnum):
+    """The environment Vercel runs a deployment in (VERCEL_ENV), at build time and at runtime."""
+
+    PRODUCTION = "production"
+    PREVIEW = "preview"
+    DEVELOPMENT = "development"
+
+
+# The application environment a deployment gets when APP_ENV is unset.
+_APP_ENV_FROM_PLATFORM = {
+    VercelEnv.PRODUCTION: AppEnv.PRODUCTION,
+    VercelEnv.PREVIEW: AppEnv.PREVIEW,
+    VercelEnv.DEVELOPMENT: AppEnv.LOCAL,
+}
 
 
 class Mode(StrEnum):
@@ -91,6 +111,38 @@ def database_url_is_valid(url: str) -> bool:
     )
 
 
+def http_origin(value: str) -> str | None:
+    """``value`` as a browser sends it in ``Origin`` (lowercase scheme and host, default port dropped).
+
+    None unless ``value`` is a bare http(s) origin: no path, query, fragment, or credentials.
+    """
+    if not value or any(c.isspace() or c in "?#@" for c in value):
+        return None
+    try:
+        parts = urlsplit(value)
+        port = parts.port
+    except ValueError:
+        return None
+    host = parts.hostname
+    if parts.scheme not in ("http", "https") or not host or parts.path not in ("", "/"):
+        return None
+    if ":" in host:
+        try:
+            ipaddress.IPv6Address(host)
+        except ValueError:
+            return None
+        host = f"[{host}]"
+    elif not re.fullmatch(r"[a-z0-9_]([a-z0-9_.-]*[a-z0-9_])?", host):
+        return None
+    default_port = 443 if parts.scheme == "https" else 80
+    return f"{parts.scheme}://{host}" + (f":{port}" if port not in (None, default_port) else "")
+
+
+def is_bare_hostname(value: str) -> bool:
+    """A lowercase hostname with at least one dot: no scheme, port, path, or wildcard."""
+    return re.fullmatch(r"(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}", value) is not None
+
+
 def mode_problems(name: str, mode: Mode, app_env: AppEnv) -> list[str]:
     """The environment rules every integration mode follows."""
     production = app_env is AppEnv.PRODUCTION
@@ -113,6 +165,10 @@ class CoreSettings(BaseSettings):
     )
 
     app_env: AppEnv = AppEnv.LOCAL
+    # What Vercel sets on a deployment (build and runtime). They bind app_env to the platform (ENV-01).
+    vercel_env: VercelEnv | None = None
+    vercel_url: str | None = None
+    vercel_branch_url: str | None = None
     app_base_url: str = "http://localhost:3000"
     log_level: str = "INFO"
     max_request_body_bytes: int = Field(default=1_000_000, ge=1_024, le=4_000_000)
@@ -164,6 +220,51 @@ class CoreSettings(BaseSettings):
                     del data[key]
         return data
 
+    @model_validator(mode="before")
+    @classmethod
+    def _app_env_from_platform(cls, data: object) -> object:
+        # An unset APP_ENV on a Vercel deployment is the deployment's own environment, not `local`.
+        if isinstance(data, dict) and not str(data.get("app_env") or "").strip():
+            try:
+                platform = VercelEnv(str(data.get("vercel_env") or "").strip())
+            except ValueError:
+                return data  # unset, or invalid: the field reports it
+            data["app_env"] = _APP_ENV_FROM_PLATFORM[platform].value
+        return data
+
+    @field_validator("app_base_url")
+    @classmethod
+    def _origin_form(cls, value: str) -> str:
+        return http_origin(value) or value
+
+
+def platform_problems(app_env: AppEnv, vercel_env: VercelEnv | None, *, bundle: bool) -> list[str]:
+    """ENV-01: the application environment may not contradict the platform's. Names and enum labels only.
+
+    ``preview`` stays valid on a Vercel production deployment: a project's first deployment is a
+    production one, and so is a staging project.
+    """
+    if app_env is AppEnv.PRODUCTION and vercel_env in (VercelEnv.PREVIEW, VercelEnv.DEVELOPMENT):
+        return [f"APP_ENV=production is not allowed when VERCEL_ENV={vercel_env.value}"]
+    if app_env in (AppEnv.LOCAL, AppEnv.TEST) and vercel_env in (VercelEnv.PRODUCTION, VercelEnv.PREVIEW):
+        allowed = "preview or production" if vercel_env is VercelEnv.PRODUCTION else "preview"
+        return [f"APP_ENV={app_env.value} is not allowed when VERCEL_ENV={vercel_env.value} (set {allowed})"]
+    if bundle and app_env is AppEnv.LOCAL and vercel_env is None:
+        return ["APP_ENV=local is not allowed in a deployed bundle (set preview or production)"]
+    return []
+
+
+def explicit_mode_problems(s: BaseSettings) -> list[str]:
+    """ENV-03: a deployment names each integration mode; only local development and tests fall back to defaults."""
+    app_env = getattr(s, "app_env", None)
+    if app_env not in (AppEnv.PREVIEW, AppEnv.PRODUCTION):
+        return []
+    return [
+        f"{name.upper()} is required when APP_ENV={app_env.value}"
+        for name, field in type(s).model_fields.items()
+        if field.annotation is Mode and name not in s.model_fields_set
+    ]
+
 
 def core_problems(s: CoreSettings) -> list[str]:
     problems: list[str] = []
@@ -172,6 +273,8 @@ def core_problems(s: CoreSettings) -> list[str]:
         # A deployed bundle has no .env. Falling back to `local` there would
         # allow mock integrations and open diagnostics to every signed-in user.
         problems.append("APP_ENV is required outside a repository checkout (set preview or production)")
+    problems += platform_problems(s.app_env, s.vercel_env, bundle=ENV_FILE is None)
+    problems += explicit_mode_problems(s)
     problems += mode_problems("ANALYTICS_MODE", s.analytics_mode, s.app_env)
     problems += mode_problems("ERROR_REPORTING_MODE", s.error_reporting_mode, s.app_env)
     if s.log_level.upper() not in logging.getLevelNamesMapping():  # as configure_logging passes it
@@ -182,18 +285,39 @@ def core_problems(s: CoreSettings) -> list[str]:
         problems.append(DATABASE_URL_INVALID)
     if s.database_pool_max_size + s.database_worker_pool_max_size > POOLS_MAX_TOTAL:
         problems.append(f"DATABASE_POOL_MAX_SIZE + DATABASE_WORKER_POOL_MAX_SIZE must be at most {POOLS_MAX_TOTAL}")
-    if not s.app_base_url.startswith(("http://", "https://")):
-        problems.append("APP_BASE_URL must be an absolute http(s) URL")
-    if production and not s.app_base_url.startswith("https://"):
+    if s.app_env in (AppEnv.PREVIEW, AppEnv.PRODUCTION) and "app_base_url" not in s.model_fields_set:
+        problems.append(f"APP_BASE_URL is required when APP_ENV={s.app_env.value}")
+    elif http_origin(s.app_base_url) is None:
+        problems.append("APP_BASE_URL must be an http(s) origin (scheme, host, optional port; no path or credentials)")
+    elif production and not s.app_base_url.startswith("https://"):
         problems.append("APP_BASE_URL must use https in production")
     if s.analytics_mode is Mode.MOCK:
         problems.append("ANALYTICS_MODE must be disabled, sandbox, or live")
     if s.analytics_mode in (Mode.SANDBOX, Mode.LIVE) and not s.posthog_project_api_key:
         problems.append("NEXT_PUBLIC_POSTHOG_KEY is required when ANALYTICS_MODE is enabled")
+    if s.posthog_project_api_key:
+        # The key is inlined into every browser bundle, so a secret one must never get this far.
+        if re.match(r"ph[xsar]_", s.posthog_project_api_key):
+            problems.append(
+                "NEXT_PUBLIC_POSTHOG_KEY (or POSTHOG_PROJECT_API_KEY) holds a secret PostHog credential "
+                "(personal, secret or OAuth key); use the project token (phc_...) from Project settings"
+            )
+        elif not re.fullmatch(r"phc_\S+", s.posthog_project_api_key):
+            problems.append(
+                "NEXT_PUBLIC_POSTHOG_KEY (or POSTHOG_PROJECT_API_KEY) must be a PostHog project token (phc_...)"
+            )
+    host = urlsplit(s.posthog_host)
+    if host.scheme not in ("http", "https") or not host.hostname:
+        problems.append("NEXT_PUBLIC_POSTHOG_HOST (or POSTHOG_HOST) must be an absolute http(s) URL")
     if s.error_reporting_mode is Mode.MOCK:
         problems.append("ERROR_REPORTING_MODE must be disabled, sandbox, or live")
     if s.error_reporting_mode in (Mode.SANDBOX, Mode.LIVE) and s.sentry_dsn is None:
         problems.append("SENTRY_DSN is required when ERROR_REPORTING_MODE is enabled")
+    if s.sentry_dsn is not None:
+        try:
+            sentry_sdk.utils.Dsn(secret(s.sentry_dsn))
+        except sentry_sdk.utils.BadDsn:  # its message can quote the DSN
+            problems.append("SENTRY_DSN must be a Sentry DSN (https://<key>@<host>/<id>)")
     if s.cron_secret is not None and len(secret(s.cron_secret)) < 32:
         problems.append("CRON_SECRET must be at least 32 characters")
     return problems

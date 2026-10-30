@@ -5,7 +5,13 @@
  * next.config.ts calls `loadServerEnv(process.env, ...)` when it loads, so
  * `next build`, `next dev`, and `next start` fail fast on a missing, malformed,
  * or inconsistent setting. Messages name the variable and never its value.
- * The rules mirror the API's (apps/api: kernel config and identity settings).
+ * The rules mirror the API's (apps/api: kernel config and identity settings)
+ * for the variables both apps read: the environment (APP_ENV and the platform's
+ * VERCEL_ENV), the Clerk keys, the telemetry modes and keys. Unlike the API,
+ * which refuses a bundle without APP_ENV by layout, the web app is built inside
+ * a full checkout, so VERCEL=1 marks a Vercel build or deployment: there it
+ * also requires CLERK_SECRET_KEY, because Vercel serves the build output and
+ * `next start` never runs to check it.
  *
  * Server-only: import it only from next.config.ts and server instrumentation
  * (enforced by eslint.guards.mjs). It reads no global state; callers pass the
@@ -17,6 +23,7 @@ import { DEFAULT_POSTHOG_HOST, isAppEnv, type AppEnv } from "./env";
 /** Server-only variables the web app reads. next.config.ts loads only these and NEXT_PUBLIC_* from the root .env. */
 export const SERVER_VARIABLES = [
   "APP_ENV",
+  "VERCEL_ENV",
   "API_ORIGIN",
   "ANALYTICS_MODE",
   "ERROR_REPORTING_MODE",
@@ -29,6 +36,16 @@ export const SERVER_VARIABLES = [
 export function isWebVariable(name: string): boolean {
   return name.startsWith("NEXT_PUBLIC_") || (SERVER_VARIABLES as readonly string[]).includes(name);
 }
+
+const VERCEL_ENVS = ["production", "preview", "development"] as const;
+type VercelEnv = (typeof VERCEL_ENVS)[number];
+
+/** What an unset APP_ENV is on a Vercel deployment (ENV-01); the API derives the same. */
+const APP_ENV_FROM_PLATFORM: Readonly<Record<VercelEnv, AppEnv>> = {
+  production: "production",
+  preview: "preview",
+  development: "local",
+};
 
 const TELEMETRY_MODES = ["disabled", "sandbox", "live"] as const;
 export type TelemetryMode = (typeof TELEMETRY_MODES)[number];
@@ -104,6 +121,9 @@ function telemetryMode(
   appEnv: AppEnv,
   problems: string[],
 ): TelemetryMode {
+  if (raw === undefined && (appEnv === "preview" || appEnv === "production")) {
+    problems.push(`${name} is required when APP_ENV=${appEnv}`);
+  }
   const mode = TELEMETRY_MODES.find((known) => known === (raw ?? "disabled"));
   if (!mode) {
     // The raw value is not echoed: an unexpected value may be a pasted secret.
@@ -120,8 +140,20 @@ function telemetryMode(
   return mode;
 }
 
+/** ENV-01 for the platform: the application environment may not contradict Vercel's (names and labels only). */
+function platformProblems(appEnv: AppEnv, vercelEnv: VercelEnv | undefined): string[] {
+  if (appEnv === "production" && (vercelEnv === "preview" || vercelEnv === "development")) {
+    return [`APP_ENV=production is not allowed when VERCEL_ENV=${vercelEnv}`];
+  }
+  if ((appEnv === "local" || appEnv === "test") && (vercelEnv === "production" || vercelEnv === "preview")) {
+    const allowed = vercelEnv === "production" ? "preview or production" : "preview";
+    return [`APP_ENV=${appEnv} is not allowed when VERCEL_ENV=${vercelEnv} (set ${allowed})`];
+  }
+  return [];
+}
+
 /** ENV-04 for Clerk: live keys only in production, and only live keys there. */
-function clerkProblems(source: (name: string) => string | undefined, appEnv: AppEnv, options: LoadOptions) {
+function clerkProblems(source: (name: string) => string | undefined, appEnv: AppEnv, serving: boolean) {
   const problems: string[] = [];
   const production = appEnv === "production";
   const publishable = source("NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY");
@@ -146,13 +178,32 @@ function clerkProblems(source: (name: string) => string | undefined, appEnv: App
   // The CSP and the Clerk SDK derive the Frontend API origin from this key; a
   // placeholder such as pk_test_replace_me would silently drop it from the CSP.
   if (!publishable) problems.push("NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY is required");
+  else if (PLACEHOLDER.test(publishable))
+    problems.push(
+      "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY is still the .env.example placeholder (copy it from Clerk Dashboard > API keys)",
+    );
   else if (!clerkFrontendApiOrigin(publishable))
     problems.push("NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY is malformed");
   if (secret && (!/^sk_(test|live)_\S+$/.test(secret) || PLACEHOLDER.test(secret))) {
     problems.push("CLERK_SECRET_KEY is malformed or still the .env.example placeholder");
   }
-  if (!secret && options.serving) problems.push("CLERK_SECRET_KEY is required");
+  if (!secret && serving) problems.push("CLERK_SECRET_KEY is required");
   return problems;
+}
+
+/**
+ * PostHog's project token (phc_...) is public and ships in every browser bundle, whatever
+ * ANALYTICS_MODE says. Its personal, secret, and OAuth keys give account access and must never
+ * get there. The value is never echoed.
+ */
+function posthogKeyProblems(key: string | undefined): string[] {
+  if (!key) return [];
+  if (/^ph[xsar]_/.test(key)) {
+    return [
+      "NEXT_PUBLIC_POSTHOG_KEY holds a secret PostHog credential (personal, secret or OAuth key); use the project token (phc_...) from Project settings",
+    ];
+  }
+  return /^phc_\S+$/.test(key) ? [] : ["NEXT_PUBLIC_POSTHOG_KEY must be a PostHog project token (phc_...)"];
 }
 
 /**
@@ -163,9 +214,21 @@ export function loadServerEnv(env: Source, options: LoadOptions): ServerEnv {
   const source = (name: string) => env[name]?.trim() || undefined;
   const problems: string[] = [];
 
-  const rawAppEnv = source("APP_ENV") ?? "local";
-  if (!isAppEnv(rawAppEnv)) problems.push("APP_ENV must be local, test, preview, or production");
-  const appEnv: AppEnv = isAppEnv(rawAppEnv) ? rawAppEnv : "local";
+  // VERCEL=1 marks every Vercel build and deployment, and nothing else (the account-free CI build has none).
+  const vercel = source("VERCEL") === "1";
+  const rawVercelEnv = source("VERCEL_ENV");
+  const vercelEnv = VERCEL_ENVS.find((known) => known === rawVercelEnv);
+  if (rawVercelEnv !== undefined && !vercelEnv) {
+    problems.push("VERCEL_ENV must be production, preview, or development");
+  }
+
+  const rawAppEnv = source("APP_ENV") ?? (vercelEnv ? APP_ENV_FROM_PLATFORM[vercelEnv] : undefined);
+  if (rawAppEnv === undefined && vercel)
+    problems.push("APP_ENV is required on Vercel (set preview or production)");
+  const requestedAppEnv = rawAppEnv ?? "local";
+  const appEnv: AppEnv = isAppEnv(requestedAppEnv) ? requestedAppEnv : "local";
+  if (!isAppEnv(requestedAppEnv)) problems.push("APP_ENV must be local, test, preview, or production");
+  else problems.push(...platformProblems(appEnv, vercelEnv));
 
   const apiOrigin = httpOrigin(source("API_ORIGIN") ?? "http://127.0.0.1:8000");
   if (!apiOrigin) {
@@ -175,7 +238,8 @@ export function loadServerEnv(env: Source, options: LoadOptions): ServerEnv {
     problems.push("API_ORIGIN must use https in production");
   }
 
-  problems.push(...clerkProblems(source, appEnv, options));
+  // Vercel serves the build output and never runs `next start`, so its build is where a missing secret surfaces.
+  problems.push(...clerkProblems(source, appEnv, options.serving || vercel));
 
   const stripeCustomDomain = source("STRIPE_CUSTOM_DOMAIN") ?? null;
   if (stripeCustomDomain !== null && !HOSTNAME.test(stripeCustomDomain)) {
@@ -187,6 +251,7 @@ export function loadServerEnv(env: Source, options: LoadOptions): ServerEnv {
   if (analyticsEnabled && !source("NEXT_PUBLIC_POSTHOG_KEY")) {
     problems.push("NEXT_PUBLIC_POSTHOG_KEY is required when ANALYTICS_MODE is enabled");
   }
+  problems.push(...posthogKeyProblems(source("NEXT_PUBLIC_POSTHOG_KEY")));
   const posthogHost = source("NEXT_PUBLIC_POSTHOG_HOST") ?? DEFAULT_POSTHOG_HOST;
   if (!isHttpUrl(posthogHost)) problems.push("NEXT_PUBLIC_POSTHOG_HOST must be an absolute http(s) URL");
 
@@ -224,4 +289,34 @@ export function loadServerEnv(env: Source, options: LoadOptions): ServerEnv {
       tracesSampleRate,
     }),
   });
+}
+
+/**
+ * What source-map upload to Sentry needs, checked by `next build` only. SENTRY_AUTH_TOKEN,
+ * SENTRY_ORG, and SENTRY_PROJECT come from the build environment (Vercel or CI), never from the
+ * root .env, so they are not in SERVER_VARIABLES. Without a project, or without an organization
+ * (an organization token, sntrys_..., carries its own), the plugin skips the upload with a
+ * warning that `silent` would hide. Names only, never a value.
+ */
+export function sourceMapUploadProblems(env: Source): string[] {
+  const token = env.SENTRY_AUTH_TOKEN?.trim();
+  if (!token) return [];
+  const problems: string[] = [];
+  if (!env.SENTRY_PROJECT?.trim()) {
+    problems.push("SENTRY_PROJECT (the web project's slug) is required when SENTRY_AUTH_TOKEN is set");
+  }
+  if (!env.SENTRY_ORG?.trim() && !token.startsWith("sntrys_")) {
+    problems.push("SENTRY_ORG is required unless SENTRY_AUTH_TOKEN is an organization token (sntrys_...)");
+  }
+  return problems;
+}
+
+/**
+ * The build options for withSentryConfig. The plugin reads SENTRY_ORG and SENTRY_PROJECT itself.
+ * It is silent only when no upload is configured: otherwise its warnings (a skipped upload) and
+ * its upload errors and success line belong in the build log.
+ */
+export function sentryBuildOptions(env: Source) {
+  const upload = Boolean(env.SENTRY_AUTH_TOKEN?.trim());
+  return { silent: !upload, telemetry: false, sourcemaps: { disable: !upload } } as const;
 }

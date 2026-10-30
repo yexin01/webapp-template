@@ -22,3 +22,21 @@ it("points the account-free e2e API at its own database, never the development o
   expect(api?.env?.APP_ENV).toBe("test");
   expect(databaseOf(api?.env?.DATABASE_URL)).not.toBe(databaseOf(development));
 });
+
+it("authorizes the origin the sandbox e2e page is served from, whatever the root .env lists", async () => {
+  vi.stubEnv("E2E_SANDBOX", "1");
+  vi.resetModules();
+  const { default: config } = await import("../playwright.config");
+  const servers = [config.webServer].flat();
+  const api = servers.find((server) => server?.command.includes("uvicorn"));
+  const web = servers.find((server) => server?.command.includes("next start"));
+  const origin = "http://127.0.0.1:3100";
+  // A session token carries the origin of the page that asked for it (the azp claim).
+  expect(config.use?.baseURL).toBe(origin);
+  expect(api?.env?.APP_BASE_URL).toBe(origin);
+  expect(api?.env?.CLERK_AUTHORIZED_PARTIES).toBe(origin);
+  expect(web?.command).toContain("--port 3100");
+  // Everything else comes from the root .env, so a sandbox run exercises the developer's configuration.
+  expect(api?.env?.APP_ENV).toBeUndefined();
+  expect(api?.env?.DATABASE_URL).toBeUndefined();
+});

@@ -6,6 +6,9 @@ import type { Schemas } from "@/lib/api/client";
 import { useApi } from "@/lib/api/use-api";
 import { ErrorState } from "@/ui/state-views";
 
+/** The check's error code while the API runs with LLM_MODE=disabled (apps/api llm domain). */
+const NOT_CONFIGURED = "not_configured";
+
 export function LlmCheck() {
   const api = useApi();
   const [result, setResult] = useState<Schemas["LLMCheck"] | null>(null);
@@ -33,7 +36,13 @@ export function LlmCheck() {
         {busy ? "Checking…" : "Run check"}
       </button>
       <div aria-live="polite">
-        {result && (
+        {result && result.error_code === NOT_CONFIGURED && (
+          <p className="notice">
+            LLM checks are turned off in this deployment (LLM_MODE=disabled), so no provider was called. Set
+            LLM_MODE to sandbox or live, with a provider key and model, to run one.
+          </p>
+        )}
+        {result && result.error_code !== NOT_CONFIGURED && (
           <p className={result.ok ? "notice notice-success" : "notice notice-warning"}>
             {result.ok
               ? `Connected to ${result.provider} (${result.model}) in ${result.latency_ms} ms.`

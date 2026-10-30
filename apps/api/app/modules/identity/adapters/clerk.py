@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -29,6 +30,9 @@ _ALGORITHMS = ["RS256"]  # AUTH-02: pinned; "none" and HMAC algorithms are rejec
 _CLOCK_SKEW_SECONDS = 5
 _MAX_TOKEN_LENGTH = 8_192
 _MAX_ACTOR_ID_LENGTH = 255
+# A refused origin is logged at most this often per process, so a flood of tokens cannot flood the log.
+_AZP_LOG_INTERVAL_SECONDS = 60.0
+_ORIGIN_LIKE = re.compile(r"https?://[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?")
 # How long a fetched key set is trusted. A key Clerk removes (rotation or
 # revocation) stops verifying within this time (AUTH-04); verification also
 # keeps working this long through a Clerk outage (§16.4).
@@ -256,6 +260,7 @@ class ClerkTokenVerifier:
         self._authorized_parties = frozenset(p.rstrip("/") for p in authorized_parties)
         self._public_key = jwt_public_key
         self._key_set = key_set or JwksKeySet(f"{issuer}/.well-known/jwks.json")
+        self._azp_logged_at = -_AZP_LOG_INTERVAL_SECONDS
 
     def verify(self, token: str) -> VerifiedIdentity:
         if not token or len(token) > _MAX_TOKEN_LENGTH:
@@ -282,6 +287,7 @@ class ClerkTokenVerifier:
 
         azp = claims.get("azp")
         if not isinstance(azp, str) or azp.rstrip("/") not in self._authorized_parties:
+            self._log_azp_refused(azp)
             raise AuthenticationError()
         sub = claims.get("sub")
         if not isinstance(sub, str) or not sub:
@@ -296,6 +302,22 @@ class ClerkTokenVerifier:
             session_id=sid if isinstance(sid, str) else None,
             active_org_id=_active_org_id(claims),
             actor_external_id=_actor_id(claims),
+        )
+
+    def _log_azp_refused(self, azp: object) -> None:
+        """Say why a validly signed token was refused, which is otherwise an anonymous 401: for example
+        the origin of a preview deployment that CLERK_AUTHORIZED_PARTIES does not list. The cause class
+        and, if it looks like an origin, the claim's origin; never the token."""
+        now = time.monotonic()
+        if now - self._azp_logged_at < _AZP_LOG_INTERVAL_SECONDS:
+            return
+        self._azp_logged_at = now
+        logger.warning(
+            "clerk_azp_refused",
+            extra={
+                "cause": "azp_not_authorized" if isinstance(azp, str) else "azp_missing",
+                "azp": azp if isinstance(azp, str) and _ORIGIN_LIKE.fullmatch(azp) else None,
+            },
         )
 
     def _signing_key(self, header: Mapping[str, Any]) -> Any:

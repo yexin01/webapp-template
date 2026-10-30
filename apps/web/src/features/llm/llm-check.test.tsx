@@ -22,4 +22,34 @@ describe("LLM check", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("The provider is down.");
     expect(screen.queryByText(/Connected to mock/)).toBeNull();
   });
+
+  it("explains that the check is disabled instead of reporting a failure", async () => {
+    api.llmCheck.mockResolvedValueOnce({
+      ok: false,
+      provider: "none",
+      model: "",
+      latency_ms: 0,
+      error_code: "not_configured",
+    });
+    render(<LlmCheck />);
+    await userEvent.click(screen.getByRole("button", { name: "Run check" }));
+    expect(await screen.findByText(/LLM checks are turned off in this deployment/)).toBeInTheDocument();
+    expect(screen.getByText(/LLM_MODE=disabled/)).toBeInTheDocument();
+    expect(screen.queryByText(/Check failed/)).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("still reports a provider's failure", async () => {
+    api.llmCheck.mockResolvedValueOnce({
+      ok: false,
+      provider: "anthropic",
+      model: "m",
+      latency_ms: 4,
+      error_code: "auth_failed",
+    });
+    render(<LlmCheck />);
+    await userEvent.click(screen.getByRole("button", { name: "Run check" }));
+    expect(await screen.findByText("Check failed for anthropic: auth_failed.")).toBeInTheDocument();
+    expect(screen.queryByText(/turned off/)).toBeNull();
+  });
 });

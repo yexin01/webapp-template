@@ -70,8 +70,8 @@ def test_api_imports_from_a_bundle_without_the_repository(tmp_path: Path, layout
     assert result.stdout.strip().endswith("ok")
 
 
-def test_a_bundle_refuses_to_start_without_an_explicit_app_env(tmp_path: Path) -> None:
-    """Without a .env, a missing APP_ENV must not fall back to `local` (mocks, open diagnostics)."""
+def start_bundle(tmp_path: Path, extra_env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    """Import ``index`` from a bundle with no repository around it and only ``extra_env`` as configuration."""
     task = tmp_path / "var" / "task"
     shutil.copytree(API_DIR / "app", task / "app", ignore=shutil.ignore_patterns("__pycache__"))
     shutil.copy2(API_DIR / "index.py", task / "index.py")
@@ -79,8 +79,9 @@ def test_a_bundle_refuses_to_start_without_an_explicit_app_env(tmp_path: Path) -
         "PATH": os.environ.get("PATH", ""),
         "PYTHONDONTWRITEBYTECODE": "1",
         "DATABASE_URL": "postgresql://app:unused@127.0.0.1:1/unused",
+        **extra_env,
     }
-    result = subprocess.run(
+    return subprocess.run(
         [sys.executable, "-c", "import index"],
         cwd=task,
         env=env,
@@ -89,8 +90,42 @@ def test_a_bundle_refuses_to_start_without_an_explicit_app_env(tmp_path: Path) -
         timeout=120,
         check=False,
     )
+
+
+def test_a_bundle_refuses_to_start_without_an_explicit_app_env(tmp_path: Path) -> None:
+    """Without a .env, a missing APP_ENV must not fall back to `local` (mocks, open diagnostics)."""
+    result = start_bundle(tmp_path, {})
     assert result.returncode != 0
     assert "APP_ENV is required outside a repository checkout" in result.stderr, result.stderr[-2000:]
+
+
+@pytest.mark.parametrize(
+    ("env", "refusal"),
+    [
+        # ENV-01: a local .env pasted into a project, or production settings applied to previews.
+        ({"APP_ENV": "local", "VERCEL_ENV": "preview"}, "APP_ENV=local is not allowed when VERCEL_ENV=preview"),
+        ({"APP_ENV": "local", "VERCEL_ENV": "production"}, "APP_ENV=local is not allowed when VERCEL_ENV=production"),
+        ({"APP_ENV": "local"}, "APP_ENV=local is not allowed in a deployed bundle"),
+        (
+            {"APP_ENV": "production", "VERCEL_ENV": "preview"},
+            "APP_ENV=production is not allowed when VERCEL_ENV=preview",
+        ),
+    ],
+)
+def test_a_bundle_refuses_an_app_env_that_contradicts_the_platform(
+    tmp_path: Path, env: dict[str, str], refusal: str
+) -> None:
+    result = start_bundle(tmp_path, env)
+    assert result.returncode != 0
+    assert refusal in result.stderr, result.stderr[-2000:]
+
+
+def test_a_bundle_takes_an_unset_app_env_from_the_platform(tmp_path: Path) -> None:
+    """VERCEL_ENV=preview stands in for APP_ENV=preview: the first thing refused is then the missing APP_BASE_URL."""
+    result = start_bundle(tmp_path, {"VERCEL_ENV": "preview"})
+    assert result.returncode != 0
+    assert "APP_BASE_URL is required when APP_ENV=preview" in result.stderr, result.stderr[-2000:]
+    assert "APP_ENV is required" not in result.stderr
 
 
 def test_repository_checkout_still_finds_its_root() -> None:

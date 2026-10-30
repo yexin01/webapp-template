@@ -27,9 +27,9 @@ class LLMSettings(BaseModel):
 
 
 def llm_problems(s: LLMSettings, core: CoreSettings) -> list[str]:
+    # disabled is valid everywhere: the integration is only a connectivity check, so an
+    # application that never calls a provider needs neither a key nor a model.
     problems = mode_problems("LLM_MODE", s.llm_mode, core.app_env)
-    if s.llm_mode is Mode.DISABLED:
-        problems.append("LLM_MODE must be mock, sandbox, or live")
     if s.llm_mode in (Mode.SANDBOX, Mode.LIVE):
         if s.llm_api_key is None:
             problems.append("LLM_API_KEY is required when LLM_MODE is sandbox or live")

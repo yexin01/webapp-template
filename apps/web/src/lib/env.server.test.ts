@@ -1,5 +1,11 @@
 // @vitest-environment node
-import { ConfigError, isWebVariable, loadServerEnv } from "./env.server";
+import {
+  ConfigError,
+  isWebVariable,
+  loadServerEnv,
+  sentryBuildOptions,
+  sourceMapUploadProblems,
+} from "./env.server";
 
 // Synthetic, well-formed development keys; neither grants access to anything.
 const publishable = `pk_test_${Buffer.from("example-app.clerk.accounts.dev$").toString("base64")}`;
@@ -10,6 +16,8 @@ const base = {
   CLERK_SECRET_KEY: "sk_test_not_a_real_secret",
 };
 const serving = { serving: true };
+/** What a preview or production deployment names explicitly (ENV-03). */
+const MODES = { ANALYTICS_MODE: "disabled", ERROR_REPORTING_MODE: "disabled" };
 
 const ORIGIN_PROBLEM = "API_ORIGIN must be an http(s) origin, with no path, query, fragment, or credentials";
 
@@ -38,7 +46,7 @@ describe("web server configuration (ENV-03)", () => {
   it.each([
     [
       { NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: "pk_test_replace_me" },
-      "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY is malformed",
+      "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY is still the .env.example placeholder (copy it from Clerk Dashboard > API keys)",
     ],
     [{ NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: "not-a-key" }, "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY is malformed"],
     [{ NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: "" }, "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY is required"],
@@ -101,6 +109,8 @@ describe("web server configuration (ENV-03)", () => {
       APP_ENV: "production",
       NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: livePublishable,
       CLERK_SECRET_KEY: "sk_live_not_a_real_secret",
+      ANALYTICS_MODE: "disabled",
+      ERROR_REPORTING_MODE: "disabled",
     };
 
     it.each([
@@ -126,7 +136,9 @@ describe("web server configuration (ENV-03)", () => {
     });
 
     it.each(["preview", "local"])("still accepts plain http when APP_ENV=%s", (appEnv) => {
-      expect(problems({ ...base, APP_ENV: appEnv, API_ORIGIN: "http://api.example.com" })).toEqual([]);
+      expect(problems({ ...base, ...MODES, APP_ENV: appEnv, API_ORIGIN: "http://api.example.com" })).toEqual(
+        [],
+      );
     });
   });
 
@@ -169,6 +181,7 @@ describe("web server configuration (ENV-03)", () => {
       ...base,
       APP_ENV: "production",
       ANALYTICS_MODE: "sandbox",
+      ERROR_REPORTING_MODE: "disabled",
       NEXT_PUBLIC_POSTHOG_KEY: "phc_x",
     };
     expect(problems(production)).toEqual([
@@ -250,8 +263,269 @@ describe("web server configuration (ENV-03)", () => {
       "CLERK_WEBHOOK_SIGNING_SECRET",
       "SENTRY_DSN",
       "SENTRY_AUTH_TOKEN",
+      "SENTRY_ORG",
+      "SENTRY_PROJECT",
+      "VERCEL",
     ]) {
       expect(isWebVariable(name)).toBe(false);
+    }
+  });
+});
+
+describe("the platform's environment (ENV-01)", () => {
+  const withKeys = {
+    NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: publishable,
+    CLERK_SECRET_KEY: "sk_test_not_a_real_secret",
+    ...MODES,
+  };
+
+  it.each([
+    [
+      { APP_ENV: "production", VERCEL_ENV: "preview" },
+      "APP_ENV=production is not allowed when VERCEL_ENV=preview",
+    ],
+    [
+      { APP_ENV: "production", VERCEL_ENV: "development" },
+      "APP_ENV=production is not allowed when VERCEL_ENV=development",
+    ],
+    [
+      { APP_ENV: "local", VERCEL_ENV: "preview" },
+      "APP_ENV=local is not allowed when VERCEL_ENV=preview (set preview)",
+    ],
+    [
+      { APP_ENV: "test", VERCEL_ENV: "preview" },
+      "APP_ENV=test is not allowed when VERCEL_ENV=preview (set preview)",
+    ],
+    [
+      { APP_ENV: "local", VERCEL_ENV: "production" },
+      "APP_ENV=local is not allowed when VERCEL_ENV=production (set preview or production)",
+    ],
+    [
+      { APP_ENV: "test", VERCEL_ENV: "production" },
+      "APP_ENV=test is not allowed when VERCEL_ENV=production (set preview or production)",
+    ],
+  ])("refuses %o", (platform, message) => {
+    expect(problems({ ...withKeys, ...platform })).toContain(message);
+  });
+
+  it.each([
+    [{ APP_ENV: "preview", VERCEL_ENV: "preview" }, "preview"],
+    [{ APP_ENV: "preview", VERCEL_ENV: "production" }, "preview"], // a first deployment, or a staging project
+    [{ APP_ENV: "preview", VERCEL_ENV: "development" }, "preview"],
+    [{ APP_ENV: "local", VERCEL_ENV: "development" }, "local"],
+    [{ APP_ENV: "test", VERCEL_ENV: "development" }, "test"],
+    [{ APP_ENV: "local" }, "local"],
+    [{ APP_ENV: "test" }, "test"],
+    [{ APP_ENV: "preview" }, "preview"],
+    [{}, "local"],
+  ])("accepts %o as %s", (platform, appEnv) => {
+    expect(loadServerEnv({ ...withKeys, ...platform }, serving).appEnv).toBe(appEnv);
+  });
+
+  it("accepts production settings on a production deployment", () => {
+    const production = {
+      APP_ENV: "production",
+      VERCEL_ENV: "production",
+      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: livePublishable,
+      CLERK_SECRET_KEY: "sk_live_not_a_real_secret",
+      ...MODES,
+    };
+    expect(loadServerEnv(production, serving).appEnv).toBe("production");
+  });
+
+  it("takes an unset APP_ENV from the platform, so the deployment is tagged with its own environment", () => {
+    expect(loadServerEnv({ ...withKeys, VERCEL: "1", VERCEL_ENV: "preview" }, serving).appEnv).toBe(
+      "preview",
+    );
+    expect(loadServerEnv({ ...withKeys, VERCEL: "1", VERCEL_ENV: "development" }, serving).appEnv).toBe(
+      "local",
+    );
+    const production = {
+      VERCEL: "1",
+      VERCEL_ENV: "production",
+      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: livePublishable,
+      CLERK_SECRET_KEY: "sk_live_not_a_real_secret",
+      ...MODES,
+    };
+    expect(loadServerEnv(production, serving).appEnv).toBe("production");
+    expect(problems({ ...production, NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: publishable })).toEqual([
+      "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY must be a live key when APP_ENV=production",
+    ]);
+  });
+
+  it("lets an explicit APP_ENV win over the derived one where the platform allows it", () => {
+    expect(loadServerEnv({ ...withKeys, APP_ENV: "preview", VERCEL_ENV: "production" }, serving).appEnv).toBe(
+      "preview",
+    );
+  });
+
+  it("treats an empty APP_ENV as unset", () => {
+    expect(loadServerEnv({ ...withKeys, APP_ENV: " ", VERCEL_ENV: "preview" }, serving).appEnv).toBe(
+      "preview",
+    );
+  });
+
+  it("refuses an unknown VERCEL_ENV by name, without echoing it", () => {
+    const found = problems({ ...withKeys, VERCEL_ENV: "CANARY" });
+    expect(found).toEqual(["VERCEL_ENV must be production, preview, or development"]);
+  });
+
+  it("reads VERCEL_ENV from the root .env like the API does", () => {
+    expect(isWebVariable("VERCEL_ENV")).toBe(true);
+  });
+});
+
+describe("a Vercel build or deployment (VERCEL=1)", () => {
+  const vercelKeys = {
+    VERCEL: "1",
+    NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: publishable,
+    CLERK_SECRET_KEY: "sk_test_not_a_real_secret",
+    ...MODES,
+  };
+
+  it("requires an explicit APP_ENV where nothing derives it, instead of tagging the deployment local", () => {
+    expect(problems(vercelKeys, { serving: false })).toEqual([
+      "APP_ENV is required on Vercel (set preview or production)",
+    ]);
+    expect(problems({ ...vercelKeys, APP_ENV: "preview" }, { serving: false })).toEqual([]);
+    expect(problems({ ...vercelKeys, VERCEL_ENV: "preview" }, { serving: false })).toEqual([]);
+  });
+
+  it("requires CLERK_SECRET_KEY at build time, because Vercel serves the build output", () => {
+    expect(
+      problems({ ...vercelKeys, CLERK_SECRET_KEY: undefined, APP_ENV: "preview" }, { serving: false }),
+    ).toEqual(["CLERK_SECRET_KEY is required"]);
+  });
+
+  it("leaves the account-free build alone, which sets no VERCEL variable", () => {
+    const build = { NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: publishable };
+    expect(problems(build, { serving: false })).toEqual([]);
+    expect(loadServerEnv(build, { serving: false }).appEnv).toBe("local");
+  });
+
+  it.each(["0", "true", ""])("takes VERCEL=%j for no Vercel build", (value) => {
+    expect(
+      problems({ NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: publishable, VERCEL: value }, { serving: false }),
+    ).toEqual([]);
+  });
+
+  it("accepts what the DEC-001 local proof builds: VERCEL=1 with its own .env", () => {
+    // `vercel build` sets VERCEL=1 and no VERCEL_ENV; the proof's .env sets APP_ENV=local and both Clerk keys.
+    expect(problems({ ...vercelKeys, APP_ENV: "local" }, { serving: false })).toEqual([]);
+    // `vercel dev -L` sets VERCEL=1 and VERCEL_ENV=development.
+    expect(problems({ ...vercelKeys, APP_ENV: "local", VERCEL_ENV: "development" }, serving)).toEqual([]);
+  });
+});
+
+describe("explicit integration modes in a deployment (ENV-03)", () => {
+  const deployed = (appEnv: string) => ({
+    APP_ENV: appEnv,
+    NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: appEnv === "production" ? livePublishable : publishable,
+    CLERK_SECRET_KEY: appEnv === "production" ? "sk_live_not_a_real_secret" : "sk_test_not_a_real_secret",
+  });
+
+  it.each(["preview", "production"])("names both telemetry modes when APP_ENV=%s", (appEnv) => {
+    expect(problems(deployed(appEnv))).toEqual([
+      `ANALYTICS_MODE is required when APP_ENV=${appEnv}`,
+      `ERROR_REPORTING_MODE is required when APP_ENV=${appEnv}`,
+    ]);
+    expect(problems({ ...deployed(appEnv), ...MODES })).toEqual([]);
+    expect(problems({ ...deployed(appEnv), ANALYTICS_MODE: " ", ERROR_REPORTING_MODE: "" })).toHaveLength(2);
+  });
+
+  it.each(["local", "test"])("keeps the defaults for APP_ENV=%s", (appEnv) => {
+    expect(problems({ ...base, APP_ENV: appEnv })).toEqual([]);
+  });
+});
+
+describe("PostHog's public key", () => {
+  const SECRET_KEYS = ["phx", "phs", "pha", "phr"].map((prefix) => `${prefix}_CANARY0123456789abcdef`);
+
+  it.each(["disabled", "sandbox"])("refuses a secret PostHog credential with ANALYTICS_MODE=%s", (mode) => {
+    for (const key of SECRET_KEYS) {
+      const found = problems({ ...base, ANALYTICS_MODE: mode, NEXT_PUBLIC_POSTHOG_KEY: key });
+      expect(found).toEqual([
+        "NEXT_PUBLIC_POSTHOG_KEY holds a secret PostHog credential (personal, secret or OAuth key); use the project token (phc_...) from Project settings",
+      ]);
+      expect(found.join()).not.toContain("CANARY");
+    }
+  });
+
+  it("never echoes the value", () => {
+    let message = "";
+    try {
+      loadServerEnv({ ...base, NEXT_PUBLIC_POSTHOG_KEY: SECRET_KEYS[0] }, serving);
+    } catch (error) {
+      message = (error as ConfigError).message;
+    }
+    expect(message).toContain("NEXT_PUBLIC_POSTHOG_KEY");
+    expect(message).not.toContain("CANARY");
+  });
+
+  it.each(["token", "phc", "phc_ x", "pk_live_x", "sk_test_x"])("requires a project token, not %j", (key) => {
+    expect(problems({ ...base, NEXT_PUBLIC_POSTHOG_KEY: key })).toEqual([
+      "NEXT_PUBLIC_POSTHOG_KEY must be a PostHog project token (phc_...)",
+    ]);
+  });
+
+  it("accepts a project token, and an unset or empty key", () => {
+    expect(problems({ ...base, ANALYTICS_MODE: "sandbox", NEXT_PUBLIC_POSTHOG_KEY: "phc_x" })).toEqual([]);
+    expect(problems({ ...base, NEXT_PUBLIC_POSTHOG_KEY: "phc_x" })).toEqual([]);
+    expect(problems({ ...base, NEXT_PUBLIC_POSTHOG_KEY: "" })).toEqual([]);
+  });
+});
+
+describe("source-map upload to Sentry", () => {
+  const TOKEN = "CANARYtoken0123456789";
+  const ORG_TOKEN = `sntrys_${TOKEN}`;
+
+  it("needs a project when a token is set, and names it without echoing the token", () => {
+    const found = sourceMapUploadProblems({ SENTRY_AUTH_TOKEN: TOKEN, SENTRY_ORG: "acme" });
+    expect(found).toEqual([
+      "SENTRY_PROJECT (the web project's slug) is required when SENTRY_AUTH_TOKEN is set",
+    ]);
+    expect(found.join()).not.toContain(TOKEN);
+  });
+
+  it("needs an organization unless the token is an organization token", () => {
+    expect(sourceMapUploadProblems({ SENTRY_AUTH_TOKEN: TOKEN, SENTRY_PROJECT: "web" })).toEqual([
+      "SENTRY_ORG is required unless SENTRY_AUTH_TOKEN is an organization token (sntrys_...)",
+    ]);
+    expect(
+      sourceMapUploadProblems({ SENTRY_AUTH_TOKEN: TOKEN, SENTRY_PROJECT: "web", SENTRY_ORG: "acme" }),
+    ).toEqual([]);
+  });
+
+  it("accepts an organization token with a project", () => {
+    expect(sourceMapUploadProblems({ SENTRY_AUTH_TOKEN: ORG_TOKEN, SENTRY_PROJECT: "web" })).toEqual([]);
+    expect(sourceMapUploadProblems({ SENTRY_AUTH_TOKEN: ORG_TOKEN })).toEqual([
+      "SENTRY_PROJECT (the web project's slug) is required when SENTRY_AUTH_TOKEN is set",
+    ]);
+  });
+
+  it("asks for nothing without a token, whatever else is set", () => {
+    expect(sourceMapUploadProblems({})).toEqual([]);
+    expect(sourceMapUploadProblems({ SENTRY_AUTH_TOKEN: " ", SENTRY_PROJECT: "web" })).toEqual([]);
+    expect(sourceMapUploadProblems({ SENTRY_ORG: "acme", SENTRY_PROJECT: "web" })).toEqual([]);
+  });
+
+  it("keeps the plugin's own warnings and upload errors in the build log, but only when an upload is configured", () => {
+    expect(sentryBuildOptions({ SENTRY_AUTH_TOKEN: TOKEN })).toEqual({
+      silent: false,
+      telemetry: false,
+      sourcemaps: { disable: false },
+    });
+    for (const env of [
+      {},
+      { SENTRY_AUTH_TOKEN: "" },
+      { SENTRY_AUTH_TOKEN: " " },
+      { SENTRY_PROJECT: "web" },
+    ]) {
+      expect(sentryBuildOptions(env)).toEqual({
+        silent: true,
+        telemetry: false,
+        sourcemaps: { disable: true },
+      });
     }
   });
 });

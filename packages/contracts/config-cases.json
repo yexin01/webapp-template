@@ -1,0 +1,231 @@
+{
+  "_comment": "Drift guard between the two validators (apps/api: kernel config and identity settings; apps/web: src/lib/env.server.ts). Test fixture only, read by tests/unit/test_config_cases.py and src/lib/env-cases.test.ts; nothing reads it at runtime. Each case is an environment delta over `base` (null unsets a variable) and the variables both apps must name in their problems (none: both must accept it). Values are synthetic.",
+  "base": {
+    "APP_ENV": "local",
+    "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY": "pk_test_ZXhhbXBsZS1hcHAuY2xlcmsuYWNjb3VudHMuZGV2JA==",
+    "CLERK_SECRET_KEY": "sk_test_not_a_real_secret"
+  },
+  "cases": [
+    {
+      "name": "a valid local configuration",
+      "env": {},
+      "names": []
+    },
+    {
+      "name": "the platform's development environment derives local",
+      "env": {
+        "APP_ENV": null,
+        "VERCEL_ENV": "development"
+      },
+      "names": []
+    },
+    {
+      "name": "telemetry enabled with a project token",
+      "env": {
+        "ANALYTICS_MODE": "sandbox",
+        "NEXT_PUBLIC_POSTHOG_KEY": "phc_x",
+        "NEXT_PUBLIC_POSTHOG_HOST": "https://eu.i.posthog.com"
+      },
+      "names": []
+    },
+    {
+      "name": "a placeholder publishable key",
+      "env": {
+        "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY": "pk_test_replace_me"
+      },
+      "names": [
+        "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY"
+      ]
+    },
+    {
+      "name": "a malformed publishable key",
+      "env": {
+        "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY": "not-a-key"
+      },
+      "names": [
+        "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY"
+      ]
+    },
+    {
+      "name": "a placeholder secret key",
+      "env": {
+        "CLERK_SECRET_KEY": "sk_test_replace_me"
+      },
+      "names": [
+        "CLERK_SECRET_KEY"
+      ]
+    },
+    {
+      "name": "a malformed secret key",
+      "env": {
+        "CLERK_SECRET_KEY": "hello"
+      },
+      "names": [
+        "CLERK_SECRET_KEY"
+      ]
+    },
+    {
+      "name": "a missing secret key",
+      "env": {
+        "CLERK_SECRET_KEY": null
+      },
+      "names": [
+        "CLERK_SECRET_KEY"
+      ]
+    },
+    {
+      "name": "a live key outside production",
+      "env": {
+        "CLERK_SECRET_KEY": "sk_live_not_a_real_secret"
+      },
+      "names": [
+        "CLERK_SECRET_KEY",
+        "APP_ENV"
+      ]
+    },
+    {
+      "name": "an unknown APP_ENV",
+      "env": {
+        "APP_ENV": "staging"
+      },
+      "names": [
+        "APP_ENV"
+      ]
+    },
+    {
+      "name": "local on a preview deployment",
+      "env": {
+        "VERCEL_ENV": "preview"
+      },
+      "names": [
+        "APP_ENV",
+        "VERCEL_ENV"
+      ]
+    },
+    {
+      "name": "production on a preview deployment",
+      "env": {
+        "APP_ENV": "production",
+        "VERCEL_ENV": "preview",
+        "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY": "pk_live_Y2xlcmsuZXhhbXBsZS5jb20k",
+        "CLERK_SECRET_KEY": "sk_live_not_a_real_secret"
+      },
+      "names": [
+        "APP_ENV",
+        "VERCEL_ENV"
+      ]
+    },
+    {
+      "name": "an unknown platform environment",
+      "env": {
+        "VERCEL_ENV": "staging"
+      },
+      "names": [
+        "VERCEL_ENV"
+      ]
+    },
+    {
+      "name": "a preview deployment that names no telemetry mode",
+      "env": {
+        "APP_ENV": "preview"
+      },
+      "names": [
+        "ANALYTICS_MODE",
+        "ERROR_REPORTING_MODE"
+      ]
+    },
+    {
+      "name": "live telemetry outside production",
+      "env": {
+        "ANALYTICS_MODE": "live",
+        "ERROR_REPORTING_MODE": "live"
+      },
+      "names": [
+        "ANALYTICS_MODE",
+        "ERROR_REPORTING_MODE"
+      ]
+    },
+    {
+      "name": "mock telemetry",
+      "env": {
+        "ANALYTICS_MODE": "mock"
+      },
+      "names": [
+        "ANALYTICS_MODE"
+      ]
+    },
+    {
+      "name": "analytics without a key",
+      "env": {
+        "ANALYTICS_MODE": "sandbox"
+      },
+      "names": [
+        "ANALYTICS_MODE",
+        "NEXT_PUBLIC_POSTHOG_KEY"
+      ]
+    },
+    {
+      "name": "a secret PostHog credential with analytics off",
+      "env": {
+        "NEXT_PUBLIC_POSTHOG_KEY": "phx_not_a_real_key"
+      },
+      "names": [
+        "NEXT_PUBLIC_POSTHOG_KEY"
+      ]
+    },
+    {
+      "name": "a PostHog key that is no project token",
+      "env": {
+        "NEXT_PUBLIC_POSTHOG_KEY": "token"
+      },
+      "names": [
+        "NEXT_PUBLIC_POSTHOG_KEY"
+      ]
+    },
+    {
+      "name": "a PostHog host that is no URL",
+      "env": {
+        "NEXT_PUBLIC_POSTHOG_HOST": "not a url"
+      },
+      "names": [
+        "NEXT_PUBLIC_POSTHOG_HOST"
+      ]
+    },
+    {
+      "name": "a trace sample rate that is no number",
+      "env": {
+        "SENTRY_TRACES_SAMPLE_RATE": "abc"
+      },
+      "names": [
+        "SENTRY_TRACES_SAMPLE_RATE"
+      ]
+    },
+    {
+      "name": "a trace sample rate above one",
+      "env": {
+        "SENTRY_TRACES_SAMPLE_RATE": "1.5"
+      },
+      "names": [
+        "SENTRY_TRACES_SAMPLE_RATE"
+      ]
+    },
+    {
+      "name": "a JWT key that is no PEM",
+      "env": {
+        "CLERK_JWT_KEY": "not a pem"
+      },
+      "names": [
+        "CLERK_JWT_KEY"
+      ]
+    },
+    {
+      "name": "a custom domain that is no hostname",
+      "env": {
+        "STRIPE_CUSTOM_DOMAIN": "https://payments.example.com/x"
+      },
+      "names": [
+        "STRIPE_CUSTOM_DOMAIN"
+      ]
+    }
+  ]
+}

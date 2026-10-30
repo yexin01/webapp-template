@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from app.kernel.diagnostics import IntegrationInfo, Outcome, Verdict
 from app.kernel.tenancy import TenantContext
+from app.modules.llm.domain import NOT_CONFIGURED
 from app.modules.llm.service import LLMService
 
 
@@ -18,6 +19,8 @@ class LLMProbe:
 
     def check(self, ctx: TenantContext) -> Verdict:
         result = self._llm.check(ctx)
+        if result.error_code == NOT_CONFIGURED:
+            return Verdict(Outcome.SKIPPED, "LLM_MODE is disabled: no provider is called.")
         if result.ok:
             return Verdict(Outcome.PASSED, f"{result.provider} accepted the key, and model {result.model} exists.")
         return Verdict(

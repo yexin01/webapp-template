@@ -14,7 +14,9 @@ import { defineConfig, devices } from "@playwright/test";
  *   database, so a test that starts using the database fails instead of
  *   writing there.
  * - Sandbox runs (E2E_SANDBOX=1) take the API's settings from the root .env,
- *   DATABASE_URL included. The test user's rows, a project (deleted again),
+ *   DATABASE_URL included, except the origins: the page is served at 127.0.0.1:3100,
+ *   so that is the origin its session tokens carry and the API must authorize
+ *   (process values win over .env). The test user's rows, a project (deleted again),
  *   and a billing-customer mapping are written to that database, which is
  *   neither isolated nor dropped (DB-08): point .env at a disposable local
  *   database for those runs.
@@ -26,6 +28,7 @@ const webPort = 3100;
 const apiPort = 8100;
 // Rewrites are fixed at build time, so the web app is built with the e2e API origin.
 const apiOrigin = `http://127.0.0.1:${apiPort}`;
+const webOrigin = `http://127.0.0.1:${webPort}`;
 
 export default defineConfig({
   testDir: "./e2e",
@@ -34,7 +37,7 @@ export default defineConfig({
   retries: process.env.CI ? 1 : 0,
   reporter: process.env.CI ? [["list"], ["html", { open: "never" }]] : "list",
   use: {
-    baseURL: `http://127.0.0.1:${webPort}`,
+    baseURL: webOrigin,
     trace: "retain-on-failure",
   },
   projects: [
@@ -48,7 +51,7 @@ export default defineConfig({
       url: `http://127.0.0.1:${apiPort}/api/v1/health`,
       reuseExistingServer: false,
       env: sandbox
-        ? {}
+        ? { APP_BASE_URL: webOrigin, CLERK_AUTHORIZED_PARTIES: webOrigin }
         : {
             APP_ENV: "test",
             DATABASE_URL:

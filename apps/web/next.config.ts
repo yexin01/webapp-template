@@ -3,30 +3,43 @@ import { fileURLToPath } from "node:url";
 
 import { withSentryConfig } from "@sentry/nextjs/config";
 import type { NextConfig } from "next";
-import { PHASE_DEVELOPMENT_SERVER, PHASE_PRODUCTION_SERVER } from "next/constants";
+import { PHASE_DEVELOPMENT_SERVER, PHASE_PRODUCTION_BUILD, PHASE_PRODUCTION_SERVER } from "next/constants";
 
 import { PROXY_TIMEOUT_MS } from "./src/lib/api/deadlines";
 import { buildContentSecurityPolicy } from "./src/lib/csp";
-import { loadEnvFiles } from "./src/lib/env-files";
-import { isWebVariable, loadServerEnv } from "./src/lib/env.server";
+import { loadEnvFiles, strayEnvFiles } from "./src/lib/env-files";
+import {
+  ConfigError,
+  isWebVariable,
+  loadServerEnv,
+  sentryBuildOptions,
+  sourceMapUploadProblems,
+} from "./src/lib/env.server";
 
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const webDir = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(webDir, "../..");
 const isDev = process.env.NODE_ENV !== "production";
 // One repository-root .env serves both apps (see .env.example). This process
 // loads only the variables the web app reads (env.server.ts), so API secrets
 // such as STRIPE_SECRET_KEY and DATABASE_URL never enter it.
-loadEnvFiles(
-  repoRoot,
-  process.env.NODE_ENV === "test" ? "test" : isDev ? "development" : "production",
-  isWebVariable,
-  process.env,
-);
+loadEnvFiles(repoRoot, isWebVariable, process.env);
 
 function nextConfig(phase: string): NextConfig {
+  const stray = strayEnvFiles(repoRoot, webDir);
+  if (stray.length) {
+    throw new ConfigError([
+      `Only the repository-root .env is read (API, web app, bundle scan). Move the settings in ${stray.join(", ")} into it and delete those files. ` +
+        "apps/web/.env* files are loaded by Next.js itself, unfiltered, and the API never sees them.",
+    ]);
+  }
   // ENV-03: fail fast, naming the variable but never its value.
   const env = loadServerEnv(process.env, {
     serving: phase === PHASE_DEVELOPMENT_SERVER || phase === PHASE_PRODUCTION_SERVER,
   });
+  if (phase === PHASE_PRODUCTION_BUILD) {
+    const uploadProblems = sourceMapUploadProblems(process.env);
+    if (uploadProblems.length) throw new ConfigError(uploadProblems);
+  }
 
   const csp = buildContentSecurityPolicy({
     clerkPublishableKey: env.clerkPublishableKey,
@@ -69,10 +82,6 @@ function nextConfig(phase: string): NextConfig {
   };
 }
 
-export default withSentryConfig(nextConfig, {
-  silent: true,
-  telemetry: false,
-  // Source maps upload only when a CI-only auth token is present in the build
-  // environment (it is deliberately not loaded from the root .env).
-  sourcemaps: { disable: !process.env.SENTRY_AUTH_TOKEN },
-});
+// Source maps upload only when SENTRY_AUTH_TOKEN is present in the build environment
+// (deliberately not loaded from the root .env); `next build` then needs SENTRY_PROJECT too.
+export default withSentryConfig(nextConfig, sentryBuildOptions(process.env));

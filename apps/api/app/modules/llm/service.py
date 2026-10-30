@@ -9,7 +9,7 @@ from app.kernel.authorization import authorize
 from app.kernel.errors import BudgetExceededError, RateLimitedError
 from app.kernel.ports import Analytics
 from app.kernel.tenancy import TenantContext
-from app.modules.llm.domain import LLM_CHECK, LLMCheckResult
+from app.modules.llm.domain import LLM_CHECK, NOT_CONFIGURED, LLMCheckResult
 from app.modules.llm.ports import LLMProvider
 
 _DAY = 86_400
@@ -18,7 +18,7 @@ _DAY = 86_400
 class LLMService:
     def __init__(
         self,
-        provider: LLMProvider,
+        provider: LLMProvider | None,
         rate_limiter: RateLimiter,
         analytics: Analytics,
         *,
@@ -36,6 +36,8 @@ class LLMService:
 
     def check(self, ctx: TenantContext) -> LLMCheckResult:
         authorize(ctx, LLM_CHECK)
+        if self._provider is None:  # LLM_MODE=disabled: nothing to call, so no quota is used
+            return LLMCheckResult(ok=False, provider="none", model="", latency_ms=0, error_code=NOT_CONFIGURED)
         # The concurrency bound comes first, so a request it refuses uses none of the caller's or the global quota.
         if not self._in_flight.acquire(blocking=False):
             raise RateLimitedError(retry_after_seconds=1)
