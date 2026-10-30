@@ -51,28 +51,19 @@ jobs:
         with:
           node-version-file: .nvmrc
       - run: uv sync --frozen
-      - name: Lint and format
-        run: |
-          uv run ruff check app tests index.py ../../perf
-          uv run ruff format --check app tests index.py ../../perf
-      - name: Import boundaries
-        run: uv run lint-imports
-      - name: Migration lint (MIG-03)
-        run: uv run squawk --config ../../.squawk.toml ../../supabase/migrations/*.sql
-      - name: Type check (strict)
-        run: uv run mypy
-      - name: Tests (unit, integration, RLS, security, resilience)
+      # The same command runs on a laptop (pnpm verify): lint, formatting, import boundaries, migration
+      # lint (MIG-03), strict types, the tests with the database required, and the locked-version audit.
+      - name: Lint, types, tests and audit (scripts/verify.mjs)
+        working-directory: .
         env:
           TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/app
-        run: uv run pytest
+        run: node scripts/verify.mjs --job api
       - name: Migrations apply cleanly to an empty database
         env:
           DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/app
         run: |
           uv run python -m app.cli migrate
           uv run python -m app.cli migrate
-      - name: Dependency audit (locked versions)
-        run: sh ../../scripts/pip-audit-locked.sh
 
   api-supabase:
     # Supabase's Postgres image: `postgres` is not a superuser there, supautils guards role changes, and the
@@ -126,42 +117,13 @@ jobs:
           version: "0.11.1"
       - run: pnpm install --frozen-lockfile
       - run: pnpm api:sync
-      - name: Format check
-        run: pnpm --filter web format:check
-      - run: pnpm --filter web lint
-      - run: pnpm --filter web typecheck
-      - run: pnpm --filter web test
-      - name: API contracts are up to date
-        run: pnpm contracts:check
-      - name: Template initialization leaves no original identifiers (REPO-07)
-        run: pnpm test:init-template
-      - name: Community contacts are filled in once the project is renamed (DEC-012)
-        run: pnpm check:placeholders
-      - name: Module generator produces a module that passes every gate (ADR-0003)
-        run: pnpm test:new-module
-      - name: Production build (placeholder public key; no secrets)
-        run: |
-          export NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY="pk_test_$(printf 'placeholder.clerk.accounts.dev$' | base64)"
-          pnpm build
-      - name: No server-only values in the browser bundle
-        run: |
-          node scripts/check-bundle-secrets.mjs --self-test
-          pnpm check:bundle-secrets
-      # Any severity, matching pip-audit, which has no severity filter. Scope
-      # and reasons: scripts/security-audit.mjs. Not `pnpm audit --prod`: pnpm 9
-      # uses an advisory endpoint that is being retired (scripts/npm-audit-bulk.mjs).
-      - name: Dependency audit (production)
-        run: |
-          node scripts/npm-audit-bulk.mjs --self-test
-          node scripts/npm-audit-bulk.mjs
-      - name: License compliance (allowlist)
-        run: |
-          node scripts/check-licenses.mjs --self-test
-          pnpm security:licenses
-      - name: End-to-end (account-free checks)
-        run: |
-          pnpm --filter web exec playwright install --with-deps chromium
-          pnpm test:e2e
+      - run: pnpm --filter web exec playwright install --with-deps chromium
+      # The same command runs on a laptop (pnpm verify): formatting, lint, types, tests, contracts, script tests,
+      # template initialization (REPO-07), placeholders (DEC-012), documentation links, the module generator
+      # (ADR-0003), the account-free build and bundle secret scan, the dependency audit (scripts/security-audit.mjs
+      # explains the scope and why not `pnpm audit`), the license allowlist, and the account-free browser tests.
+      - name: Everything the web job checks (scripts/verify.mjs)
+        run: node scripts/verify.mjs --job web
       - if: failure()
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
