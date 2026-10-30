@@ -26,6 +26,9 @@ POOLER_PORT="${PROOF_POOLER_PORT:-64329}"
 COLD_RUNS="${PROOF_COLD_RUNS:-10}"
 USERS="${PROOF_USERS:-40}"
 DB_NAME=app_proof
+# The runtime logs in as this role (DEC-008), not as the owner: APP_ENV=preview refuses an owner. Local-only values.
+LOGIN_ROLE=dec001_login
+export PROOF_LOGIN_PASSWORD="dec001-proof-login-password"
 # Amazon Linux 2023 with Python 3.12 on x86_64: the closest public image to the platform's runtime.
 RUNTIME_IMAGE="public.ecr.aws/lambda/python:3.12.2026.09.23.13-x86_64"
 POOLER_IMAGE="edoburu/pgbouncer:v1.24.1-p1"
@@ -68,7 +71,7 @@ cleanup() {
   docker rm -f "$RUNTIME" "$POOLER" >/dev/null 2>&1 || true
   docker network rm "$NETWORK" >/dev/null 2>&1 || true
   if [[ -n "$PROOF_DIR" && -n "${ADMIN_URL:-}" ]]; then
-    py db --admin-url "$ADMIN_URL" --name "$DB_NAME" --drop >/dev/null 2>&1 || true
+    py db --admin-url "$ADMIN_URL" --name "$DB_NAME" --login-role "$LOGIN_ROLE" --drop >/dev/null 2>&1 || true
   fi
   # Generated test-only credentials are not kept; the results are.
   rm -rf "$WORK/keys" "$WORK/repo/.env"
@@ -125,7 +128,7 @@ log "2. Proof-only environment and database"
 py env --out "$WORK/repo/.env" --keys "$WORK/keys" --port "$DEV_PORT" \
   --database-url "$DB_SERVER/$DB_NAME"
 (cd "$REPO" && pnpm --silent db:up)
-py db --admin-url "$ADMIN_URL" --name "$DB_NAME"
+py db --admin-url "$ADMIN_URL" --name "$DB_NAME" --login-role "$LOGIN_ROLE"
 
 log "3. vercel build (no Vercel credentials; installs from npm and PyPI)"
 (cd "$WORK/repo" && vercel build -Q "$WORK/no-credentials" --non-interactive) > "$RESULTS/vercel-build.log" 2>&1
@@ -153,19 +156,21 @@ if [[ -z "$HOST_GATEWAY" ]]; then
   exit 2
 fi
 docker run -d --name "$POOLER" --network "$NETWORK" -p "127.0.0.1:$POOLER_PORT:5432" \
-  -e DB_HOST="$HOST_GATEWAY" -e DB_PORT="$DB_PORT" -e DB_USER=postgres -e DB_PASSWORD=postgres \
+  -e DB_HOST="$HOST_GATEWAY" -e DB_PORT="$DB_PORT" -e DB_USER="$LOGIN_ROLE" -e DB_PASSWORD="$PROOF_LOGIN_PASSWORD" \
   -e AUTH_TYPE=scram-sha-256 -e POOL_MODE=transaction -e DEFAULT_POOL_SIZE=4 -e MAX_CLIENT_CONN=500 \
-  -e MAX_PREPARED_STATEMENTS=0 -e ADMIN_USERS=postgres "$POOLER_IMAGE" >/dev/null
-py session --pooler-url "postgresql://postgres:postgres@127.0.0.1:$POOLER_PORT/$DB_NAME" --results "$RESULTS"
+  -e MAX_PREPARED_STATEMENTS=0 -e ADMIN_USERS="$LOGIN_ROLE" "$POOLER_IMAGE" >/dev/null
+LOGIN_AUTH="$LOGIN_ROLE:$PROOF_LOGIN_PASSWORD"
+py session --pooler-url "postgresql://$LOGIN_AUTH@127.0.0.1:$POOLER_PORT/$DB_NAME" --results "$RESULTS"
 
 log "6. Packaged function (linux/amd64, Vercel's runtime shim) through the pooler"
-POOLED_URL="postgresql://postgres:postgres@$POOLER:5432/$DB_NAME"
+# sslmode=disable: a remote host gets sslmode=require by default, and this local PgBouncer stands in for Supavisor without TLS.
+POOLED_URL="postgresql://$LOGIN_AUTH@$POOLER:5432/$DB_NAME?sslmode=disable"
 py runtime --name "$RUNTIME" --port "$RUNTIME_PORT" --env-file "$WORK/repo/.env" --database-url "$POOLED_URL" \
   --task "$WORK/task" --results "$RESULTS" --image "$RUNTIME_IMAGE" --network "$NETWORK"
 py probe --base-url "http://127.0.0.1:$RUNTIME_PORT" --label packaged-runtime --users "$USERS" --vercel-ids \
   --max-db-clients "$MAX_DB_CLIENTS" --proof-json "$WORK/keys/proof.json" --results "$RESULTS" \
   --database "$DB_NAME" --admin-url "$ADMIN_URL" \
-  --pooler-admin-url "postgresql://postgres:postgres@127.0.0.1:$POOLER_PORT/pgbouncer"
+  --pooler-admin-url "postgresql://$LOGIN_AUTH@127.0.0.1:$POOLER_PORT/pgbouncer"
 py outage --base-url "http://127.0.0.1:$RUNTIME_PORT" --proof-json "$WORK/keys/proof.json" --vercel-ids \
   --env-file "$WORK/repo/.env" --pooler "$POOLER" --results "$RESULTS"
 docker logs "$RUNTIME" > "$RESULTS/runtime-container.log" 2>&1 || true
