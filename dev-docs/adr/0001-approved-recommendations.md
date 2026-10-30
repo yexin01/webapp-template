@@ -4,6 +4,7 @@
 - **Date:** 2026-10-14
 - **Decided by:** Repository owner
 - **Resolves:** DEC-007, DEC-008, DEC-009, DEC-010, DEC-011; DEC-012 (license only)
+- **Amended by:** [ADR-0004](0004-cycle-1-adopted-decisions.md): DEC-008, `DATABASE_URL` logs in as the `app_login` role and migrations use `MIGRATION_DATABASE_URL` (§3); DEC-007, under the Vercel Services topology the platform routes `/api/v1/*` to the API, and the Next.js rewrite serves local development (§1)
 
 ## Context
 
