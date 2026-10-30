@@ -367,8 +367,11 @@ def test_reconcile_billing_job_reports_without_applying_by_default(cron: Harness
 
 
 def test_vercel_cron_config_matches_the_job_registry(harness: Harness) -> None:
-    """apps/api/vercel.json must schedule exactly the registered jobs, at their declared schedules."""
-    config = json.loads((REPO_ROOT / "apps" / "api" / "vercel.json").read_text())
+    """The root vercel.json must schedule exactly the registered jobs, at their declared schedules.
+
+    Under Vercel Services, crons are read from the root file only; a service's own vercel.json is ignored.
+    """
+    config = json.loads((REPO_ROOT / "vercel.json").read_text())
     scheduled = {c["path"]: c["schedule"] for c in config["crons"]}
     registered = {f"/api/v1/jobs/{j.name}": j.schedule for j in harness.container.kernel.jobs.all()}
     assert scheduled == registered

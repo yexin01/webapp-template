@@ -31,7 +31,7 @@ Requires Docker Desktop, the Vercel CLI, uv, pnpm, and Node. Results go to `$TMP
 
 | Step | What runs | What it shows | What it cannot show |
 |---|---|---|---|
-| 1. Export | `git archive HEAD` plus the candidate [`vercel.json`](vercel.json) (Vercel Services: `web` and `api` in one project) | The proof tests committed code | — |
+| 1. Export | `git archive HEAD`, which includes the root [`vercel.json`](../../vercel.json) (Vercel Services: `web` and `api` in one project) | The proof tests committed code, and the configuration file that ships | — |
 | 3. Build | `vercel build`, without Vercel credentials | The monorepo builds as one Services project. Asserted: the API runtime is `python3.12` on x86_64; every native library is Linux x86-64 by its file header (Mach-O counts as macOS); no test files; under the documented 500 MB; the crons match the API's job registry. Bundle size, contents, and routes are recorded. Server-only values absent from the browser bundle | Build behavior on Vercel's build machines |
 | 4. Local Services | `vercel dev -L` | `/api/v1/*` reaches the API and everything else reaches Next.js. Raw-body webhooks, cron route, auth rejections, and concurrent isolation through the local Services router | The production router, CDN, or Firewall |
 | 5. Pooler | PgBouncer 1.24 in **transaction** mode, prepared statements off | Transaction-local settings do not follow a server connection to the next client. A session-level control does leak, which shows the check works | Supabase's own pooler (Supavisor) |
