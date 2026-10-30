@@ -537,6 +537,13 @@ export interface components {
             /** Organization Scoped */
             organization_scoped: boolean;
         };
+        /** ProjectCapabilities */
+        ProjectCapabilities: {
+            /** Create */
+            create: boolean;
+            /** Delete */
+            delete: boolean;
+        };
         /** ProjectCreate */
         ProjectCreate: {
             /** Name */
@@ -544,6 +551,7 @@ export interface components {
         };
         /** ProjectPage */
         ProjectPage: {
+            can: components["schemas"]["ProjectCapabilities"];
             /** Items */
             items: components["schemas"]["Project"][];
             /** Next Cursor */

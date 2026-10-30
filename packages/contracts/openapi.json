@@ -491,6 +491,24 @@
         "title": "Project",
         "type": "object"
       },
+      "ProjectCapabilities": {
+        "properties": {
+          "create": {
+            "title": "Create",
+            "type": "boolean"
+          },
+          "delete": {
+            "title": "Delete",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "create",
+          "delete"
+        ],
+        "title": "ProjectCapabilities",
+        "type": "object"
+      },
       "ProjectCreate": {
         "additionalProperties": false,
         "properties": {
@@ -509,6 +527,9 @@
       },
       "ProjectPage": {
         "properties": {
+          "can": {
+            "$ref": "#/components/schemas/ProjectCapabilities"
+          },
           "items": {
             "items": {
               "$ref": "#/components/schemas/Project"
@@ -530,7 +551,8 @@
         },
         "required": [
           "items",
-          "next_cursor"
+          "next_cursor",
+          "can"
         ],
         "title": "ProjectPage",
         "type": "object"
