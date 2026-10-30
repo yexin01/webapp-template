@@ -12,6 +12,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import timedelta
+from functools import cached_property
 from typing import Any
 
 from fastapi import FastAPI
@@ -63,7 +64,6 @@ class Container:
     projects: ProjectsModule
     llm: LLMModule
     # new:module:fields
-    diagnostics: DiagnosticsModule = field(init=False)  # built last, from every module's probes
     closers: list[Callable[[], None]] = field(default_factory=list)
 
     def module_contributions(self) -> list[Contribution]:
@@ -75,6 +75,17 @@ class Container:
             self.llm.contribution,
             # new:module:contributions
         ]
+
+    @cached_property
+    def diagnostics(self) -> DiagnosticsModule:
+        """Built from the probes of every module's contribution, so a module's probe cannot be left out."""
+        probes = [
+            DatabaseProbe(describe_database(self.settings), self.kernel.store),
+            *(probe for contribution in self.module_contributions() for probe in contribution.probes),
+            AnalyticsProbe(describe_analytics(self.settings), self.kernel.analytics),
+            ErrorReportingProbe(describe_error_reporting(self.settings), self.kernel.error_reporter),
+        ]
+        return build_diagnostics(self.settings, self.settings, self.kernel, self.identity.auth, probes)
 
     def contributions(self) -> list[Contribution]:
         return [*self.module_contributions(), self.diagnostics.contribution]
@@ -154,13 +165,7 @@ def build_container(settings: Settings, **adapters: Any) -> Container:
         # new:module:container
         closers=closers,
     )
-    probes = [
-        DatabaseProbe(describe_database(settings), store),
-        *(probe for contribution in container.module_contributions() for probe in contribution.probes),
-        AnalyticsProbe(describe_analytics(settings), analytics),
-        ErrorReportingProbe(describe_error_reporting(settings), error_reporter),
-    ]
-    container.diagnostics = build_diagnostics(settings, settings, kernel, identity.auth, probes)
+    container.diagnostics  # noqa: B018 - built now, so a duplicate probe fails at startup
     if unread := overrides.unread():
         container.close()
         raise TypeError(f"build_container() got unknown overrides: {', '.join(unread)}")
