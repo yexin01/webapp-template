@@ -23,8 +23,8 @@ import { loadEnvFiles } from "./src/lib/env-files";
  *   E2E_DATABASE_URL), never the development database, so a test that starts using the database fails
  *   instead of writing there.
  * - Sandbox runs take the API's settings from the root .env, DATABASE_URL included, except the origins: the
- *   page is served at 127.0.0.1:3100, so that is the origin its session tokens carry and the API must
- *   authorize (process values win over .env). The test user's rows, a project (deleted again), and a
+ *   page is served at 127.0.0.1:3100, so that is the origin its session tokens carry and both the API and the
+ *   web proxy must authorize (process values win over .env). The test user's rows, a project (deleted again), and a
  *   billing-customer mapping are written to that database, which is neither isolated nor dropped (DB-08):
  *   point .env at a disposable local database for those runs.
  */
@@ -94,10 +94,13 @@ export default defineConfig({
       reuseExistingServer: false,
       env: {
         API_ORIGIN: apiOrigin,
+        // Sandbox: the proxy checks the session token's azp claim against these, and next.config.ts inlines
+        // them at build time, so the web process (build and start) needs the page's origin like the API does.
         // Account-free runs are "mocked" evidence: pinned like the API above, so a developer's root .env
-        // cannot switch telemetry on or supply real keys (process values win over .env).
+        // cannot switch telemetry on or supply real keys (process values win over .env). APP_ENV=test
+        // has no parties and no check.
         ...(sandbox
-          ? {}
+          ? { APP_BASE_URL: webOrigin, CLERK_AUTHORIZED_PARTIES: webOrigin }
           : {
               APP_ENV: "test",
               ANALYTICS_MODE: "disabled",

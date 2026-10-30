@@ -94,6 +94,9 @@ describe("sandbox run (E2E_SANDBOX=1)", () => {
     expect(config.use?.baseURL).toBe(origin);
     expect(api?.env?.APP_BASE_URL).toBe(origin);
     expect(api?.env?.CLERK_AUTHORIZED_PARTIES).toBe(origin);
+    // The web proxy checks the same claim, from what it was built with (build and start share this env).
+    expect(web?.env?.APP_BASE_URL).toBe(origin);
+    expect(web?.env?.CLERK_AUTHORIZED_PARTIES).toBe(origin);
     expect(web?.command).toContain("--port 3100");
     // Everything else comes from the root .env, so a sandbox run exercises the developer's configuration.
     expect(api?.env?.APP_ENV).toBeUndefined();
