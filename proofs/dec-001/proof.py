@@ -188,11 +188,21 @@ def cmd_db(args: argparse.Namespace) -> None:
         )
         conn.execute(f'DROP DATABASE IF EXISTS "{args.name}"')
         if args.drop:
+            if args.login_role:
+                conn.execute(f'DROP ROLE IF EXISTS "{args.login_role}"')
             print(f"dropped {args.name}")
             return
         conn.execute(f'CREATE DATABASE "{args.name}"')
     url = args.admin_url.rsplit("/", 1)[0] + f"/{args.name}"
     migrations.migrate(url)
+    if args.login_role:
+        # The runtime logs in as a role like app_login, never as the owner: preview refuses an owner (DEC-008).
+        # A role of its own, so the developer's app_login (and its password) stays as it is.
+        with psycopg.connect(url, autocommit=True) as conn:
+            conn.execute(f'DROP ROLE IF EXISTS "{args.login_role}"')
+            conn.execute(f'CREATE ROLE "{args.login_role}" NOLOGIN NOINHERIT')
+            conn.execute(f'GRANT app_api, app_worker TO "{args.login_role}"')
+        migrations.enable_api_login(url, os.environ["PROOF_LOGIN_PASSWORD"], args.login_role)
     print(f"created and migrated {args.name}")
 
 
@@ -1197,6 +1207,9 @@ def main() -> None:
     p.add_argument("--admin-url", required=True)
     p.add_argument("--name", required=True)
     p.add_argument("--drop", action="store_true", help="drop the database and stop")
+    p.add_argument(
+        "--login-role", help="also create (or with --drop, drop) this login role; its password is PROOF_LOGIN_PASSWORD"
+    )
     p.set_defaults(fn=cmd_db)
 
     p = sub.add_parser("bundle")

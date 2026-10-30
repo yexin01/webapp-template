@@ -6,7 +6,12 @@
  * server: a throwaway container from the same image, with no network, that
  * has never run a migration. Roles are cluster-wide and not part of a
  * database dump, so the drill first creates the runtime roles exactly as the
- * first migration does (ROLES_SQL), then restores with object owners intact.
+ * migrations do (ROLES_SQL), then restores the way that also works where the
+ * restoring role is not a superuser (Supabase's postgres): without owners
+ * (pg_restore --no-owner, so the restoring role owns everything), then
+ * supabase/restore/post-restore.sql, which hands the SECURITY DEFINER function
+ * back to app_worker. app_login's password is not in a dump: run
+ * `pnpm db:api-login` against the restored database.
  * It verifies per-table row counts and content checksums, row-level-security
  * flags, owners, privileges, policies, role attributes, and the migration
  * ledger, then removes the container. Prints timings as JSON.
@@ -26,6 +31,7 @@
  */
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { constants } from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -36,9 +42,10 @@ const DUMP = "/tmp/restore-drill.dump";
 const TARGET = `restore-drill-${process.pid}-${randomBytes(4).toString("hex")}`;
 const READY_TIMEOUT_MS = 60_000;
 
-// Mirrors the role block of supabase/migrations/20261014000001_core_schema.sql.
-// Keep the two in step; the _roles fingerprint below fails the drill if the
-// attributes or memberships drift from what the migrations produce.
+// Mirrors the role blocks of supabase/migrations/20261014000001_core_schema.sql
+// and 20261030000010_app_login_role.sql. Keep them in step; the _roles
+// fingerprint below fails the drill if the attributes or memberships drift
+// from what the migrations produce.
 const ROLES_SQL = `
 DO $$
 BEGIN
@@ -50,8 +57,15 @@ BEGIN
   END IF;
 END
 $$;
-GRANT app_api TO CURRENT_USER;
-GRANT app_worker TO CURRENT_USER;
+DO $$
+BEGIN
+  EXECUTE format('GRANT app_api, app_worker TO %I', current_user);
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'app_login') THEN
+    CREATE ROLE app_login NOLOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION;
+  END IF;
+END
+$$;
+GRANT app_api, app_worker TO app_login;
 `;
 
 // Steps run asynchronously, so a signal is handled when it arrives: it aborts
@@ -147,7 +161,7 @@ async function fingerprint(exec) {
       `UNION ALL SELECT 'schema app', ${acl("nspacl")} FROM pg_namespace WHERE nspname = 'app') x`,
   );
   // Owners matter: app.lock_my_membership is SECURITY DEFINER and must stay
-  // owned by app_worker, not by whichever role ran the restore.
+  // owned by app_worker, not by whichever role ran the restore (post-restore.sql).
   result._owners = await psql(
     exec,
     "SELECT string_agg(name || '=' || owner, ',' ORDER BY name) FROM (" +
@@ -164,11 +178,16 @@ async function fingerprint(exec) {
     "SELECT md5(coalesce(string_agg(concat_ws(':', tablename, policyname, permissive, roles::text, cmd, qual, with_check), '|' " +
       "ORDER BY tablename, policyname), '')) FROM pg_policies WHERE schemaname = 'app'",
   );
+  // Whether app_login may log in is the source's business (`pnpm db:api-login` was or was not run there); its
+  // password is not restored either way.
   result._roles = await psql(
     exec,
-    "SELECT string_agg(concat_ws(':', r.rolname, r.rolcanlogin, r.rolinherit, r.rolbypassrls, r.rolsuper, " +
+    "SELECT string_agg(concat_ws(':', r.rolname, CASE WHEN r.rolname = 'app_login' THEN 'login-not-compared' ELSE r.rolcanlogin::text END, " +
+      "r.rolinherit, r.rolbypassrls, r.rolsuper, " +
       "(SELECT string_agg(m.rolname, '+' ORDER BY m.rolname) FROM pg_auth_members a JOIN pg_roles m ON m.oid = a.member " +
-      "WHERE a.roleid = r.oid)), ',' ORDER BY r.rolname) FROM pg_roles r WHERE r.rolname IN ('app_api', 'app_worker')",
+      "WHERE a.roleid = r.oid), " +
+      "(SELECT string_agg(g.rolname, '+' ORDER BY g.rolname) FROM pg_auth_members a JOIN pg_roles g ON g.oid = a.roleid " +
+      "WHERE a.member = r.oid)), ',' ORDER BY r.rolname) FROM pg_roles r WHERE r.rolname IN ('app_api', 'app_worker', 'app_login')",
   );
   result._migrations = await psql(
     exec,
@@ -242,8 +261,14 @@ try {
 
   elapsed = timer();
   await psql(target, ROLES_SQL);
-  // Owners are restored too (no --no-owner), which needs the roles above.
-  await target(["pg_restore", "-U", "postgres", "-d", DB, "--exit-on-error", DUMP]);
+  // The procedure for any target, including one where the restoring role is not a superuser: no owners
+  // (everything belongs to the restoring role, as it does at the source), then the hand-over of the one function
+  // that must belong to app_worker. Both in a transaction each, and either failing stops the drill.
+  await target(["pg_restore", "-U", "postgres", "-d", DB, "--no-owner", "--exit-on-error", "--single-transaction", DUMP]);
+  await target(
+    ["psql", "-U", "postgres", "-d", DB, "-v", "ON_ERROR_STOP=1", "--single-transaction", "-q", "-f", "-"],
+    { input: await readFile(path.join(root, "supabase/restore/post-restore.sql"), "utf8") },
+  );
   report.steps.restore_ms = elapsed();
 
   elapsed = timer();

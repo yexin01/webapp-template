@@ -15,7 +15,7 @@ from app.kernel.application.probes import DatabaseProbe
 from app.kernel.application.rate_limit import RateLimiter
 from app.kernel.diagnostics import IntegrationInfo, IntegrationKey, IntegrationMode, Outcome, Verdict
 from app.kernel.errors import NotFoundError
-from app.kernel.ports import AuditEntry, ConnectionDescription
+from app.kernel.ports import AuditEntry, ConnectionDescription, LoginRole
 from app.kernel.tenancy import ContextKind, Role, TenantContext
 from app.modules.diagnostics.domain import OperatorPolicy
 from app.modules.diagnostics.service import DiagnosticsService
@@ -95,13 +95,14 @@ def service(
     tx: _Transactions | None = None,
     probes: tuple[Any, ...] = (),
     enabled: bool = True,
+    restricted_login: bool = False,
 ) -> DiagnosticsService:
     transactions: Any = tx or _Transactions(description or SAFE)
     info = IntegrationInfo(IntegrationKey.DATABASE, "PostgreSQL", IntegrationMode.LOCAL)
     return DiagnosticsService(
         enabled=enabled,
         operators=operators or OperatorPolicy(frozenset({"user_a"})),
-        probes=[DatabaseProbe(info, transactions), *probes],
+        probes=[DatabaseProbe(info, transactions, restricted_login=restricted_login), *probes],
         rate_limiter=RateLimiter(transactions, _Clock()),
         transactions=transactions,
         runs_per_user_per_minute=10,
@@ -150,7 +151,42 @@ def test_unsafe_database_session_fails(change: dict[str, Any], message: str) -> 
 
 
 def test_safe_session_passes() -> None:
-    assert service(SAFE).run(PERSONAL, IntegrationKey.DATABASE, None).outcome is Outcome.PASSED
+    result = service(SAFE).run(PERSONAL, IntegrationKey.DATABASE, None)
+    assert result.outcome is Outcome.PASSED
+    assert "The login role cannot skip row-level security." in result.summary
+
+
+UNSAFE_LOGINS = [
+    (LoginRole(superuser=True), "the login role is a superuser"),
+    (LoginRole(bypass_rls=True), "the login role has BYPASSRLS"),
+    (LoginRole(create_role=True), "the login role can create roles"),
+    (LoginRole(privileged_membership=True), "the login role is a member of a superuser or BYPASSRLS role"),
+    (
+        LoginRole(owned_tables=("projects", "outbox")),
+        "the login role owns, or can act as the owner of, projects, outbox",
+    ),
+]
+
+
+@pytest.mark.parametrize(("login", "message"), UNSAFE_LOGINS)
+def test_a_login_role_that_could_skip_rls_fails_in_preview_and_production(login: LoginRole, message: str) -> None:
+    """DB-06: every transaction switches to app_api, but a query can switch back, so the login role counts."""
+    description = dataclasses.replace(SAFE, login=login)
+    result = service(description, restricted_login=True).run(PERSONAL, IntegrationKey.DATABASE, None)
+    assert (result.outcome, result.error_code) == (Outcome.FAILED, "unsafe_session")
+    assert message in result.summary
+    assert "pnpm db:api-login" in result.summary
+    assert "cannot skip" not in result.summary
+
+
+@pytest.mark.parametrize(("login", "message"), UNSAFE_LOGINS)
+def test_a_privileged_login_role_is_reported_but_allowed_in_local_development(login: LoginRole, message: str) -> None:
+    description = dataclasses.replace(SAFE, login=login)
+    result = service(description).run(PERSONAL, IntegrationKey.DATABASE, None)
+    assert result.outcome is Outcome.PASSED
+    assert message in result.summary
+    assert "local development only" in result.summary
+    assert "cannot skip" not in result.summary
 
 
 def test_organization_context_is_not_found() -> None:

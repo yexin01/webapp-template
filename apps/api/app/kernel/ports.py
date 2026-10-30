@@ -31,6 +31,35 @@ class AuditEntry:
 
 
 @dataclass(frozen=True, slots=True)
+class LoginRole:
+    """The role the connection logged in as (``session_user``), which no ``SET ROLE`` changes (DB-06, DEC-008)."""
+
+    superuser: bool = False
+    bypass_rls: bool = False
+    create_role: bool = False
+    # Member of a superuser or BYPASSRLS role, so it can switch into one.
+    privileged_membership: bool = False
+    # Tables in schema ``app`` it owns, or whose owner it is a member of.
+    owned_tables: tuple[str, ...] = ()
+
+    @property
+    def problems(self) -> tuple[str, ...]:
+        """Why a query that does not switch role could skip row-level security. Never names the role."""
+        found = []
+        if self.superuser:
+            found.append("the login role is a superuser")
+        if self.bypass_rls:
+            found.append("the login role has BYPASSRLS")
+        if self.create_role:
+            found.append("the login role can create roles")
+        if self.privileged_membership:
+            found.append("the login role is a member of a superuser or BYPASSRLS role")
+        if self.owned_tables:
+            found.append("the login role owns, or can act as the owner of, " + ", ".join(self.owned_tables))
+        return tuple(found)
+
+
+@dataclass(frozen=True, slots=True)
 class ConnectionDescription:
     """What the database reports about the current transaction, and whether row-level security binds it (DB-06)."""
 
@@ -45,6 +74,7 @@ class ConnectionDescription:
     unprotected_tables: tuple[str, ...]
     # Tables in schema ``app`` the role owns (or has its owner's privileges on).
     owned_tables: tuple[str, ...]
+    login: LoginRole = LoginRole()
 
 
 # ---------------------------------------------------------------------------

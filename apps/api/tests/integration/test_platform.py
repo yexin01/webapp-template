@@ -10,9 +10,12 @@ import logging
 import pkgutil
 import time
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+import psycopg
 import pytest
 from fastapi.routing import APIRoute
 from svix.webhooks import Webhook
@@ -470,8 +473,6 @@ def test_a_readiness_flood_holds_one_thread_and_liveness_stays_fast(make_harness
     """API-06: concurrent /ready calls share one database check per instance, so a flood of them
     (anonymous, during an outage) holds at most one thread, and /health never waits for a thread."""
     import threading
-    from collections.abc import Iterator
-    from contextlib import contextmanager
 
     import anyio
     import httpx
@@ -802,14 +803,47 @@ def test_concurrent_migration_runs_apply_each_migration_once(db: str, tmp_path: 
         superuser_query(db, "DELETE FROM public.app_schema_migrations WHERE version = '29991231000000'")
 
 
+SUPABASE_CLIENT_ROLES = ("anon", "authenticated", "service_role")
+LEDGER_WRITES = "SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER"
+
+
+@contextmanager
+def supabase_client_roles(url: str) -> Iterator[None]:
+    """Supabase's three client roles, created if the server lacks them and dropped afterwards if this made them.
+
+    Roles belong to the whole server, which other test sessions share, so a role that already exists is left alone.
+    """
+    made: list[str] = []
+    for role in SUPABASE_CLIENT_ROLES:
+        if not superuser_query(url, "SELECT 1 FROM pg_roles WHERE rolname = %s", (role,)):
+            try:
+                superuser_query(url, f"CREATE ROLE {role} NOLOGIN")
+                made.append(role)
+            except (psycopg.errors.DuplicateObject, psycopg.errors.UniqueViolation):
+                pass  # another session made it first
+    try:
+        yield
+    finally:
+        for role in made:
+            superuser_query(url, f"DROP OWNED BY {role}")
+            superuser_query(url, f"DROP ROLE IF EXISTS {role}")
+
+
 def test_the_migration_ledger_is_private(db: str) -> None:
-    """On Supabase, ``public`` is exposed through the Data API; the ledger must not be."""
+    """On Supabase, ``public`` is exposed through the Data API, and its tables start out granted to anon,
+    authenticated, and service_role (which also bypasses row-level security). The ledger must not be."""
     assert superuser_query(
         db, "SELECT relrowsecurity FROM pg_class WHERE oid = 'public.app_schema_migrations'::regclass"
     ) == [(True,)]
-    assert superuser_query(db, "SELECT has_table_privilege('app_api', 'public.app_schema_migrations', 'SELECT')") == [
-        (False,)
-    ]
+    with supabase_client_roles(db):
+        for role in SUPABASE_CLIENT_ROLES:  # what Supabase's default privileges give a new table in public
+            superuser_query(db, f"GRANT ALL ON public.app_schema_migrations TO {role}")
+        migrations.migrate(db)  # the ledger statements run on every migrate, so an existing ledger is fixed too
+        for role in ("app_api", "app_worker", *SUPABASE_CLIENT_ROLES):
+            privilege = f"SELECT has_table_privilege(%s, 'public.app_schema_migrations', '{LEDGER_WRITES}')"
+            assert superuser_query(db, privilege, (role,)) == [(False,)], role
+            read = "SELECT has_table_privilege(%s, 'public.app_schema_migrations', 'SELECT')"
+            assert superuser_query(db, read, (role,)) == [(False,)], role
 
 
 @pytest.mark.parametrize(

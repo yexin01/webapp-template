@@ -12,9 +12,40 @@ import psycopg
 from psycopg.rows import dict_row
 
 from app.kernel.events import StoredEvent
-from app.kernel.ports import ConnectionDescription
+from app.kernel.ports import ConnectionDescription, LoginRole
 
 _MAX_ERROR_LENGTH = 500
+
+# What the login role could do in a query that does not switch role. Reads catalogs every role can read.
+_LOGIN_ROLE_SQL = """
+SELECT s.rolsuper AS superuser, s.rolbypassrls AS bypass_rls, s.rolcreaterole AS create_role,
+  EXISTS (
+    SELECT 1 FROM pg_roles r
+    WHERE (r.rolsuper OR r.rolbypassrls) AND r.oid <> s.oid AND pg_has_role(s.oid, r.oid, 'MEMBER')
+  ) AS privileged_membership,
+  ARRAY(
+    SELECT c.relname::text FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'app' AND c.relkind IN ('r', 'p', 'v', 'm') AND pg_has_role(s.oid, c.relowner, 'MEMBER')
+    ORDER BY 1
+  ) AS owned_tables
+FROM pg_roles s WHERE s.rolname = session_user
+"""
+
+
+def describe_login_role(conn: psycopg.Connection) -> LoginRole:
+    """The role this connection logged in as, whatever role the transaction has switched to."""
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(_LOGIN_ROLE_SQL)
+        row = cur.fetchone()
+    if row is None:  # pragma: no cover - the login role is always in pg_roles
+        raise RuntimeError("login role description unavailable")
+    return LoginRole(
+        superuser=row["superuser"],
+        bypass_rls=row["bypass_rls"],
+        create_role=row["create_role"],
+        privileged_membership=row["privileged_membership"],
+        owned_tables=tuple(row["owned_tables"]),
+    )
 
 
 class PgKernelStore:
@@ -70,6 +101,7 @@ class PgKernelStore:
             bypass_rls=row["bypass_rls"],
             unprotected_tables=tuple(row["unprotected_tables"]),
             owned_tables=tuple(row["owned_tables"]),
+            login=describe_login_role(self._conn),
         )
 
     # -- Rate limits ------------------------------------------------------------

@@ -11,6 +11,7 @@ Nothing here is template code. Delete this folder once DEC-001 is resolved, toge
 - Every credential is generated for the run and is test-only: an RSA key pair for session tokens, a Stripe webhook signing secret, and a cron secret. They live in the work directory, never in the repository.
 - No provider is contacted. Billing and LLM are mocked, and the Clerk Backend API URL points at a closed loopback port.
 - The proof uses its own database (`app_proof`) on the local PostgreSQL from `pnpm db:up`, and its own Docker network and containers (`dec001-*`). They are removed at the end, as are the generated keys. The work directory keeps the export and the results.
+- The packaged runtime (`APP_ENV=preview`) logs in through PgBouncer as a role of its own, `dec001_login`: a member of `app_api` and `app_worker` like `app_login`, with a throwaway password. Preview refuses the schema owner as login role (DEC-008). The role is dropped at the end, and the developer's `app_login` is never touched. The local PgBouncer has no TLS, so the pooled URL says `sslmode=disable`; a non-local host otherwise gets `sslmode=require`.
 - `run.sh` deletes and recreates its work directory only if that directory carries the marker file the script itself wrote. It refuses to start if one of its ports is in use.
 - It tests the committed `HEAD`: after the export, every script and file comes from the export, not from the working tree.
 

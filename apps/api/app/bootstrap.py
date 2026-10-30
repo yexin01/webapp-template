@@ -26,9 +26,10 @@ from app.kernel.http.app import build_fastapi
 from app.kernel.http.request_scope import AfterResponseDispatch, note_recorded_event, request_transaction
 from app.kernel.http.routes import build_health_router, build_jobs_router
 from app.kernel.infrastructure.clock import SystemClock
-from app.kernel.infrastructure.config import AppEnv, Mode
+from app.kernel.infrastructure.config import AppEnv, Mode, requires_restricted_login_role
 from app.kernel.infrastructure.db import REQUEST_THREADS, Database, PgTransactions
 from app.kernel.infrastructure.integrations import describe_analytics, describe_database, describe_error_reporting
+from app.kernel.infrastructure.migrations import with_tls_default
 from app.kernel.infrastructure.observability import (
     NoopAnalytics,
     NoopErrorReporter,
@@ -80,7 +81,11 @@ class Container:
     def diagnostics(self) -> DiagnosticsModule:
         """Built from the probes of every module's contribution, so a module's probe cannot be left out."""
         probes = [
-            DatabaseProbe(describe_database(self.settings), self.kernel.store),
+            DatabaseProbe(
+                describe_database(self.settings),
+                self.kernel.store,
+                restricted_login=requires_restricted_login_role(self.settings.app_env),
+            ),
             *(probe for contribution in self.module_contributions() for probe in contribution.probes),
             AnalyticsProbe(describe_analytics(self.settings), self.kernel.analytics),
             ErrorReportingProbe(describe_error_reporting(self.settings), self.kernel.error_reporter),
@@ -209,13 +214,14 @@ def _database(settings: Settings) -> Database:
     if settings.database_url is None:  # pragma: no cover - validated in Settings
         raise RuntimeError("DATABASE_URL is required")
     return Database(
-        settings.database_url.get_secret_value(),
+        with_tls_default(settings.database_url.get_secret_value()),
         api_pool_size=settings.database_pool_max_size,
         worker_pool_size=settings.database_worker_pool_max_size,
         connect_timeout=settings.database_connect_timeout_seconds,
         statement_timeout_ms=settings.database_statement_timeout_ms,
         request_threads=REQUEST_THREADS,
         reserved_threads=reserved_request_threads(settings),
+        enforce_login_role=requires_restricted_login_role(settings.app_env),
     )
 
 

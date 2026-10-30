@@ -11,11 +11,16 @@ _DATABASE_ROLE = "app_api"
 
 class DatabaseProbe:
     """Confirms requests run as the non-privileged role, bound by row-level security on every
-    app table, with the tenant context applied (DB-06)."""
+    app table, with the tenant context applied (DB-06), and reports what the connection logged in as.
 
-    def __init__(self, info: IntegrationInfo, tx: Transactions[KernelStore]) -> None:
+    Every transaction switches to ``app_api``, but a query can switch back to the login role. In preview and
+    production (``restricted_login``) a login role that could skip row-level security fails the check; in local
+    development it is reported without failing it, because the local database logs in as a superuser."""
+
+    def __init__(self, info: IntegrationInfo, tx: Transactions[KernelStore], *, restricted_login: bool = False) -> None:
         self._info = info
         self._tx = tx
+        self._restricted_login = restricted_login
 
     @property
     def info(self) -> IntegrationInfo:
@@ -41,13 +46,26 @@ class DatabaseProbe:
             )
         if not conn.tenant_context_set:
             problems.append("the tenant context was not applied to the transaction")
+        login = conn.login.problems
+        if login and self._restricted_login:
+            problems.append(
+                "; ".join(login) + ", so a query that switches role skips row-level security "
+                "(log in as the app_login role: pnpm db:api-login, then use its URL as DATABASE_URL)"
+            )
         if problems:
             return Verdict(Outcome.FAILED, "Connected, but " + "; ".join(problems) + ".", "unsafe_session")
-        return Verdict(
-            Outcome.PASSED,
+        summary = (
             f"Connected to PostgreSQL {conn.server_version} as {conn.role}, with row-level security "
-            "enforced on every app table and the tenant context applied.",
+            "enforced on every app table and the tenant context applied."
         )
+        if login:
+            return Verdict(
+                Outcome.PASSED,
+                summary + " Caution: " + "; ".join(login) + ", so a query that switches role would skip it. "
+                "That is allowed in local development only; preview and production need the app_login role "
+                "(pnpm db:api-login).",
+            )
+        return Verdict(Outcome.PASSED, summary + " The login role cannot skip row-level security.")
 
 
 class AnalyticsProbe:

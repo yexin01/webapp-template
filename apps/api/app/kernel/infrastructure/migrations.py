@@ -20,9 +20,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import psycopg
-from psycopg.conninfo import conninfo_to_dict
+from psycopg import sql
+from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
 from app.kernel.infrastructure.config import REPO_ROOT
+
+APP_LOGIN_ROLE = "app_login"
+LOGIN_PASSWORD_MIN_LENGTH = 16
+# Supabase's shared pooler routes by "<role>.<project ref>", so the runtime login needs the same suffix.
+_POOLER_HOST_SUFFIX = ".pooler.supabase.com"
 
 LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "host.docker.internal"})
 _LOCAL_ADDRESSES = frozenset({"127.0.0.1", "::1"})
@@ -34,8 +40,10 @@ LOCAL_SOCKET_DIRECTORIES = frozenset(
 )
 
 # The ledger lives in ``public`` so it exists before the first migration. On
-# Supabase, ``public`` is exposed through the Data API with default grants, so
-# row-level security (with no policies) and revoked grants keep it private.
+# Supabase, ``public`` is exposed through the Data API, and new tables there
+# default to full grants for anon, authenticated, and service_role. Row-level
+# security (with no policies) keeps the first two out, but service_role
+# bypasses it, so only revoking the grants keeps the ledger private.
 _LEDGER_DDL = """
 CREATE TABLE IF NOT EXISTS public.app_schema_migrations (
   version    text PRIMARY KEY,
@@ -47,7 +55,7 @@ REVOKE ALL ON public.app_schema_migrations FROM PUBLIC;
 DO $$
 DECLARE r text;
 BEGIN
-  FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
+  FOREACH r IN ARRAY ARRAY['anon', 'authenticated', 'service_role'] LOOP
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
       EXECUTE format('REVOKE ALL ON public.app_schema_migrations FROM %I', r);
     END IF;
@@ -101,9 +109,35 @@ def _is_local_socket(host: str) -> bool:
     return host.startswith("/") and os.path.normpath(host) in LOCAL_SOCKET_DIRECTORIES
 
 
+def with_tls_default(url: str) -> str:
+    """``url`` with ``sslmode=require`` added when it names a non-local server and nothing says anything about TLS.
+
+    libpq's default, ``prefer``, goes on without encryption when the server (or someone in between) says it has
+    none, and then sends the password. Anything stated explicitly is kept: the URL's ``sslmode`` (``verify-full``
+    with ``sslrootcert`` is the setting that also checks who answers), ``requiressl``, ``sslrootcert=system``, the
+    ``PGSSLMODE`` and ``PGREQUIRESSL`` variables, and a ``service`` entry, whose file this cannot read.
+    """
+    try:
+        params = conninfo_to_dict(url)
+    except psycopg.Error:
+        return url
+    stated = (
+        "sslmode" in params
+        or "requiressl" in params
+        or "service" in params
+        or params.get("sslrootcert") == "system"
+        or any(os.environ.get(name) for name in ("PGSSLMODE", "PGREQUIRESSL", "PGSERVICE"))
+    )
+    if stated or is_local_database(url):
+        return url
+    return make_conninfo(url, sslmode="require")
+
+
 def _connect(url: str, *, autocommit: bool = False) -> psycopg.Connection:
     # Transaction-mode poolers do not support server-side prepared statements.
-    return psycopg.connect(url, autocommit=autocommit, prepare_threshold=None, connect_timeout=_CONNECT_TIMEOUT_SECONDS)
+    return psycopg.connect(
+        with_tls_default(url), autocommit=autocommit, prepare_threshold=None, connect_timeout=_CONNECT_TIMEOUT_SECONDS
+    )
 
 
 def require_local_database(url: str, operation: str) -> None:
@@ -189,3 +223,44 @@ def reset(url: str) -> None:
     with _connect(url, autocommit=True) as conn:
         conn.execute("DROP SCHEMA IF EXISTS app CASCADE")
         conn.execute("DROP TABLE IF EXISTS public.app_schema_migrations")
+
+
+def enable_api_login(url: str, password: str, role: str = APP_LOGIN_ROLE) -> None:
+    """Let ``role`` log in with ``password``, which only a SCRAM-SHA-256 verifier computed here leaves this process.
+
+    The role comes from the migrations, without LOGIN or a password. It is refused here if it has an attribute
+    that would let a query skip row-level security, as the migrations refuse it. Run it again to rotate the password.
+    """
+    if len(password) < LOGIN_PASSWORD_MIN_LENGTH:
+        raise MigrationError(f"The password for {role} must be at least {LOGIN_PASSWORD_MIN_LENGTH} characters.")
+    with _connect(url) as conn:
+        row = conn.execute(
+            "SELECT rolsuper, rolbypassrls, rolcreaterole, rolreplication, rolinherit FROM pg_roles WHERE rolname = %s",
+            (role,),
+        ).fetchone()
+        if row is None:
+            raise MigrationError(f"The role {role} does not exist. Apply the migrations first: pnpm db:migrate.")
+        unsafe = [
+            name
+            for name, present in zip(
+                ("SUPERUSER", "BYPASSRLS", "CREATEROLE", "REPLICATION", "INHERIT"), row, strict=True
+            )
+            if present
+        ]
+        if unsafe:
+            raise MigrationError(
+                f"Refusing to enable {role}: it has {', '.join(unsafe)}. Run the migrations to see the fix."
+            )
+        verifier = conn.pgconn.encrypt_password(password.encode(), role.encode(), b"scram-sha-256").decode()
+        conn.execute(sql.SQL("ALTER ROLE {} LOGIN PASSWORD {}").format(sql.Identifier(role), sql.Literal(verifier)))
+
+
+def runtime_url_template(url: str, role: str = APP_LOGIN_ROLE) -> str | None:
+    """Where the runtime ``DATABASE_URL`` goes: ``url``'s server and database, ``role``, and no password."""
+    params = conninfo_to_dict(url)
+    host = str(params.get("host") or "")
+    if not host or "," in host or host.startswith("/"):
+        return None
+    ref = str(params.get("user") or "").partition(".")[2] if host.endswith(_POOLER_HOST_SUFFIX) else ""
+    port = f":{params['port']}" if params.get("port") else ""
+    return f"postgresql://{role}{'.' + ref if ref else ''}:<password>@{host}{port}/{params.get('dbname') or ''}"

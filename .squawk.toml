@@ -1,0 +1,31 @@
+# Migration lint (MIG-03): `pnpm api:lint` runs squawk over supabase/migrations.
+# Per statement, `-- squawk-ignore <rule>` on the line before it allows a reviewed exception.
+
+pg_version = "17.6"
+
+# The runner (app/kernel/infrastructure/migrations.py) wraps every file in one transaction.
+assume_in_transaction = true
+
+excluded_rules = [
+  # The runner sets lock_timeout in each migration's transaction; statement_timeout stays unset on purpose, because
+  # index builds and backfills on large tables are expected to run long.
+  "require-lock-timeout",
+  "require-statement-timeout",
+  # CREATE INDEX CONCURRENTLY cannot run inside a transaction block, so the runner cannot apply it. Limitation: on a
+  # busy table a plain CREATE INDEX blocks writes for the whole build (lock_timeout bounds only the wait for the
+  # lock). Build such an index by hand with CONCURRENTLY first, then add the migration with IF NOT EXISTS.
+  "require-concurrent-index-creation",
+]
+
+# Applied and checksummed (MIG-01): editing one is refused, so these cannot take `squawk-ignore` comments. They ran
+# on empty tables when the template was adopted.
+excluded_paths = [
+  "*20261014000001_core_schema.sql",
+  "*20261014000002_outbox.sql",
+  "*20261014000003_billing_reconciliation.sql",
+  "*20261014000004_membership_verification.sql",
+  "*20261015000003_outbox_lease_index.sql",
+  "*20261015000004_projects_policy_keyset.sql",
+  "*20261015000005_membership_reconcile_rotation.sql",
+  "*20261015000006_assert_runtime_roles.sql",
+]
