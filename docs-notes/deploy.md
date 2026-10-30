@@ -52,8 +52,8 @@ Sources: vercel.com/docs/services (updated 2026-08-10), /docs/services/config-re
 
 - **Beta, all plans.** "Services are available in Beta on all plans." The earlier `experimentalServices` model is documented
   separately and "replaced for new projects" by `services`. **`experimentalServicesV2` in the build output
-  (`.vercel/output/config.json`) is the CLI's name for the same thing**; it is not a separate maturity tier (CLI 59.17.0
-  rejects mixing the two keys; 65.2.0 still prints the V2 name). The DEC-001 evidence record recommended B only "provided Services
+  (`.vercel/output/config.json`) is the CLI's name for the same thing**; it is not a separate maturity tier (the briefing's
+  verifier found that CLI 59.17.0 rejects mixing the two keys; I did not re-test that; 65.2.0 still prints the V2 name in the output). The DEC-001 evidence record recommended B only "provided Services
   is generally available": that condition is **not** met, so adopting B accepts Beta.
 - **Schema used.** `services.<name>.root` (required, relative to `vercel.json`), `entrypoint` (`index.py`; the FastAPI app is
   `app` in it and is found without a framework key), `functions` per service. Public routing is top level: `rewrites` with
@@ -127,8 +127,9 @@ Vercel it must say that every project variable reaches the web process. Mitigati
 4. Environment variables (Production and Preview separately, sandbox keys in Preview): everything the API and web read, from
    `.env.example`, **except** `MIGRATION_DATABASE_URL` and `API_DB_PASSWORD`. `DATABASE_URL` is the `app_login` transaction
    pooler string (`docs-notes/db.md`, steps 1-4). `APP_ENV=preview` / `production` explicitly (the API refuses a bundle without it).
-5. Deployment Protection: Standard Protection covers previews; under Services there is one URL per deployment, so the
-   web-to-API 401 problem of two projects does not arise. Production access and a protection-bypass secret for automation
+5. Deployment Protection: Standard Protection covers previews. Under Services one deployment has one URL and one public
+   surface, so the two-project problem of a web preview calling a protected API preview should not arise (expected from the
+   documentation, **NOT VERIFIED**). Production access and a protection-bypass secret for automation
    (`VERCEL_AUTOMATION_BYPASS_SECRET`, used by `proofs/dec-001/proof.py probe`) are the owner's decisions.
 6. Authorize the first **preview** deployment (with sandbox credentials) and then run the probe in `proofs/dec-001/README.md`.
 
@@ -261,6 +262,10 @@ routes carry `"middlewarePath": "/_middleware"` for the matcher's paths and for 
 |---|---|
 | `pnpm test:vercel-build` (CLI 65.2.0, dev Python environment), first run | PASS: `vercel build` ok, bundle scan compared 11 values and found none, 13 checks passed (74.5 MiB, 23 native libraries, all linux x86-64; services web and api; crons = registry; region iad1). |
 | Same, second run with `VERCEL_BUILD_PYTHON` = the production-only environment (as CI runs it) | PASS, the same 13 checks (the check script needs only the production dependencies) |
+| Same, third run after the last script edit, with a fake `SENTRY_AUTH_TOKEN` in the caller's environment | PASS, 13 checks (the token is removed from the build environment) |
+| Full API suite: `TEST_DATABASE_URL=...54360/app uv run pytest -q -p no:cacheprovider` | **1298 passed, 5 skipped** (the Stripe sandbox suite, opt-in), 397 s. `ruff check`/`ruff format --check` on `app tests index.py ../../perf`, `lint-imports`, `mypy`: clean |
+| `pnpm test:new-module` (with `TEST_DATABASE_URL` set to the shared test server) | passed |
+| `pnpm test:init-template` | FAILS on `original database port remains in docs-notes/db.md`: **pre-existing** (the `db` package's notes contain the original port), nothing from this branch is reported |
 | Mutation: the `excludeFiles` removed, `vercel build`, `check_vercel_build.py check` | FAIL `no_test_files_or_caches`: 71 files from `tests/` in the bundle. Restored. |
 | `python scripts/check_vercel_build.py self-test` | passed, 11 planted defects caught |
 | Production-only `uv sync --frozen --no-dev --no-install-project`, then `python -I -c 'import index, app.cli'` (CI step) | imports ok |
@@ -275,7 +280,8 @@ routes carry `"middlewarePath": "/_middleware"` for the matcher's paths and for 
 | gitleaks `dir` on a generated planted AWS-style key | exit 1 (flagged); `sk_live_` pattern still flagged, `pk_live_` allowed |
 | Hook in a scratch repository, no host gitleaks, Docker running | clean commit passes (`gitleaks stdin` in the pinned image, no network); a planted key is refused (value redacted); `docker` present but stopped, and neither present: each refuses with its own message |
 | `docker buildx imagetools inspect zricethezav/gitleaks:v8.30.1` | index digest `sha256:c00b6bd0...bbb7f` (linux/amd64 and linux/arm64) |
+| The migration job's commands in a fresh `git archive` copy with no `node_modules`: `uv sync --frozen --no-dev`, then `UV_NO_DEV=1 MIGRATION_DATABASE_URL=<scratch database on the shared test server> pnpm db:migrate --allow-remote` | applied all migrations (`pnpm run` needs no install; `uv run` does not re-sync the dev group). Scratch database dropped. The workflow itself was not run on GitHub. |
 | `bash -n proofs/dec-001/run.sh` | syntax ok. **The full proof was NOT run** (it needs Docker Desktop, the developer's `pnpm db:up` database, and ten minutes). |
 
-Not run: the full API suite (no API code changed; only tests and `index.py`'s docstring), `pnpm test:e2e`, GitHub Actions
+Not run: `pnpm test:e2e`, `pnpm audit --dev`, GitHub Actions
 (workflows are validated as YAML and by the tests above, not by `actionlint` or on GitHub), any Vercel, GitHub or Supabase call.
