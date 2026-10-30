@@ -88,12 +88,14 @@ function canaries() {
 
 function buildEnvironment() {
   const env = { ...process.env };
-  // The CLI reads these from the environment whatever -Q says.
-  for (const name of ["VERCEL_TOKEN", "VERCEL_ORG_ID", "VERCEL_PROJECT_ID"]) delete env[name];
+  // The CLI reads the first three from the environment whatever -Q says. A real SENTRY_AUTH_TOKEN would upload
+  // source maps, and CLERK_JWT_KEY must be a PEM public key: neither is set, so a developer's shell cannot reach out.
+  for (const name of ["VERCEL_TOKEN", "VERCEL_ORG_ID", "VERCEL_PROJECT_ID", "SENTRY_AUTH_TOKEN", "CLERK_JWT_KEY"]) {
+    delete env[name];
+  }
   return {
     ...env,
     ...canaries(),
-    // CLERK_JWT_KEY (a public key) and SENTRY_AUTH_TOKEN (turns on source map upload) stay unset.
     APP_ENV: "preview",
     NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:
       env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ||
