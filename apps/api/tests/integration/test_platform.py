@@ -4,8 +4,10 @@ telemetry leakage, identity webhooks, LLM limits, and migration safety."""
 from __future__ import annotations
 
 import base64
+import importlib
 import json
 import logging
+import pkgutil
 import time
 import uuid
 from pathlib import Path
@@ -15,6 +17,9 @@ import pytest
 from fastapi.routing import APIRoute
 from svix.webhooks import Webhook
 
+import app.modules
+from app.kernel.authorization import Access, Permission
+from app.kernel.http.auth import Requires
 from app.kernel.infrastructure import migrations
 from app.kernel.infrastructure.observability import JsonFormatter
 from app.kernel.tenancy import Role
@@ -112,6 +117,108 @@ def test_the_route_manifest_reports_a_route_that_skips_authentication(harness: H
     assert unprotected_routes(app, harness.container.identity.auth.authenticate) == [
         ("GET", "/api/v1/manifest-probe/header-only"),
         ("GET", "/api/v1/manifest-probe/hidden"),
+    ]
+
+
+def _declarations(dependant: Any) -> list[Permission | Access]:
+    found: list[Permission | Access] = []
+    for dependency in dependant.dependencies:
+        if isinstance(dependency.call, Requires):
+            found.append(dependency.call.requirement)
+        found += _declarations(dependency)
+    return found
+
+
+def registered_permissions() -> set[Permission]:
+    """Every permission a module declares in its domain."""
+    found = set()
+    for module in pkgutil.iter_modules(app.modules.__path__):
+        domain = importlib.import_module(f"app.modules.{module.name}.domain")
+        found |= {value for value in vars(domain).values() if isinstance(value, Permission)}
+    return found
+
+
+def authorization_problems(app: Any) -> list[str]:
+    """Routes that do not declare, exactly once, what authorizes them (TEN-02).
+
+    The declaration is ``requires(...)`` in the route's ``dependencies``: a permission a module
+    registers in its domain, or an ``Access`` kind for a route no permission governs. An access kind
+    must fit the path: ``ANY_MEMBER`` names an organization in it, the others do not.
+    """
+    registered = registered_permissions()
+    problems = []
+    allowlisted = PUBLIC_ROUTES | SECRET_AUTHENTICATED_ROUTES
+    for method, path, route, _ in _api_routes(list(app.routes)):
+        if (method, path) in allowlisted:
+            continue
+        declared = _declarations(route.dependant)
+        if len(declared) != 1:
+            problems.append(f"{method} {path}: declares {len(declared)} authorization requirements, not one")
+            continue
+        [requirement] = declared
+        if isinstance(requirement, Permission):
+            if requirement not in registered:
+                problems.append(f"{method} {path}: {requirement.name} is not a permission a module registers")
+        elif (requirement is Access.ANY_MEMBER) != ("{org_id}" in path):
+            problems.append(f"{method} {path}: {requirement.value!r} does not fit the path")
+    return sorted(problems)
+
+
+def test_route_manifest_every_route_declares_what_authorizes_it(harness: Harness) -> None:
+    """TEN-02: not only authentication. Each route says which permission, or which kind of access,
+    it needs, and a permission it names is evaluated while the route runs (see test_authorization)."""
+    app = harness.client.app
+    assert authorization_problems(app) == []
+    declared = [d for _, _, route, _ in _api_routes(list(app.routes)) for d in _declarations(route.dependant)]  # type: ignore[attr-defined]
+    assert {Access.OWN_ACCOUNT, Access.ANY_MEMBER, Access.OPERATOR} <= set(declared)
+    assert len({d for d in declared if isinstance(d, Permission)}) >= 5
+
+
+def test_the_route_manifest_reports_a_route_without_a_valid_authorization_declaration(harness: Harness) -> None:
+    """A route that authenticates, resolves its context, and even calls ``authorize``, but declares nothing
+    for the manifest, declares two things, declares a permission no module registers, or an access kind
+    that does not fit its path."""
+    from fastapi import APIRouter, Depends
+
+    from app.kernel.http.auth import requires
+    from app.modules.projects.domain import PROJECT_READ
+
+    auth = harness.container.identity.auth
+    unregistered = Permission("thing:do", personal=True)
+    router = APIRouter(dependencies=[Depends(auth.authenticate)])
+
+    @router.get("/manifest-probe/none")
+    def none() -> dict[str, str]:
+        return {}
+
+    @router.get("/manifest-probe/two", dependencies=[requires(PROJECT_READ), requires(Access.OWN_ACCOUNT)])
+    def two() -> dict[str, str]:
+        return {}
+
+    @router.get("/manifest-probe/unregistered", dependencies=[requires(unregistered)])
+    def unknown_permission() -> dict[str, str]:
+        return {}
+
+    @router.get("/manifest-probe/orgs/{org_id}/own", dependencies=[requires(Access.OWN_ACCOUNT)])
+    def own_in_org(org_id: str) -> dict[str, str]:
+        return {}
+
+    @router.get("/manifest-probe/member", dependencies=[requires(Access.ANY_MEMBER)])
+    def member_without_org() -> dict[str, str]:
+        return {}
+
+    @router.get("/manifest-probe/ok", dependencies=[requires(PROJECT_READ)])
+    def declared_ok() -> dict[str, str]:
+        return {}
+
+    app = harness.client.app
+    app.include_router(router, prefix="/api/v1")  # type: ignore[attr-defined]
+    assert authorization_problems(app) == [
+        "GET /api/v1/manifest-probe/member: 'any member' does not fit the path",
+        "GET /api/v1/manifest-probe/none: declares 0 authorization requirements, not one",
+        "GET /api/v1/manifest-probe/orgs/{org_id}/own: 'own account' does not fit the path",
+        "GET /api/v1/manifest-probe/two: declares 2 authorization requirements, not one",
+        "GET /api/v1/manifest-probe/unregistered: thing:do is not a permission a module registers",
     ]
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 import pytest
 
@@ -87,3 +88,74 @@ def test_valid_org_ids(value: str) -> None:
 @pytest.mark.parametrize("value", ["", "org_", "org_../x", "user_abc", "org_" + "a" * 65, "org_abc'--"])
 def test_invalid_org_ids(value: str) -> None:
     assert not is_valid_external_org_id(value)
+
+
+# -- A route's declared permission must be evaluated (TEN-02) ------------------------------
+
+
+def declared_app(handler: Any, requirement: Any) -> Any:
+    from fastapi import APIRouter
+    from fastapi.testclient import TestClient
+
+    from app.kernel.http.app import build_fastapi
+    from app.kernel.http.auth import requires
+    from tests.conftest import make_settings
+
+    router = APIRouter()
+    router.get("/probe", dependencies=[requires(requirement)])(handler)
+    app = build_fastapi(settings=make_settings(), title="t", routers=[router], worker_threads=4)
+    return TestClient(app, raise_server_exceptions=False)
+
+
+def test_a_route_that_evaluates_its_declared_permission_is_served() -> None:
+    def handler() -> dict[str, str]:
+        authorize(personal(), PROJECT_READ)
+        return {"data": "ok"}
+
+    assert declared_app(handler, PROJECT_READ).get("/api/v1/probe").status_code == 200
+
+
+def test_a_route_that_never_evaluates_its_declared_permission_fails_closed() -> None:
+    """A forgotten ``authorize`` would serve every member; the route answers 500 instead."""
+
+    def handler() -> dict[str, str]:
+        return {"data": "served to every member"}
+
+    response = declared_app(handler, PROJECT_DELETE).get("/api/v1/probe")
+    assert response.status_code == 500
+    assert response.json()["code"] == "INTERNAL_ERROR"
+    assert "served" not in response.text
+
+
+def test_a_route_that_evaluates_another_permission_fails_closed() -> None:
+    def handler() -> dict[str, str]:
+        authorize(personal(), PROJECT_READ)
+        return {}
+
+    assert declared_app(handler, PROJECT_DELETE).get("/api/v1/probe").status_code == 500
+
+
+def test_a_refusal_is_not_turned_into_a_500() -> None:
+    def handler() -> dict[str, str]:
+        raise ForbiddenError()
+
+    assert declared_app(handler, PROJECT_DELETE).get("/api/v1/probe").status_code == 403
+
+
+def test_a_route_with_an_access_kind_evaluates_nothing() -> None:
+    from app.kernel.authorization import Access
+
+    def handler() -> dict[str, str]:
+        return {}
+
+    assert declared_app(handler, Access.OWN_ACCOUNT).get("/api/v1/probe").status_code == 200
+
+
+def test_evaluations_are_recorded_only_inside_a_route() -> None:
+    from app.kernel.authorization import recording_evaluations
+
+    assert is_allowed(personal(), PROJECT_READ)  # outside any recording: nothing to keep
+    with recording_evaluations() as seen:
+        is_allowed(personal(), PROJECT_READ)
+        authorize(org(Role.ADMIN), PROJECT_DELETE)
+    assert seen == {"project:read", "project:delete"}

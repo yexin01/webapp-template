@@ -13,12 +13,13 @@ from fastapi import APIRouter, Depends, Header, Request
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
+from app.kernel.authorization import Access
 from app.kernel.errors import DependencyUnavailableError
-from app.kernel.http.auth import AuthDeps
+from app.kernel.http.auth import AuthDeps, requires
 from app.kernel.http.schemas import StrictInput, WebhookAck, errors
 from app.kernel.ports import Clock
 from app.kernel.tenancy import TenantContext
-from app.modules.billing.domain import BillingState, Plan, PlanKey
+from app.modules.billing.domain import BILLING_MANAGE, PRO_FEATURE_USE, BillingState, Plan, PlanKey
 from app.modules.billing.service import BillingService
 
 ERRORS = errors(401, 403, 409, 429, 503)
@@ -58,15 +59,28 @@ def build_read_router(billing: BillingService, clock: Clock, auth: AuthDeps, req
     Personal = Annotated[TenantContext, Depends(auth.personal)]
     Organization = Annotated[TenantContext, Depends(auth.organization)]
 
-    @router.get("/entitlement", response_model=Entitlement, tags=["account"])
+    @router.get(
+        "/entitlement", response_model=Entitlement, tags=["account"], dependencies=[requires(Access.OWN_ACCOUNT)]
+    )
     def personal_entitlement(ctx: Personal) -> Entitlement:
         return Entitlement(plan=billing.entitlement(ctx).plan, context="personal")
 
-    @router.get("/orgs/{org_id}/entitlement", response_model=Entitlement, tags=["account"])
+    @router.get(
+        "/orgs/{org_id}/entitlement",
+        response_model=Entitlement,
+        tags=["account"],
+        dependencies=[requires(Access.ANY_MEMBER)],
+    )
     def organization_entitlement(ctx: Organization) -> Entitlement:
         return Entitlement(plan=billing.entitlement(ctx).plan, context="organization")
 
-    @router.get("/billing/status", response_model=BillingStatus, responses=ERRORS, tags=["billing"])
+    @router.get(
+        "/billing/status",
+        response_model=BillingStatus,
+        responses=ERRORS,
+        tags=["billing"],
+        dependencies=[requires(BILLING_MANAGE)],
+    )
     def billing_status(ctx: Personal) -> BillingStatus:
         summary = billing.summary(ctx)
         return BillingStatus(
@@ -78,12 +92,24 @@ def build_read_router(billing: BillingService, clock: Clock, auth: AuthDeps, req
             available_plans=[k for k in (PlanKey.PRO_MONTHLY, PlanKey.PRO_YEARLY) if billing.has_price(k)],
         )
 
-    @router.get("/pro/insight", response_model=ProInsight, responses=ERRORS, tags=["billing"])
+    @router.get(
+        "/pro/insight",
+        response_model=ProInsight,
+        responses=ERRORS,
+        tags=["billing"],
+        dependencies=[requires(PRO_FEATURE_USE)],
+    )
     def pro_insight(ctx: Personal) -> ProInsight:
         billing.require_pro(ctx)
         return ProInsight(message="This content is only available on the Pro plan.", generated_at=clock.now())
 
-    @router.get("/orgs/{org_id}/pro/insight", response_model=ProInsight, responses=ERRORS, tags=["billing"])
+    @router.get(
+        "/orgs/{org_id}/pro/insight",
+        response_model=ProInsight,
+        responses=ERRORS,
+        tags=["billing"],
+        dependencies=[requires(PRO_FEATURE_USE)],
+    )
     def org_pro_insight(ctx: Organization) -> ProInsight:
         # The caller's own subscription decides, as in the personal context (DEC-002, ADR-0002).
         billing.require_pro(ctx)
@@ -97,7 +123,9 @@ def build_action_router(billing: BillingService, auth: AuthDeps) -> APIRouter:
     router = APIRouter(tags=["billing"])
     Personal = Annotated[TenantContext, Depends(auth.personal)]
 
-    @router.post("/billing/checkout", response_model=Redirect, responses=ERRORS)
+    @router.post(
+        "/billing/checkout", response_model=Redirect, responses=ERRORS, dependencies=[requires(BILLING_MANAGE)]
+    )
     def start_checkout(
         body: CheckoutRequest,
         ctx: Personal,
@@ -105,7 +133,7 @@ def build_action_router(billing: BillingService, auth: AuthDeps) -> APIRouter:
     ) -> Redirect:
         return Redirect(url=billing.start_checkout(ctx, PlanKey(body.plan), idempotency_key))
 
-    @router.post("/billing/portal", response_model=Redirect, responses=ERRORS)
+    @router.post("/billing/portal", response_model=Redirect, responses=ERRORS, dependencies=[requires(BILLING_MANAGE)])
     def open_portal(ctx: Personal) -> Redirect:
         return Redirect(url=billing.open_portal(ctx))
 

@@ -12,9 +12,10 @@ from fastapi import APIRouter, Depends, Path, Request
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
+from app.kernel.authorization import Access
 from app.kernel.errors import AuthenticationError, ForbiddenError
 from app.kernel.http.app import bearer_token
-from app.kernel.http.auth import AuthDeps
+from app.kernel.http.auth import AuthDeps, requires
 from app.kernel.http.schemas import WebhookAck, errors
 from app.kernel.tenancy import TenantContext, VerifiedIdentity
 from app.modules.identity.ports import IdentityVerifier
@@ -71,7 +72,7 @@ def build_account_router(auth: AuthDeps, request_transaction: Any) -> APIRouter:
     )
     Personal = Annotated[TenantContext, Depends(auth.personal)]
 
-    @router.get("/me", response_model=Me)
+    @router.get("/me", response_model=Me, dependencies=[requires(Access.OWN_ACCOUNT)])
     def me(ctx: Personal) -> Me:
         return Me(user_id=ctx.user_id)
 

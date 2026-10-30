@@ -10,12 +10,12 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query, Response
 from pydantic import BaseModel, Field
 
-from app.kernel.http.auth import AuthDeps
+from app.kernel.http.auth import AuthDeps, requires
 from app.kernel.http.schemas import StrictInput, errors
 from app.kernel.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, decode_cursor, encode_cursor
 from app.kernel.request_context import request_id_var
 from app.kernel.tenancy import TenantContext
-from app.modules.projects.domain import MAX_NAME_LENGTH
+from app.modules.projects.domain import MAX_NAME_LENGTH, PROJECT_CREATE, PROJECT_DELETE, PROJECT_READ
 from app.modules.projects.domain import Project as ProjectRecord
 from app.modules.projects.service import ProjectService
 
@@ -66,28 +66,43 @@ def build_router(projects: ProjectService, auth: AuthDeps, request_transaction: 
             next_cursor=encode_cursor(last.created_at, last.id) if last else None,
         )
 
-    @router.get("/projects", response_model=ProjectPage, responses=ERRORS)
+    @router.get("/projects", response_model=ProjectPage, responses=ERRORS, dependencies=[requires(PROJECT_READ)])
     def list_personal(ctx: Personal, limit: Limit = DEFAULT_PAGE_SIZE, cursor: Cursor = None) -> ProjectPage:
         return page(ctx, limit, cursor)
 
-    @router.post("/projects", response_model=Project, status_code=201, responses=ERRORS)
+    @router.post(
+        "/projects", response_model=Project, status_code=201, responses=ERRORS, dependencies=[requires(PROJECT_CREATE)]
+    )
     def create_personal(body: ProjectCreate, ctx: Personal) -> Project:
         return Project.from_record(projects.create(ctx, body.name))
 
-    @router.delete("/projects/{project_id}", status_code=204, responses=ERRORS)
+    @router.delete("/projects/{project_id}", status_code=204, responses=ERRORS, dependencies=[requires(PROJECT_DELETE)])
     def delete_personal(project_id: UUID, ctx: Personal) -> Response:
         projects.delete(ctx, project_id, request_id_var.get())
         return Response(status_code=204)
 
-    @router.get("/orgs/{org_id}/projects", response_model=ProjectPage, responses=ERRORS)
+    @router.get(
+        "/orgs/{org_id}/projects", response_model=ProjectPage, responses=ERRORS, dependencies=[requires(PROJECT_READ)]
+    )
     def list_org(ctx: Organization, limit: Limit = DEFAULT_PAGE_SIZE, cursor: Cursor = None) -> ProjectPage:
         return page(ctx, limit, cursor)
 
-    @router.post("/orgs/{org_id}/projects", response_model=Project, status_code=201, responses=ERRORS)
+    @router.post(
+        "/orgs/{org_id}/projects",
+        response_model=Project,
+        status_code=201,
+        responses=ERRORS,
+        dependencies=[requires(PROJECT_CREATE)],
+    )
     def create_org(body: ProjectCreate, ctx: Organization) -> Project:
         return Project.from_record(projects.create(ctx, body.name))
 
-    @router.delete("/orgs/{org_id}/projects/{project_id}", status_code=204, responses=ERRORS)
+    @router.delete(
+        "/orgs/{org_id}/projects/{project_id}",
+        status_code=204,
+        responses=ERRORS,
+        dependencies=[requires(PROJECT_DELETE)],
+    )
     def delete_org(project_id: UUID, ctx: Organization) -> Response:
         projects.delete(ctx, project_id, request_id_var.get())
         return Response(status_code=204)
