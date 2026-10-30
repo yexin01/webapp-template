@@ -10,12 +10,17 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query, Response
 from pydantic import BaseModel, Field
 
-from app.kernel.http.auth import AuthDeps
+from app.kernel.http.auth import AuthDeps, requires
 from app.kernel.http.schemas import StrictInput, errors
 from app.kernel.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, decode_cursor, encode_cursor
 from app.kernel.request_context import request_id_var
 from app.kernel.tenancy import TenantContext
-from app.modules.__module__.domain import MAX_NAME_LENGTH
+from app.modules.__module__.domain import (
+    __ENTITY___CREATE,
+    __ENTITY___DELETE,
+    __ENTITY___READ,
+    MAX_NAME_LENGTH,
+)
 from app.modules.__module__.domain import __Entity__ as __Entity__Record
 from app.modules.__module__.service import __Module__Service
 
@@ -67,28 +72,54 @@ def build_router(service: __Module__Service, auth: AuthDeps, request_transaction
             next_cursor=encode_cursor(last.created_at, last.id) if last else None,
         )
 
-    @router.get("/__path__", response_model=__Entity__Page, responses=ERRORS)
+    @router.get(
+        "/__path__", response_model=__Entity__Page, responses=ERRORS, dependencies=[requires(__ENTITY___READ)]
+    )
     def list___module___personal(ctx: Personal, limit: Limit = DEFAULT_PAGE_SIZE, cursor: Cursor = None) -> __Entity__Page:
         return page(ctx, limit, cursor)
 
-    @router.post("/__path__", response_model=__Entity__, status_code=201, responses=ERRORS)
+    @router.post(
+        "/__path__",
+        response_model=__Entity__,
+        status_code=201,
+        responses=ERRORS,
+        dependencies=[requires(__ENTITY___CREATE)],
+    )
     def create___entity___personal(body: __Entity__Create, ctx: Personal) -> __Entity__:
         return __Entity__.from_record(service.create(ctx, body.name))
 
-    @router.delete("/__path__/{item_id}", status_code=204, responses=ERRORS)
+    @router.delete(
+        "/__path__/{item_id}", status_code=204, responses=ERRORS, dependencies=[requires(__ENTITY___DELETE)]
+    )
     def delete___entity___personal(item_id: UUID, ctx: Personal) -> Response:
         service.delete(ctx, item_id, request_id_var.get())
         return Response(status_code=204)
 
-    @router.get("/orgs/{org_id}/__path__", response_model=__Entity__Page, responses=ERRORS)
+    @router.get(
+        "/orgs/{org_id}/__path__",
+        response_model=__Entity__Page,
+        responses=ERRORS,
+        dependencies=[requires(__ENTITY___READ)],
+    )
     def list___module___org(ctx: Organization, limit: Limit = DEFAULT_PAGE_SIZE, cursor: Cursor = None) -> __Entity__Page:
         return page(ctx, limit, cursor)
 
-    @router.post("/orgs/{org_id}/__path__", response_model=__Entity__, status_code=201, responses=ERRORS)
+    @router.post(
+        "/orgs/{org_id}/__path__",
+        response_model=__Entity__,
+        status_code=201,
+        responses=ERRORS,
+        dependencies=[requires(__ENTITY___CREATE)],
+    )
     def create___entity___org(body: __Entity__Create, ctx: Organization) -> __Entity__:
         return __Entity__.from_record(service.create(ctx, body.name))
 
-    @router.delete("/orgs/{org_id}/__path__/{item_id}", status_code=204, responses=ERRORS)
+    @router.delete(
+        "/orgs/{org_id}/__path__/{item_id}",
+        status_code=204,
+        responses=ERRORS,
+        dependencies=[requires(__ENTITY___DELETE)],
+    )
     def delete___entity___org(item_id: UUID, ctx: Organization) -> Response:
         service.delete(ctx, item_id, request_id_var.get())
         return Response(status_code=204)

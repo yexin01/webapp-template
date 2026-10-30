@@ -12,8 +12,9 @@ from typing import Annotated, Literal, Self
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
+from app.kernel.authorization import Access
 from app.kernel.diagnostics import CheckResult, IntegrationInfo, IntegrationKey, IntegrationMode, Outcome
-from app.kernel.http.auth import AuthDeps
+from app.kernel.http.auth import AuthDeps, requires
 from app.kernel.http.schemas import errors
 from app.kernel.request_context import request_id_var
 from app.kernel.tenancy import TenantContext
@@ -66,14 +67,24 @@ def build_router(diagnostics: DiagnosticsService, environment: Environment, auth
     Personal = Annotated[TenantContext, Depends(auth.personal)]
     responses = errors(401, 404, 429)
 
-    @router.get("/diagnostics/integrations", response_model=IntegrationsReport, responses=responses)
+    @router.get(
+        "/diagnostics/integrations",
+        response_model=IntegrationsReport,
+        responses=responses,
+        dependencies=[requires(Access.OPERATOR)],
+    )
     def list_integrations(ctx: Personal) -> IntegrationsReport:
         infos = diagnostics.integrations(ctx)
         return IntegrationsReport(
             environment=environment, integrations=[IntegrationStatus.from_info(info) for info in infos]
         )
 
-    @router.post("/diagnostics/integrations/{key}/check", response_model=IntegrationCheck, responses=responses)
+    @router.post(
+        "/diagnostics/integrations/{key}/check",
+        response_model=IntegrationCheck,
+        responses=responses,
+        dependencies=[requires(Access.OPERATOR)],
+    )
     def run_check(key: IntegrationKey, ctx: Personal) -> IntegrationCheck:
         return IntegrationCheck.from_result(diagnostics.run(ctx, key, request_id_var.get()))
 

@@ -16,7 +16,7 @@ from unittest import mock
 import psycopg
 import pytest
 
-from app.kernel.errors import DependencyUnavailableError
+from app.kernel.errors import ConflictError, DependencyUnavailableError, DomainError
 from app.kernel.infrastructure.db import API_ROLE, WORKER_ROLE, Database, RequestScope
 from app.kernel.tenancy import Role
 from app.modules.identity.domain import ExternalMembership
@@ -176,6 +176,54 @@ def test_a_domain_error_after_a_write_still_commits(db: str) -> None:
         assert superuser_query(db, "SELECT count(*) FROM app.users WHERE clerk_user_id = 'user_denied'")[0][0] == 1
     finally:
         database.close()
+
+
+class _ArchivedError(ConflictError):
+    code = "ARCHIVED"
+
+
+class _GoneError(DomainError):
+    code = "GONE"
+    status = 410
+
+
+class _UpstreamDownError(DomainError):
+    code = "UPSTREAM_DOWN"
+    status = 503
+
+
+@pytest.mark.parametrize(
+    ("error", "status", "kept"),
+    [
+        pytest.param(_ArchivedError(), 409, True, id="a module error in a kernel category"),
+        pytest.param(_GoneError(), 410, True, id="a module error with a status of its own"),
+        pytest.param(_UpstreamDownError(), 503, True, id="a 503 the service chose"),
+        pytest.param(DomainError(), 500, False, id="a bare DomainError, which is a 500"),
+    ],
+)
+def test_a_module_error_keeps_the_requests_writes_unless_it_is_a_500(
+    harness: Harness,
+    member: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    error: DomainError,
+    status: int,
+    kept: bool,
+) -> None:
+    """The error's declared status decides: a 4xx or 503 is an expected outcome that keeps the writes
+    made for it, a 500 never comes with committed writes or outbox events."""
+    projects = harness.container.projects.service
+    create = projects.create
+
+    def create_then_raise(*args: Any, **kwargs: Any) -> Any:
+        create(*args, **kwargs)
+        raise error
+
+    monkeypatch.setattr(projects, "create", create_then_raise)
+    r = harness.client.post("/api/v1/orgs/org_q/projects", json={"name": "half-done"}, headers=member)
+    assert r.status_code == status
+    rows = superuser_query(harness.database_url, "SELECT count(*) FROM app.projects WHERE name = 'half-done'")
+    assert rows[0][0] == (1 if kept else 0)
+    assert superuser_query(harness.database_url, "SELECT count(*) FROM app.outbox")[0][0] == (1 if kept else 0)
 
 
 def test_worker_blocks_never_join_and_commit_independently(db: str) -> None:

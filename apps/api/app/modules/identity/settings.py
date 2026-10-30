@@ -25,6 +25,9 @@ class IdentitySettings(BaseModel):
     clerk_authorized_parties: Annotated[list[str], NoDecode] = Field(default_factory=list)
     clerk_webhook_signing_secret: SecretStr | None = None
     clerk_api_url: str = "https://api.clerk.com"
+    # Sessions started by someone else (Clerk dashboard impersonation, actor tokens, agent tasks) carry
+    # an ``act`` claim. They are refused unless this is on; then the actor is recorded in the audit log.
+    clerk_allow_impersonation: bool = False
     # Each membership read holds a server thread (40 by default, shared by every synchronous route).
     # At least a read and the two requests that may always wait for it.
     clerk_max_concurrent_reads: int = Field(default=8, ge=3, le=16)

@@ -334,11 +334,13 @@ class Database:
 
         ``error`` is what the request raised, or ``None`` if it completed:
 
-        - Completed, or a ``DomainError``: commit. A domain error is an
-          expected outcome whose writes must persist, such as the audit entry
-          of a denied action (NT-07).
-        - Any other error (a bug, a cancelled request): roll back, so an
-          unexpected failure never leaves committed writes behind it.
+        - Completed, or a ``DomainError`` that declares a status (a 4xx, or a
+          503 the service chose): commit. It is an expected outcome whose
+          writes must persist, such as the audit entry of a denied action
+          (NT-07).
+        - Any other error (a bug, a cancelled request, a bare ``DomainError``,
+          which is a 500): roll back, so an unexpected failure never leaves
+          committed writes behind it.
 
         If a block rolled the request transaction back and the handler still
         completed, the work of earlier blocks is gone, so the request fails
@@ -355,7 +357,7 @@ class Database:
             )
         if not scope.is_open:
             return None
-        if error is None or isinstance(error, DomainError):
+        if error is None or (isinstance(error, DomainError) and error.status != 500):
             return scope.commit
         return functools.partial(scope.rollback, error)
 
@@ -528,11 +530,13 @@ class PgTx[R]:
         repo: R,
         on_record: Callable[[UUID], None] | None,
         clock: Clock | None,
+        actor_external_id: str | None = None,
     ) -> None:
         self._conn = conn
         self._repo = repo
         self._on_record = on_record
         self._clock = clock
+        self._actor_external_id = actor_external_id
 
     @property
     def repo(self) -> R:
@@ -558,8 +562,9 @@ class PgTx[R]:
     def audit(self, entry: AuditEntry) -> None:
         self._conn.execute(
             """
-            INSERT INTO app.audit_log (actor_user_id, org_id, action, target_type, target_id, outcome, request_id)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO app.audit_log
+              (actor_user_id, org_id, action, target_type, target_id, outcome, request_id, impersonator_clerk_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 entry.actor_user_id,
@@ -569,6 +574,7 @@ class PgTx[R]:
                 entry.target_id,
                 entry.outcome,
                 entry.request_id,
+                self._actor_external_id,
             ),
         )
 
@@ -605,7 +611,7 @@ class PgTransactions[R]:
             "app.org_id": str(ctx.org_id) if ctx.org_id else "",
         }
         with self._db.transaction(API_ROLE, context) as conn:
-            yield PgTx(conn, self._factory(conn), self._on_record, self._clock)
+            yield PgTx(conn, self._factory(conn), self._on_record, self._clock, ctx.actor_external_id)
 
     @contextmanager
     def as_system(self) -> Iterator[PgTx[R]]:

@@ -39,6 +39,9 @@ class DiagnosticsService:
     ) -> None:
         self._enabled = enabled
         self._operators = operators
+        keys = [probe.info.key for probe in probes]
+        if duplicates := sorted({key.value for key in keys if keys.count(key) > 1}):
+            raise ValueError(f"Duplicate integration probe keys: {', '.join(duplicates)}")
         self._probes = {probe.info.key: probe for probe in probes}
         self._rate_limiter = rate_limiter
         self._tx = transactions
@@ -94,9 +97,10 @@ class DiagnosticsService:
         )
 
     def _require_available(self, ctx: TenantContext) -> None:
-        # Disabled diagnostics, other contexts, and (checked next) non-operators
-        # all get the answer a missing route gets (deny by default).
-        if not self._enabled or ctx.kind is not ContextKind.PERSONAL:
+        # Disabled diagnostics, other contexts, a session someone else started (an impersonator
+        # is no operator), and (checked next) non-operators all get the answer a missing route
+        # gets (deny by default).
+        if not self._enabled or ctx.kind is not ContextKind.PERSONAL or ctx.actor_external_id is not None:
             raise NotFoundError()
 
     def _audit_refusal(self, ctx: TenantContext, key: IntegrationKey, request_id: str | None) -> None:

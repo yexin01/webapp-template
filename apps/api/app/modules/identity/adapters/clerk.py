@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 _ALGORITHMS = ["RS256"]  # AUTH-02: pinned; "none" and HMAC algorithms are rejected.
 _CLOCK_SKEW_SECONDS = 5
 _MAX_TOKEN_LENGTH = 8_192
+_MAX_ACTOR_ID_LENGTH = 255
 # How long a fetched key set is trusted. A key Clerk removes (rotation or
 # revocation) stops verifying within this time (AUTH-04); verification also
 # keeps working this long through a Clerk outage (§16.4).
@@ -294,6 +295,7 @@ class ClerkTokenVerifier:
             external_user_id=sub,
             session_id=sid if isinstance(sid, str) else None,
             active_org_id=_active_org_id(claims),
+            actor_external_id=_actor_id(claims),
         )
 
     def _signing_key(self, header: Mapping[str, Any]) -> Any:
@@ -303,6 +305,23 @@ class ClerkTokenVerifier:
         if not isinstance(kid, str) or not kid:
             raise AuthenticationError()
         return self._key_set.signing_key(kid)
+
+
+def _actor_id(claims: Mapping[str, Any]) -> str | None:
+    """Who acts as the user, from the ``act`` claim of an impersonation or an actor token.
+
+    Clerk adds it when the session was started by someone else: a dashboard
+    impersonation, a Backend API actor token, or an agent task. Its ``sub`` is
+    the actor. A claim in any other shape is a token this verifier does not
+    understand, so it is refused as an invalid token.
+    """
+    act = claims.get("act")
+    if act is None:
+        return None
+    actor = act.get("sub") if isinstance(act, dict) else None
+    if not isinstance(actor, str) or not 0 < len(actor) <= _MAX_ACTOR_ID_LENGTH:
+        raise AuthenticationError()
+    return actor
 
 
 def _active_org_id(claims: Mapping[str, Any]) -> str | None:

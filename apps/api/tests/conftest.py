@@ -96,10 +96,14 @@ class TokenTableVerifier:
 
     def __init__(self) -> None:
         self.tokens: dict[str, str] = {}
+        self.actors: dict[str, str] = {}
 
-    def issue(self, external_user_id: str) -> str:
+    def issue(self, external_user_id: str, actor: str | None = None) -> str:
+        """A token for the user; with ``actor``, a session someone else started as that user."""
         token = f"test-token-{uuid.uuid4().hex}"
         self.tokens[token] = external_user_id
+        if actor is not None:
+            self.actors[token] = actor
         return token
 
     def revoke(self, token: str) -> None:
@@ -109,7 +113,7 @@ class TokenTableVerifier:
         user = self.tokens.get(token)
         if user is None:
             raise AuthenticationError()
-        return VerifiedIdentity(external_user_id=user)
+        return VerifiedIdentity(external_user_id=user, actor_external_id=self.actors.get(token))
 
 
 class RecordingAnalytics:
@@ -236,8 +240,8 @@ class Harness:
     analytics: RecordingAnalytics
     database_url: str
 
-    def login(self, external_user_id: str) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self.verifier.issue(external_user_id)}"}
+    def login(self, external_user_id: str, actor: str | None = None) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self.verifier.issue(external_user_id, actor)}"}
 
 
 @pytest.fixture

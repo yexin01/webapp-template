@@ -742,3 +742,49 @@ def test_the_default_fetch_reads_the_key_set(keys: tuple[Any, str]) -> None:
     transport = httpx.MockTransport(lambda request: httpx.Response(200, json={"keys": [jwk(keys[0], "kid1")]}))
     verifier = jwks_verifier(partial(clerk.fetch_jwks, JWKS_URL, transport=transport), FakeMonotonic())
     assert verifier.verify(token(keys[0], kid="kid1")).external_user_id == "user_123"
+
+
+def test_an_own_session_has_no_actor(verifier: ClerkTokenVerifier, keys: tuple[Any, str]) -> None:
+    assert verifier.verify(token(keys[0])).actor_external_id is None
+    assert verifier.verify(token(keys[0], act=None)).actor_external_id is None
+
+
+@pytest.mark.parametrize(
+    "act",
+    [
+        {"iss": "https://dashboard.clerk.com", "sid": "sess_imp", "sub": "user_staff"},  # dashboard impersonation
+        {"sub": "user_staff"},  # a Backend API actor token
+        {"type": "agent", "sub": "agent_1"},  # an agent task
+    ],
+)
+def test_the_act_claim_names_the_actor(
+    verifier: ClerkTokenVerifier, keys: tuple[Any, str], act: dict[str, str]
+) -> None:
+    identity = verifier.verify(token(keys[0], act=act))
+    assert identity.external_user_id == "user_123"
+    assert identity.actor_external_id == act["sub"]
+
+
+@pytest.mark.parametrize(
+    "act",
+    [
+        "garbage",
+        7,
+        True,
+        [],
+        ["user_staff"],
+        {},
+        {"sub": ""},
+        {"sub": 5},
+        {"sub": None},
+        {"sub": "x" * 256},
+        {"iss": "x"},
+    ],
+)
+def test_a_malformed_act_claim_is_an_invalid_token(
+    verifier: ClerkTokenVerifier, keys: tuple[Any, str], act: Any
+) -> None:
+    """A token the verifier cannot interpret is not signed in; the response gives no reason (AUTH-03)."""
+    with pytest.raises(AuthenticationError) as raised:
+        verifier.verify(token(keys[0], act=act))
+    assert raised.value.public_message == AuthenticationError.default_message

@@ -141,7 +141,9 @@ class ContextResolver:
 
     def personal(self, identity: VerifiedIdentity) -> TenantContext:
         user_id = self._ensure_user(identity.external_user_id)
-        return TenantContext(user_id, identity.external_user_id, ContextKind.PERSONAL)
+        return TenantContext(
+            user_id, identity.external_user_id, ContextKind.PERSONAL, actor_external_id=identity.actor_external_id
+        )
 
     def organization(self, identity: VerifiedIdentity, external_org_id: str) -> TenantContext:
         # Malformed identifiers are indistinguishable from unknown ones (TEN-05).
@@ -177,6 +179,7 @@ class ContextResolver:
             org_id=membership.org_id,
             external_org_id=membership.external_org_id,
             role=membership.role,
+            actor_external_id=identity.actor_external_id,
         )
 
     def refresh_memberships(self, user_id: UUID, external_user_id: str) -> None:
