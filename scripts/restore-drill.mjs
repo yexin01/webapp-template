@@ -50,8 +50,11 @@ BEGIN
   END IF;
 END
 $$;
-GRANT app_api TO CURRENT_USER;
-GRANT app_worker TO CURRENT_USER;
+DO $$
+BEGIN
+  EXECUTE format('GRANT app_api, app_worker TO %I', current_user);
+END
+$$;
 `;
 
 // Steps run asynchronously, so a signal is handled when it arrives: it aborts

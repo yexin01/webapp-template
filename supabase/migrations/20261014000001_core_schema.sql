@@ -25,9 +25,14 @@ BEGIN
 END
 $$;
 
--- The connecting role must be able to SET ROLE into the runtime roles.
-GRANT app_api TO CURRENT_USER;
-GRANT app_worker TO CURRENT_USER;
+-- The connecting role must be able to SET ROLE into the runtime roles. The
+-- grantee is named, not CURRENT_USER: GRANT ... TO CURRENT_USER crashes the
+-- server on Supabase images older than 17.6.1.152 (supautils before 3.2.3).
+DO $$
+BEGIN
+  EXECUTE format('GRANT app_api, app_worker TO %I', current_user);
+END
+$$;
 GRANT USAGE ON SCHEMA app TO app_api, app_worker;
 
 -- ---------------------------------------------------------------------------
