@@ -9,10 +9,12 @@ import type { Breadcrumb, ErrorEvent, init as sentryInit } from "@sentry/nextjs"
 type SpanJSON = Parameters<NonNullable<NonNullable<Parameters<typeof sentryInit>[0]>["beforeSendSpan"]>>[0];
 
 const init = vi.hoisted(() => vi.fn());
+const captureRouterTransitionStart = vi.hoisted(() => vi.fn());
 /** The client hooks each configuration registers, by name. */
 const hooks = vi.hoisted(() => new Map<string, (value: unknown) => void>());
 vi.mock("@sentry/nextjs", () => ({
   init,
+  captureRouterTransitionStart,
   getClient: () => ({
     on: (hook: string, callback: (value: unknown) => void) => {
       hooks.set(hook, callback);
@@ -235,5 +237,21 @@ describe.each([
       sample_rate: "1",
       sampled: "true",
     });
+  });
+});
+
+describe("browser tracing decision (OBS-02)", () => {
+  it("leaves the sampling decision of the API's requests to the API", async () => {
+    // Any defined rate, even 0, makes the browser send "not sampled" with its /api/v1 requests, and the
+    // API then never traces a request made from a page (tests/unit/test_sentry_tracing.py pins the API side).
+    const options = await optionsOf("./instrumentation-client");
+    expect(options).not.toHaveProperty("tracesSampleRate");
+    expect(options).not.toHaveProperty("tracesSampler");
+    expect(options).not.toHaveProperty("tracePropagationTargets");
+  });
+
+  it("hands App Router navigations to Sentry", async () => {
+    const { onRouterTransitionStart } = await import(/* @vite-ignore */ "./instrumentation-client");
+    expect(onRouterTransitionStart).toBe(captureRouterTransitionStart);
   });
 });
