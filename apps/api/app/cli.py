@@ -3,6 +3,7 @@
 Destructive and development-only commands refuse non-local databases, need
 ``APP_ENV`` set to local or test, and need ``--yes`` (ENV-05). Reconciliation
 is a dry run unless ``--apply`` is given (BILL-19).
+``setup-stripe`` changes only a Stripe sandbox and prints the .env lines to set.
 ``job <name>`` runs any registered job (the same ones Vercel Cron calls).
 """
 
@@ -11,12 +12,13 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import re
 import sys
 from pathlib import Path
 from uuid import UUID
 
 from app.kernel.infrastructure import migrations
-from app.kernel.infrastructure.config import ConfigError, load_database_url, require_development_environment
+from app.kernel.infrastructure.config import ConfigError, load_database_url, require_development_environment, secret
 from app.settings import load_settings
 
 
@@ -88,6 +90,20 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_setup_stripe(args: argparse.Namespace) -> int:
+    """Create the Pro product and prices in a Stripe sandbox, then print the .env lines (it never writes .env)."""
+    from app.modules.billing.adapters import stripe_setup
+
+    require_development_environment("set up Stripe")
+    key = secret(stripe_setup.StripeSetupSettings().stripe_secret_key)
+    try:
+        stripe_setup.run(key, stripe_setup.Amounts(args.currency, args.monthly, args.yearly))
+    except stripe_setup.SetupError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    return 0
+
+
 def cmd_job(args: argparse.Namespace) -> int:
     from app.bootstrap import bootstrap
 
@@ -130,6 +146,18 @@ def cmd_openapi(args: argparse.Namespace) -> int:
     return 0
 
 
+def _currency(value: str) -> str:
+    if not re.fullmatch(r"[A-Za-z]{3}", value):
+        raise argparse.ArgumentTypeError("must be a three-letter ISO 4217 code such as usd")
+    return value.lower()
+
+
+def _amount(value: str) -> int:
+    if not value.isdigit() or int(value) < 1:
+        raise argparse.ArgumentTypeError("must be a whole number of minor units (cents) of at least 1")
+    return int(value)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="app.cli")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -153,6 +181,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--user", help="Internal user UUID to reconcile")
     p.add_argument("--apply", action="store_true")
     p.set_defaults(func=cmd_reconcile)
+
+    p = sub.add_parser(
+        "setup-stripe",
+        help="Create the Pro product and its two prices in a Stripe sandbox (local only; never writes .env)",
+    )
+    p.add_argument("--currency", required=True, type=_currency, help="ISO 4217 code, for example usd")
+    p.add_argument("--monthly", required=True, type=_amount, help="Monthly price in minor units (cents)")
+    p.add_argument("--yearly", required=True, type=_amount, help="Yearly price in minor units (cents)")
+    p.set_defaults(func=cmd_setup_stripe)
 
     p = sub.add_parser("job", help="Run a registered job, or list jobs when no name is given")
     p.add_argument("name", nargs="?")

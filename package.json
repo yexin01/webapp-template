@@ -31,6 +31,7 @@
     "db:reset": "cd apps/api && uv run python -m app.cli reset --seed",
     "db:restore-drill": "node scripts/restore-drill.mjs",
     "billing:reconcile": "cd apps/api && uv run python -m app.cli reconcile",
+    "setup:stripe": "cd apps/api && uv run python -m app.cli setup-stripe",
     "security:audit": "node scripts/security-audit.mjs",
     "check:bundle-secrets": "node scripts/check-bundle-secrets.mjs",
     "init-template": "node scripts/init-template.mjs",
