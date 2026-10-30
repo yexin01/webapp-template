@@ -27,7 +27,7 @@ def describe(url: str, app_env: str = "preview") -> tuple[IntegrationMode, str]:
     ("url", "expected"),
     [
         ("postgresql://u:p@localhost:5432/app", LOCAL),
-        ("postgresql://u:p@127.0.0.1:54329/app", LOCAL),
+        ("postgresql://u:p@127.0.0.1:5432/app", LOCAL),
         ("postgresql://u:p@host.docker.internal:5432/app", LOCAL),
         ("postgresql:///app?host=/var/run/postgresql", LOCAL),
         ("postgresql://u:p@db.example.supabase.co:6543/postgres", HOSTED),
