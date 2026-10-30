@@ -12,7 +12,8 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # A push to main is a record of the main branch: a later push does not cancel its checks.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   UV_FROZEN: "1"
@@ -147,9 +148,12 @@ jobs:
           node scripts/check-bundle-secrets.mjs --self-test
           pnpm check:bundle-secrets
       # Any severity, matching pip-audit, which has no severity filter. Scope
-      # and reasons: scripts/security-audit.mjs.
+      # and reasons: scripts/security-audit.mjs. Not `pnpm audit --prod`: pnpm 9
+      # uses an advisory endpoint that is being retired (scripts/npm-audit-bulk.mjs).
       - name: Dependency audit (production)
-        run: pnpm audit --prod
+        run: |
+          node scripts/npm-audit-bulk.mjs --self-test
+          node scripts/npm-audit-bulk.mjs
       - name: License compliance (allowlist)
         run: |
           node scripts/check-licenses.mjs --self-test
@@ -165,29 +169,78 @@ jobs:
           path: apps/web/playwright-report
           retention-days: 7
 
+  deploy-config:
+    # Spec 16.1 "Deployment configuration": builds the root vercel.json with the pinned Vercel
+    # CLI and checks the output. No Vercel account, token, or deployment; local packaging
+    # evidence only (docs-notes/deploy.md says what a preview deployment must still show).
+    name: Deployment configuration — vercel build, no deployment
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      VERCEL_TELEMETRY_DISABLED: "1"
+      NO_UPDATE_NOTIFIER: "1"
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          version: "0.11.1"
+      - run: pnpm install --frozen-lockfile
+      - name: Production dependencies import as Vercel installs them (no dev group)
+        run: |
+          UV_PROJECT_ENVIRONMENT="$RUNNER_TEMP/api-prod" uv sync --project apps/api --frozen --no-dev --no-install-project
+          cd apps/api
+          APP_ENV=test DATABASE_URL=postgresql://app:unused@127.0.0.1:1/unused \
+            "$RUNNER_TEMP/api-prod/bin/python" -I -c 'import sys; sys.path.insert(0, "."); import index, app.cli'
+      - name: Build-output checks catch planted defects
+        run: |
+          "$RUNNER_TEMP/api-prod/bin/python" scripts/check_vercel_build.py self-test
+          node scripts/check-bundle-secrets.mjs --self-test
+      - name: vercel build against the root vercel.json
+        env:
+          VERCEL_BUILD_PYTHON: ${{ runner.temp }}/api-prod/bin/python
+        run: pnpm test:vercel-build
+
   secrets:
     name: Secret scan
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    # On pull requests the action lists the pull request's commits through the
-    # API, which needs pull-requests: read on private repositories.
-    permissions:
-      contents: read
-      pull-requests: read
+    env:
+      # The gitleaks CLI needs no license (the gitleaks-action does for organization repositories)
+      # and runs on pull requests from forks. Keep the version in step with the image digest in
+      # scripts/git-hooks/pre-commit. Dependabot does not read either pin.
+      GITLEAKS_VERSION: "8.30.1"
+      # SHA-256 of gitleaks_8.30.1_linux_x64.tar.gz, from the release's gitleaks_8.30.1_checksums.txt.
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
           persist-credentials: false
-      # Repositories owned by an organization need a free gitleaks-action
-      # license: store it as the GITLEAKS_LICENSE secret and pass it below as
-      # GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }} (an owner action).
-      # Personal repositories do not. Pull requests from forks never receive
-      # secrets, so in an organization this step fails on fork pull requests
-      # unless it is replaced by the gitleaks CLI, which needs no license.
-      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Review comments would need pull-requests: write. Findings go to the
-          # job log, summary, and a redacted SARIF artifact instead.
-          GITLEAKS_ENABLE_COMMENTS: "false"
+      - name: Install gitleaks (pinned release, checksum verified)
+        run: |
+          set -eu
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl --fail --silent --show-error --location --retry 3 --output "$RUNNER_TEMP/$archive" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/$archive" | sha256sum --check --strict -
+          mkdir "$RUNNER_TEMP/gitleaks-bin"
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP/gitleaks-bin" gitleaks
+          echo "$RUNNER_TEMP/gitleaks-bin" >> "$GITHUB_PATH"
+      - name: The scanner flags a planted secret (self-test)
+        run: |
+          set -eu
+          planted="$(mktemp -d)"
+          printf 'aws_access_key_id = "AKIA%s"\n' "$(openssl rand -base64 96 | tr -dc 'A-Z2-7' | head -c 16)" > "$planted/planted.env"
+          if gitleaks dir "$planted" --config .gitleaks.toml --redact --no-banner; then
+            echo "::error::gitleaks did not flag a planted secret, so a clean scan would mean nothing."
+            exit 1
+          fi
+      - name: Scan the full history reachable from this commit
+        run: gitleaks git --config .gitleaks.toml --log-opts="--full-history HEAD" --redact --no-banner .

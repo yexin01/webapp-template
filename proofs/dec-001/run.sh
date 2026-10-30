@@ -99,7 +99,8 @@ mkdir -p "$WORK/repo" "$WORK/no-credentials" "$RESULTS"
 touch "$WORK/$MARKER"
 git -C "$REPO" archive HEAD | tar -x -C "$WORK/repo"
 PROOF_DIR="$WORK/repo/proofs/dec-001"
-cp "$PROOF_DIR/vercel.json" "$WORK/repo/vercel.json"
+# The proof builds the root vercel.json that ships, exactly as committed.
+[[ -f "$WORK/repo/vercel.json" ]] || { echo "HEAD has no root vercel.json: commit it first" >&2; exit 2; }
 mkdir -p "$WORK/repo/.vercel"
 # Local project settings, so `vercel build` never pulls settings from an account.
 cat > "$WORK/repo/.vercel/project.json" <<'JSON'

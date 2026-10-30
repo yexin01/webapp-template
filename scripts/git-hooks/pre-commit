@@ -4,33 +4,57 @@
 #
 # Opt in once per clone:  pnpm hooks:install
 # (sets git's core.hooksPath to scripts/git-hooks)
+#
+# Uses the gitleaks on PATH. Without one, it runs the pinned container image
+# when Docker is running. With neither, it refuses the commit and says so.
 set -eu
+
+# Keep the version in step with GITLEAKS_VERSION in .github/workflows/ci.yml
+# (a test compares them). Dependabot does not read this pin.
+GITLEAKS_IMAGE="zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f"
 
 # Hooks run from the top of the working tree; be explicit for manual runs.
 cd "$(git rev-parse --show-toplevel)"
 
-if ! command -v gitleaks >/dev/null 2>&1; then
-  cat >&2 <<'MSG'
-pre-commit: gitleaks is not installed, so staged changes cannot be scanned for secrets.
-  macOS:  brew install gitleaks
-  Other:  https://github.com/gitleaks/gitleaks#installing
-Then commit again. To stop using this hook: git config --unset core.hooksPath
-MSG
-  exit 1
-fi
-
-# gitleaks 8.19 replaced `protect --staged` with `git --staged`.
-if gitleaks git --help >/dev/null 2>&1; then
-  set -- git --staged
-else
-  set -- protect --staged
-fi
-
-if ! gitleaks "$@" --redact --no-banner --config .gitleaks.toml; then
+refuse_finding() {
   cat >&2 <<'MSG'
 pre-commit: gitleaks found a possible secret in the staged changes (value redacted above).
   Remove it from the change and rotate it if it is real (SEC-03).
   A reviewed false positive goes in .gitleaksignore with a justification.
 MSG
   exit 1
+}
+
+if command -v gitleaks >/dev/null 2>&1; then
+  # gitleaks 8.19 replaced `protect --staged` with `git --staged`.
+  if gitleaks git --help >/dev/null 2>&1; then
+    set -- git --staged
+  else
+    set -- protect --staged
+  fi
+  gitleaks "$@" --redact --no-banner --config .gitleaks.toml || refuse_finding
+  exit 0
 fi
+
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+  echo "pre-commit: gitleaks is not installed; scanning the staged changes with $GITLEAKS_IMAGE." >&2
+  # The scan reads the diff on stdin: nothing is mounted but the rules, and the container has no network.
+  # .gitleaksignore only lists fingerprints of reviewed findings, so its own changes are not scanned.
+  git diff --cached --no-color -U0 -- . ':(exclude).gitleaksignore' |
+    docker run --rm -i --network none -v "$PWD/.gitleaks.toml:/gitleaks.toml:ro" "$GITLEAKS_IMAGE" \
+      stdin --config /gitleaks.toml --redact --no-banner || refuse_finding
+  exit 0
+fi
+
+if command -v docker >/dev/null 2>&1; then
+  reason="Docker is installed but not running, and gitleaks is not installed"
+else
+  reason="neither gitleaks nor Docker is installed"
+fi
+cat >&2 <<MSG
+pre-commit: $reason, so staged changes cannot be scanned for secrets.
+  Either:  brew install gitleaks          (other systems: https://github.com/gitleaks/gitleaks#installing)
+  or:      start Docker Desktop           (the hook then runs a pinned gitleaks image)
+Then commit again. To stop using this hook: git config --unset core.hooksPath
+MSG
+exit 1

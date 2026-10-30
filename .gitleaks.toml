@@ -23,6 +23,11 @@ regexes = [
   # {"sub":"canary"} or {"sub":"CANARY"}, signed "signaturecanary" or
   # "signatureCANARY". Base64 hides the marker, so they are listed by value.
   '''^eyJhbGciOiJSUzI1NiJ9\.(?:eyJzdWIiOiJjYW5hcnkifQ\.c2lnbmF0dXJlY2FuYXJ5|eyJzdWIiOiJDQU5BUlkifQ\.c2lnbmF0dXJlQ0FOQVJZ)$''',
+  # Publishable keys (Clerk, Stripe) are public by design: browsers receive them.
+  '''^pk_(?:test|live)_[A-Za-z0-9+/=]+$''',
+  # The JWT header {"alg":"RS256"} on its own, which tests concatenate with a canary payload and
+  # signature. A header carries no credential.
+  '''^eyJhbGciOiJSUzI1NiJ9\.?$''',
   # History only: the API tests' synthetic values before they carried the
   # test_only marker (tests/unit/test_config.py, tests/integration/
   # test_outbox_jobs.py), exactly. Keeps full-history scans clean.

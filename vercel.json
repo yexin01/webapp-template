@@ -6,7 +6,10 @@
       "root": "apps/api",
       "entrypoint": "index.py",
       "functions": {
-        "index.py": { "excludeFiles": "{tests/**,.venv/**,.pytest_cache/**,.mypy_cache/**,.ruff_cache/**}" }
+        "index.py": {
+          "regions": ["iad1"],
+          "excludeFiles": "{tests/**,.venv/**,.pytest_cache/**,.mypy_cache/**,.ruff_cache/**}"
+        }
       }
     }
   },

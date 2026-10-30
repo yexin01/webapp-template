@@ -7,7 +7,9 @@
 // stopping at "high". CI runs the same two blocking audits.
 //
 // Scope (SEC-04 sets none; the difference is deliberate):
-//   - npm, blocking: production dependencies, which ship in the web app.
+//   - npm, blocking: production dependencies, which ship in the web app. Checked
+//     through the registry's bulk advisory endpoint (scripts/npm-audit-bulk.mjs):
+//     pnpm 9's `pnpm audit` uses a legacy endpoint that is being retired.
 //   - npm, report only: development dependencies. This tree is hundreds of
 //     transitive lint, build, and test packages that never ship, and their
 //     advisories often have no fix short of an override. Review the report;
@@ -19,7 +21,7 @@ import path from "node:path";
 
 const root = path.resolve(import.meta.dirname, "..");
 const steps = [
-  { cmd: "pnpm", args: ["audit", "--prod"], blocking: true },
+  { cmd: "node", args: [path.join(root, "scripts/npm-audit-bulk.mjs")], blocking: true },
   { cmd: "pnpm", args: ["audit", "--dev"], blocking: false },
   { cmd: "sh", args: [path.join(root, "scripts/pip-audit-locked.sh")], blocking: true },
 ];
