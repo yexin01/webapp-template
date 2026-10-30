@@ -13,5 +13,5 @@ import { createApiClient } from "./client";
 export function useApi() {
   const { getToken, userId } = useAuth();
   // eslint-disable-next-line react-hooks/exhaustive-deps -- userId: one client per signed-in user (see above)
-  return useMemo(() => createApiClient(() => getToken()), [getToken, userId]);
+  return useMemo(() => createApiClient((options) => getToken(options)), [getToken, userId]);
 }
