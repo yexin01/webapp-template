@@ -4,7 +4,7 @@
  * beforeBreadcrumb, and beforeSendSpan hooks, and the client hooks for the
  * trace context, exactly as configured, and must not come out.
  */
-import type { Breadcrumb, ErrorEvent, init as sentryInit } from "@sentry/nextjs";
+import type { Breadcrumb, ErrorEvent, EventHint, init as sentryInit } from "@sentry/nextjs";
 
 type SpanJSON = Parameters<NonNullable<NonNullable<Parameters<typeof sentryInit>[0]>["beforeSendSpan"]>>[0];
 
@@ -39,7 +39,7 @@ const TICKET = "CANARYTICKET42";
 const CANARIES = [SECRET, EMAIL, TOKEN, TICKET, "CANARY"];
 
 type Options = {
-  beforeSend: (event: ErrorEvent, hint: unknown) => ErrorEvent | null;
+  beforeSend: (event: ErrorEvent, hint: EventHint) => ErrorEvent | null;
   beforeBreadcrumb: (breadcrumb: Breadcrumb, hint?: unknown) => Breadcrumb | null;
   beforeSendSpan?: (span: SpanJSON) => SpanJSON;
 };
@@ -248,6 +248,21 @@ describe("browser tracing decision (OBS-02)", () => {
     expect(options).not.toHaveProperty("tracesSampleRate");
     expect(options).not.toHaveProperty("tracesSampler");
     expect(options).not.toHaveProperty("tracePropagationTargets");
+  });
+
+  it("tags a report about a failed API call with the API's request ID (OBS-05)", async () => {
+    const { beforeSend } = await optionsOf("./instrumentation-client");
+    // The module registry was reset, so the class is the one the configuration loaded.
+    const { ApiError } = await import("./lib/api/errors");
+    const originalException = new ApiError(
+      500,
+      "INTERNAL_ERROR",
+      "Failed.",
+      "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+    );
+    expect(beforeSend(event(), { originalException })?.tags).toEqual({
+      request_id: "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+    });
   });
 
   it("hands App Router navigations to Sentry", async () => {

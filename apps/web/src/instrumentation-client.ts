@@ -1,13 +1,8 @@
 import * as Sentry from "@sentry/nextjs";
 
 import { publicEnv } from "./lib/env";
-import {
-  scrubBreadcrumb,
-  scrubEnvelopeHeaders,
-  scrubEvent,
-  scrubSpan,
-  scrubTraceContext,
-} from "./lib/redact";
+import { prepareReport } from "./lib/error-reporting";
+import { scrubBreadcrumb, scrubEnvelopeHeaders, scrubSpan, scrubTraceContext } from "./lib/redact";
 
 if (publicEnv.errorReporting.enabled) {
   Sentry.init({
@@ -31,7 +26,7 @@ if (publicEnv.errorReporting.enabled) {
     // them at SENTRY_TRACES_SAMPLE_RATE and browser errors share the API trace ID. Any defined rate, even 0,
     // would decide for the API ("not sampled") and still record spans under a sampled server-rendered page.
     // Session replay is not enabled; it would require an approved privacy review.
-    beforeSend: scrubEvent,
+    beforeSend: prepareReport,
     beforeBreadcrumb: scrubBreadcrumb,
     // The browser records no spans; this keeps URLs out of them if tracing is ever turned on.
     beforeSendSpan: scrubSpan,
