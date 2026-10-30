@@ -16,8 +16,12 @@ const base = {
   CLERK_SECRET_KEY: "sk_test_not_a_real_secret",
 };
 const serving = { serving: true };
-/** What a preview or production deployment names explicitly (ENV-03). */
-const MODES = { ANALYTICS_MODE: "disabled", ERROR_REPORTING_MODE: "disabled" };
+/** What a preview or production deployment names explicitly (ENV-03): both telemetry modes, and the origin it is served from. */
+const NAMED = {
+  ANALYTICS_MODE: "disabled",
+  ERROR_REPORTING_MODE: "disabled",
+  APP_BASE_URL: "https://app.example.com",
+};
 
 const ORIGIN_PROBLEM = "API_ORIGIN must be an http(s) origin, with no path, query, fragment, or credentials";
 
@@ -109,8 +113,7 @@ describe("web server configuration (ENV-03)", () => {
       APP_ENV: "production",
       NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: livePublishable,
       CLERK_SECRET_KEY: "sk_live_not_a_real_secret",
-      ANALYTICS_MODE: "disabled",
-      ERROR_REPORTING_MODE: "disabled",
+      ...NAMED,
     };
 
     it.each([
@@ -136,7 +139,7 @@ describe("web server configuration (ENV-03)", () => {
     });
 
     it.each(["preview", "local"])("still accepts plain http when APP_ENV=%s", (appEnv) => {
-      expect(problems({ ...base, ...MODES, APP_ENV: appEnv, API_ORIGIN: "http://api.example.com" })).toEqual(
+      expect(problems({ ...base, ...NAMED, APP_ENV: appEnv, API_ORIGIN: "http://api.example.com" })).toEqual(
         [],
       );
     });
@@ -180,8 +183,8 @@ describe("web server configuration (ENV-03)", () => {
     const production = {
       ...base,
       APP_ENV: "production",
+      ...NAMED,
       ANALYTICS_MODE: "sandbox",
-      ERROR_REPORTING_MODE: "disabled",
       NEXT_PUBLIC_POSTHOG_KEY: "phc_x",
     };
     expect(problems(production)).toEqual([
@@ -199,6 +202,7 @@ describe("web server configuration (ENV-03)", () => {
         ERROR_REPORTING_MODE: "live",
         NEXT_PUBLIC_SENTRY_DSN: "https://publickey@o1.ingest.sentry.io/2",
         SENTRY_TRACES_SAMPLE_RATE: "0.25",
+        APP_BASE_URL: NAMED.APP_BASE_URL,
       },
       serving,
     );
@@ -276,7 +280,7 @@ describe("the platform's environment (ENV-01)", () => {
   const withKeys = {
     NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: publishable,
     CLERK_SECRET_KEY: "sk_test_not_a_real_secret",
-    ...MODES,
+    ...NAMED,
   };
 
   it.each([
@@ -328,7 +332,7 @@ describe("the platform's environment (ENV-01)", () => {
       VERCEL_ENV: "production",
       NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: livePublishable,
       CLERK_SECRET_KEY: "sk_live_not_a_real_secret",
-      ...MODES,
+      ...NAMED,
     };
     expect(loadServerEnv(production, serving).appEnv).toBe("production");
   });
@@ -345,7 +349,7 @@ describe("the platform's environment (ENV-01)", () => {
       VERCEL_ENV: "production",
       NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: livePublishable,
       CLERK_SECRET_KEY: "sk_live_not_a_real_secret",
-      ...MODES,
+      ...NAMED,
     };
     expect(loadServerEnv(production, serving).appEnv).toBe("production");
     expect(problems({ ...production, NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: publishable })).toEqual([
@@ -380,7 +384,7 @@ describe("a Vercel build or deployment (VERCEL=1)", () => {
     VERCEL: "1",
     NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: publishable,
     CLERK_SECRET_KEY: "sk_test_not_a_real_secret",
-    ...MODES,
+    ...NAMED,
   };
 
   it("requires an explicit APP_ENV where nothing derives it, instead of tagging the deployment local", () => {
@@ -420,6 +424,7 @@ describe("a Vercel build or deployment (VERCEL=1)", () => {
 describe("explicit integration modes in a deployment (ENV-03)", () => {
   const deployed = (appEnv: string) => ({
     APP_ENV: appEnv,
+    APP_BASE_URL: NAMED.APP_BASE_URL,
     NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: appEnv === "production" ? livePublishable : publishable,
     CLERK_SECRET_KEY: appEnv === "production" ? "sk_live_not_a_real_secret" : "sk_test_not_a_real_secret",
   });
@@ -429,7 +434,7 @@ describe("explicit integration modes in a deployment (ENV-03)", () => {
       `ANALYTICS_MODE is required when APP_ENV=${appEnv}`,
       `ERROR_REPORTING_MODE is required when APP_ENV=${appEnv}`,
     ]);
-    expect(problems({ ...deployed(appEnv), ...MODES })).toEqual([]);
+    expect(problems({ ...deployed(appEnv), ...NAMED })).toEqual([]);
     expect(problems({ ...deployed(appEnv), ANALYTICS_MODE: " ", ERROR_REPORTING_MODE: "" })).toHaveLength(2);
   });
 
@@ -527,5 +532,150 @@ describe("source-map upload to Sentry", () => {
         sourcemaps: { disable: true },
       });
     }
+  });
+});
+
+describe("the origins sessions are accepted from (ENV-03, SEC-14)", () => {
+  const PREVIEW = {
+    ...base,
+    ...NAMED,
+    APP_ENV: "preview",
+    APP_BASE_URL: "https://preview.example.com",
+  };
+  const PLATFORM = {
+    VERCEL_ENV: "preview",
+    VERCEL_URL: "my-app-abc123-team.vercel.app",
+    VERCEL_BRANCH_URL: "my-app-git-feature-team.vercel.app",
+  };
+  const parties = (env: Record<string, string | undefined>) =>
+    loadServerEnv(env, serving).clerkAuthorizedParties;
+
+  it("reads both variables from the repository .env, and the platform's URLs only from the process", () => {
+    expect(isWebVariable("APP_BASE_URL")).toBe(true);
+    expect(isWebVariable("CLERK_AUTHORIZED_PARTIES")).toBe(true);
+    // A file must not imitate the platform: a deployment's own URLs come from Vercel.
+    expect(isWebVariable("VERCEL_URL")).toBe(false);
+    expect(isWebVariable("VERCEL_BRANCH_URL")).toBe(false);
+  });
+
+  it("trusts the origin of APP_BASE_URL when no list is given, and localhost for local development", () => {
+    expect(parties(base)).toEqual(["http://localhost:3000"]);
+    expect(parties({ ...base, APP_BASE_URL: "http://127.0.0.1:3100/" })).toEqual(["http://127.0.0.1:3100"]);
+    expect(parties({ ...PREVIEW })).toEqual(["https://preview.example.com"]);
+  });
+
+  it("lists exactly what is named, in the form a browser sends, and never changes the result afterwards", () => {
+    const listed = parties({
+      ...base,
+      CLERK_AUTHORIZED_PARTIES: " HTTP://Localhost:3000/ ,https://App.Example.com:443",
+    });
+    expect(listed).toEqual(["http://localhost:3000", "https://app.example.com"]);
+    expect(Object.isFrozen(listed)).toBe(true);
+  });
+
+  it("is a list the proxy can check tokens against only when it names the pages being served", () => {
+    expect(problems({ ...base, CLERK_AUTHORIZED_PARTIES: "https://other.example.com" })).toEqual([
+      "CLERK_AUTHORIZED_PARTIES must list the origin of APP_BASE_URL",
+    ]);
+    expect(problems({ ...base, APP_BASE_URL: "https://app.example.com/x" })).toEqual([
+      "APP_BASE_URL must be an http(s) origin (scheme, host, optional port; no path or credentials)",
+      "CLERK_AUTHORIZED_PARTIES is required (comma-separated frontend origins)",
+    ]);
+  });
+
+  it("names the variable, never the value, of an entry that is no origin", () => {
+    const canary = "https://CANARY-user@a.example/CANARY";
+    const found = problems({ ...base, CLERK_AUTHORIZED_PARTIES: `http://localhost:3000,${canary}` });
+    expect(found).toEqual([
+      "CLERK_AUTHORIZED_PARTIES must list http(s) origins (scheme, host, optional port; no path or credentials)",
+    ]);
+    expect(found.join()).not.toContain("CANARY");
+    expect(problems({ ...base, APP_BASE_URL: canary }).join()).not.toContain("CANARY");
+  });
+
+  it("makes a deployment say where it is served from, over https in production", () => {
+    expect(problems({ ...PREVIEW, APP_BASE_URL: undefined })).toEqual([
+      "APP_BASE_URL is required when APP_ENV=preview",
+    ]);
+    expect(problems({ ...PREVIEW, APP_BASE_URL: " " })).toEqual([
+      "APP_BASE_URL is required when APP_ENV=preview",
+    ]);
+    const production = {
+      ...NAMED,
+      APP_ENV: "production",
+      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: livePublishable,
+      CLERK_SECRET_KEY: "sk_live_not_a_real_secret",
+    };
+    expect(problems({ ...production, APP_BASE_URL: "http://app.example.com" })).toEqual([
+      "APP_BASE_URL must use https in production",
+    ]);
+    expect(problems({ ...production, APP_BASE_URL: "HTTPS://App.Example.com:443/" })).toEqual([]);
+    // Local development and the tests keep the default.
+    expect(problems({ ...base, APP_ENV: "test" })).toEqual([]);
+  });
+
+  describe("on a Vercel preview deployment", () => {
+    it("also trusts the deployment's own origin and its branch's, after the list and without repeating it", () => {
+      expect(parties({ ...PREVIEW, ...PLATFORM })).toEqual([
+        "https://preview.example.com",
+        "https://my-app-abc123-team.vercel.app",
+        "https://my-app-git-feature-team.vercel.app",
+      ]);
+      expect(
+        parties({
+          ...PREVIEW,
+          ...PLATFORM,
+          CLERK_AUTHORIZED_PARTIES: "https://preview.example.com,https://my-app-abc123-team.vercel.app",
+        }),
+      ).toEqual([
+        "https://preview.example.com",
+        "https://my-app-abc123-team.vercel.app",
+        "https://my-app-git-feature-team.vercel.app",
+      ]);
+    });
+
+    it.each([
+      ["a staging project on Vercel production", { ...PLATFORM, VERCEL_ENV: "production" }],
+      ["a development environment", { ...PLATFORM, VERCEL_ENV: "development", APP_ENV: "local" }],
+      ["no platform environment", { ...PLATFORM, VERCEL_ENV: undefined }],
+    ])("derives nothing on %s", (_label, platform) => {
+      expect(parties({ ...PREVIEW, ...platform })).toEqual(["https://preview.example.com"]);
+    });
+
+    it("derives nothing in production, even with a preview-looking URL", () => {
+      const production = {
+        ...NAMED,
+        APP_ENV: "production",
+        NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: livePublishable,
+        CLERK_SECRET_KEY: "sk_live_not_a_real_secret",
+        VERCEL_ENV: "production",
+        VERCEL_URL: PLATFORM.VERCEL_URL,
+      };
+      expect(parties(production)).toEqual(["https://app.example.com"]);
+    });
+
+    it.each([
+      "https://my-app-abc123-team.vercel.app",
+      "my-app-abc123-team.vercel.app/x",
+      "my-app-abc123-team.vercel.app:3000",
+      "MY-APP.vercel.app",
+      " my-app-abc123-team.vercel.app",
+      "*.vercel.app",
+      "localhost",
+      "",
+    ])("takes only a bare hostname from the platform, not %j", (value) => {
+      expect(parties({ ...PREVIEW, ...PLATFORM, VERCEL_URL: value, VERCEL_BRANCH_URL: undefined })).toEqual([
+        "https://preview.example.com",
+      ]);
+    });
+  });
+
+  describe("under APP_ENV=test (no Clerk instance)", () => {
+    it("defaults nothing, so the proxy checks no token, and checks no entry", () => {
+      expect(parties({ APP_ENV: "test" })).toEqual([]);
+      expect(parties({ APP_ENV: "test", CLERK_AUTHORIZED_PARTIES: "not an origin" })).toEqual([
+        "not an origin",
+      ]);
+    });
   });
 });

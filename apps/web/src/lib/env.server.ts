@@ -7,7 +7,8 @@
  * or inconsistent setting. Messages name the variable and never its value.
  * The rules mirror the API's (apps/api: kernel config and identity settings)
  * for the variables both apps read: the environment (APP_ENV and the platform's
- * VERCEL_ENV), the Clerk keys, the telemetry modes and keys. Unlike the API,
+ * VERCEL_ENV), the Clerk keys, the origins (APP_BASE_URL, CLERK_AUTHORIZED_PARTIES),
+ * the telemetry modes and keys. Unlike the API,
  * which refuses a bundle without APP_ENV by layout, the web app is built inside
  * a full checkout, so VERCEL=1 marks a Vercel build or deployment: there it
  * also requires CLERK_SECRET_KEY, because Vercel serves the build output and
@@ -24,6 +25,8 @@ import { DEFAULT_POSTHOG_HOST, isAppEnv, type AppEnv } from "./env";
 export const SERVER_VARIABLES = [
   "APP_ENV",
   "VERCEL_ENV",
+  "APP_BASE_URL",
+  "CLERK_AUTHORIZED_PARTIES",
   "API_ORIGIN",
   "ANALYTICS_MODE",
   "ERROR_REPORTING_MODE",
@@ -54,6 +57,11 @@ export type ServerEnv = Readonly<{
   appEnv: AppEnv;
   apiOrigin: string;
   clerkPublishableKey: string;
+  /**
+   * The origins whose Clerk sessions the proxy accepts (the token's azp claim): the list the API's identity
+   * module verifies against, by the same rules. Empty only under APP_ENV=test, where no Clerk instance exists.
+   */
+  clerkAuthorizedParties: readonly string[];
   /** The Stripe custom domain of Checkout and the Customer Portal, if the account has one. */
   stripeCustomDomain: string | null;
   analytics: Readonly<{ mode: TelemetryMode; enabled: boolean; host: string }>;
@@ -107,6 +115,33 @@ function isLoopbackOrigin(origin: string): boolean {
   return hostname === "localhost" || hostname === "[::1]" || /^127(?:\.\d{1,3}){3}$/.test(hostname);
 }
 
+/**
+ * An http(s) origin in the form a browser sends it as Origin, which is what a Clerk session token's azp
+ * claim holds: lowercase scheme and host, default port dropped. Null for anything else (a path, query,
+ * fragment, credentials, a space, a backslash or escape, a host the API would not take). A port of the
+ * API's http_origin (kernel/infrastructure/config.py): the lists must come out the same in both apps,
+ * so this is stricter than httpOrigin above, which lets WHATWG's URL parser decide.
+ */
+export function browserOrigin(value: string): string | null {
+  const match = /^(https?):\/\/(\[[0-9a-f:.]+\]|[^[\]:/]+)(?::([0-9]*))?\/?$/i.exec(value);
+  if (!match) return null;
+  const scheme = (match[1] ?? "").toLowerCase();
+  const host = (match[2] ?? "").toLowerCase();
+  if (host.startsWith("[")) {
+    try {
+      new URL(`${scheme}://${host}`); // an IPv6 literal the URL parser takes; kept as written, like the API
+    } catch {
+      return null;
+    }
+  } else if (!/^[a-z0-9_]([a-z0-9_.-]*[a-z0-9_])?$/.test(host)) {
+    return null;
+  }
+  const port = match[3] ? Number(match[3]) : null;
+  if (port !== null && port > 65535) return null;
+  const defaultPort = scheme === "https" ? 443 : 80;
+  return `${scheme}://${host}${port !== null && port !== defaultPort ? `:${port}` : ""}`;
+}
+
 /** A bare lowercase hostname with at least one dot: no scheme, port, path, or wildcard (like the API's check). */
 const HOSTNAME = /^(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 
@@ -150,6 +185,65 @@ function platformProblems(appEnv: AppEnv, vercelEnv: VercelEnv | undefined): str
     return [`APP_ENV=${appEnv} is not allowed when VERCEL_ENV=${vercelEnv} (set ${allowed})`];
   }
   return [];
+}
+
+const DEFAULT_APP_BASE_URL = "http://localhost:3000";
+
+/**
+ * The origins the proxy accepts sessions from, and what is wrong with the settings that name them: the
+ * API's rules (identity/settings.py authorized_parties and identity_problems, core_problems for
+ * APP_BASE_URL), so both apps trust the same pages. CLERK_AUTHORIZED_PARTIES lists them, or the origin of
+ * APP_BASE_URL stands in; on a Vercel preview deployment of a preview application the deployment's own
+ * origin and its branch's are added to the list (never replacing it), because their URLs differ per
+ * deployment and cannot be listed ahead of time. Under APP_ENV=test nothing is defaulted or checked, as
+ * there is no Clerk instance. Messages name variables only, never values.
+ */
+function originSettings(
+  source: (name: string) => string | undefined,
+  platformValue: (name: string) => string | undefined,
+  appEnv: AppEnv,
+  vercelEnv: VercelEnv | undefined,
+): { problems: string[]; parties: string[] } {
+  const problems: string[] = [];
+  const baseUrl = source("APP_BASE_URL");
+  // As in the API, the default stands in for an unset APP_BASE_URL below, even where a deployment is refused for not setting it.
+  const own = browserOrigin(baseUrl ?? DEFAULT_APP_BASE_URL);
+  if (baseUrl === undefined && (appEnv === "preview" || appEnv === "production")) {
+    problems.push(`APP_BASE_URL is required when APP_ENV=${appEnv}`);
+  } else if (own === null) {
+    problems.push(
+      "APP_BASE_URL must be an http(s) origin (scheme, host, optional port; no path or credentials)",
+    );
+  } else if (appEnv === "production" && !own.startsWith("https://")) {
+    problems.push("APP_BASE_URL must use https in production");
+  }
+
+  // An entry that is no origin stays as written, and is refused below.
+  const parties = (source("CLERK_AUTHORIZED_PARTIES") ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => browserOrigin(entry) ?? entry);
+  if (parties.length === 0 && appEnv !== "test" && own !== null) parties.push(own);
+  if (appEnv === "preview" && vercelEnv === "preview") {
+    for (const host of [platformValue("VERCEL_URL"), platformValue("VERCEL_BRANCH_URL")]) {
+      if (host !== undefined && HOSTNAME.test(host) && !parties.includes(`https://${host}`)) {
+        parties.push(`https://${host}`);
+      }
+    }
+  }
+
+  if (appEnv === "test") return { problems, parties };
+  if (parties.some((entry) => browserOrigin(entry) !== entry)) {
+    problems.push(
+      "CLERK_AUTHORIZED_PARTIES must list http(s) origins (scheme, host, optional port; no path or credentials)",
+    );
+  } else if (parties.length === 0) {
+    problems.push("CLERK_AUTHORIZED_PARTIES is required (comma-separated frontend origins)");
+  } else if (own !== null && !parties.includes(own)) {
+    problems.push("CLERK_AUTHORIZED_PARTIES must list the origin of APP_BASE_URL");
+  }
+  return { problems, parties };
 }
 
 /** ENV-04 for Clerk: live keys only in production, and only live keys there. */
@@ -241,6 +335,11 @@ export function loadServerEnv(env: Source, options: LoadOptions): ServerEnv {
   // Vercel serves the build output and never runs `next start`, so its build is where a missing secret surfaces.
   problems.push(...clerkProblems(source, appEnv, options.serving || vercel));
 
+  // The platform sets VERCEL_URL and VERCEL_BRANCH_URL; they are taken from the process, never from a file, and as set.
+  const platformValue = (name: string) => (env[name]?.trim() ? env[name] : undefined);
+  const origins = originSettings(source, platformValue, appEnv, vercelEnv);
+  problems.push(...origins.problems);
+
   const stripeCustomDomain = source("STRIPE_CUSTOM_DOMAIN") ?? null;
   if (stripeCustomDomain !== null && !HOSTNAME.test(stripeCustomDomain)) {
     problems.push("STRIPE_CUSTOM_DOMAIN must be a hostname such as payments.example.com");
@@ -280,6 +379,7 @@ export function loadServerEnv(env: Source, options: LoadOptions): ServerEnv {
     appEnv,
     apiOrigin,
     clerkPublishableKey: source("NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY") ?? "",
+    clerkAuthorizedParties: Object.freeze(origins.parties),
     stripeCustomDomain,
     analytics: Object.freeze({ mode: analyticsMode, enabled: analyticsEnabled, host: posthogHost }),
     errorReporting: Object.freeze({
