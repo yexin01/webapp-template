@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import psycopg
-from psycopg.conninfo import conninfo_to_dict
+from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
 from app.kernel.infrastructure.config import REPO_ROOT
 
@@ -103,9 +103,35 @@ def _is_local_socket(host: str) -> bool:
     return host.startswith("/") and os.path.normpath(host) in LOCAL_SOCKET_DIRECTORIES
 
 
+def with_tls_default(url: str) -> str:
+    """``url`` with ``sslmode=require`` added when it names a non-local server and nothing says anything about TLS.
+
+    libpq's default, ``prefer``, goes on without encryption when the server (or someone in between) says it has
+    none, and then sends the password. Anything stated explicitly is kept: the URL's ``sslmode`` (``verify-full``
+    with ``sslrootcert`` is the setting that also checks who answers), ``requiressl``, ``sslrootcert=system``, the
+    ``PGSSLMODE`` and ``PGREQUIRESSL`` variables, and a ``service`` entry, whose file this cannot read.
+    """
+    try:
+        params = conninfo_to_dict(url)
+    except psycopg.Error:
+        return url
+    stated = (
+        "sslmode" in params
+        or "requiressl" in params
+        or "service" in params
+        or params.get("sslrootcert") == "system"
+        or any(os.environ.get(name) for name in ("PGSSLMODE", "PGREQUIRESSL", "PGSERVICE"))
+    )
+    if stated or is_local_database(url):
+        return url
+    return make_conninfo(url, sslmode="require")
+
+
 def _connect(url: str, *, autocommit: bool = False) -> psycopg.Connection:
     # Transaction-mode poolers do not support server-side prepared statements.
-    return psycopg.connect(url, autocommit=autocommit, prepare_threshold=None, connect_timeout=_CONNECT_TIMEOUT_SECONDS)
+    return psycopg.connect(
+        with_tls_default(url), autocommit=autocommit, prepare_threshold=None, connect_timeout=_CONNECT_TIMEOUT_SECONDS
+    )
 
 
 def require_local_database(url: str, operation: str) -> None:

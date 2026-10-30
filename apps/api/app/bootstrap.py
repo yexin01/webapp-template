@@ -28,6 +28,7 @@ from app.kernel.infrastructure.clock import SystemClock
 from app.kernel.infrastructure.config import AppEnv, Mode
 from app.kernel.infrastructure.db import REQUEST_THREADS, Database, PgTransactions
 from app.kernel.infrastructure.integrations import describe_analytics, describe_database, describe_error_reporting
+from app.kernel.infrastructure.migrations import with_tls_default
 from app.kernel.infrastructure.observability import (
     NoopAnalytics,
     NoopErrorReporter,
@@ -196,7 +197,7 @@ def _database(settings: Settings) -> Database:
     if settings.database_url is None:  # pragma: no cover - validated in Settings
         raise RuntimeError("DATABASE_URL is required")
     return Database(
-        settings.database_url.get_secret_value(),
+        with_tls_default(settings.database_url.get_secret_value()),
         api_pool_size=settings.database_pool_max_size,
         worker_pool_size=settings.database_worker_pool_max_size,
         connect_timeout=settings.database_connect_timeout_seconds,
