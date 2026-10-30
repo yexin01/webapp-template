@@ -164,25 +164,38 @@ def _admin_url() -> str:
     return url
 
 
-def _database_required() -> bool:
-    """True in CI or when TEST_DATABASE_URL is set: database tests must run, not skip."""
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--require-db",
+        action="store_true",
+        help="fail, instead of skipping the database tests, when PostgreSQL is unreachable (pnpm test, pnpm verify)",
+    )
+
+
+def _database_required(config: pytest.Config) -> bool:
+    """True in CI, when TEST_DATABASE_URL is set, or with --require-db: database tests must run, not skip."""
     ci = os.environ.get("CI", "").strip().lower() not in ("", "0", "false")
-    return ci or bool(os.environ.get("TEST_DATABASE_URL"))
+    return ci or bool(os.environ.get("TEST_DATABASE_URL")) or bool(config.getoption("--require-db"))
 
 
 @pytest.fixture(scope="session")
-def database_url() -> Iterator[str]:
+def database_url(request: pytest.FixtureRequest) -> Iterator[str]:
     admin = _admin_url()
     name = f"app_test_{uuid.uuid4().hex[:10]}"
     try:
         with psycopg.connect(admin, autocommit=True, connect_timeout=3) as conn:
             conn.execute(f'CREATE DATABASE "{name}"')
     except psycopg.OperationalError as error:
-        # Skipping is a local convenience only: in CI, or when a database was
-        # configured explicitly, an unreachable server must fail the run
-        # rather than let every database test silently skip.
-        if _database_required():
-            pytest.fail(f"PostgreSQL is not reachable for tests: {error}", pytrace=False)
+        # Skipping is a local convenience only: in CI, with a configured database, or with --require-db,
+        # an unreachable server must end the run, once, rather than let every database test skip (or fail).
+        if _database_required(request.config):
+            where = urlparse(admin)
+            pytest.exit(
+                f"PostgreSQL is not reachable for tests at {where.hostname}:{where.port or 5432}: {error}\n"
+                "The database tests are required here (CI, TEST_DATABASE_URL, or --require-db). "
+                "Start the local one with `pnpm db:up` (Docker), or set TEST_DATABASE_URL to a local server.",
+                returncode=2,
+            )
         pytest.skip("PostgreSQL is not available; start it with `pnpm db:up`.")
     parsed = urlparse(admin)
     url = urlunparse(parsed._replace(path=f"/{name}"))
