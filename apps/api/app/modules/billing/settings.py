@@ -29,6 +29,8 @@ class BillingSettings(BaseModel):
     portal_sessions_per_user_per_hour: int = Field(default=20, ge=1, le=1_000)
     # Each re-read a signed-in user asks for after checkout or the portal is a Stripe call.
     billing_syncs_per_user_per_hour: int = Field(default=30, ge=1, le=1_000)
+    # The same, for all users together: a cap on what a crowd can ask of Stripe's shared rate limit.
+    billing_syncs_global_per_hour: int = Field(default=600, ge=1, le=100_000)
     # Checkout and portal requests in Stripe calls at once per instance. Each holds a server
     # thread (40 by default, shared by every synchronous route) until Stripe answers.
     billing_max_concurrent_stripe_calls: int = Field(default=4, ge=1, le=16)

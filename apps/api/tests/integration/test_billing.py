@@ -402,34 +402,109 @@ def test_user_syncs_are_rate_limited_before_any_stripe_call(make_harness: Any) -
     assert sync(h, h.login("user_b")).status_code == 200  # the allowance is the user's own
 
 
-def test_a_sync_answers_503_at_once_while_every_slot_is_busy(make_harness: Any) -> None:
-    """A signed-in user never queues for a slot: webhooks and reconciliation keep their places."""
-    h = make_harness({"database_worker_pool_max_size": 2})  # one synchronization slot
+class HeldRead:
+    """Makes the first Stripe subscription read of one customer wait until the test lets it finish."""
+
+    def __init__(self, h: Harness, customer_id: str) -> None:
+        self.entered, self.release = threading.Event(), threading.Event()
+        original = InMemoryBillingProvider.list_customer_subscriptions
+
+        def read(provider: InMemoryBillingProvider, customer: str) -> list[SubscriptionSnapshot]:
+            if customer == customer_id and not self.entered.is_set():
+                self.entered.set()
+                self.release.wait(10)
+            return original(provider, customer)
+
+        h.billing.list_customer_subscriptions = read.__get__(h.billing)  # type: ignore[method-assign]
+
+
+def in_thread(call: Any, results: list[Any]) -> threading.Thread:
+    thread = threading.Thread(target=lambda: results.append(call().status_code))
+    thread.start()
+    return thread
+
+
+def test_user_syncs_never_take_the_last_synchronization_slot(make_harness: Any) -> None:
+    """Webhooks and reconciliation keep a slot however many users ask: users cannot make webhooks 503.
+
+    The default worker pool gives two slots, so one is the most users may hold, and the next user is
+    refused at once instead of queuing. A webhook for another customer is still processed meanwhile.
+    """
+    h = make_harness()
+    first, second, third = h.login("user_a"), h.login("user_b"), h.login("user_c")
+    for headers in (first, second, third):
+        start_checkout(h, headers)
+    held = HeldRead(h, customer_of(h, "user_a"))
+    holding: list[int] = []
+    thread = in_thread(lambda: sync(h, first), holding)
+    try:
+        assert held.entered.wait(10)  # user_a's re-read holds a slot, in Stripe
+        started = time.monotonic()
+        refused = sync(h, second)
+        assert (refused.status_code, refused.json()["code"]) == (503, "DEPENDENCY_UNAVAILABLE")
+        assert time.monotonic() - started < 0.5  # refused at once: waiting would hold a request thread too
+        # The slot users cannot take serves a webhook meanwhile.
+        customer = customer_of(h, "user_c")
+        h.billing.set_subscriptions(customer, [snapshot(customer, SubscriptionStatus.ACTIVE)])
+        delivered = send_webhook(h, event_payload(customer))
+        assert (delivered.status_code, delivered.json()["status"]) == (200, "processed")
+    finally:
+        held.release.set()
+        thread.join(10)
+    assert holding == [200]
+    assert sync(h, second).status_code == 200  # the slot is given back
+
+
+def test_with_two_worker_connections_there_is_one_slot_and_users_are_always_refused(make_harness: Any) -> None:
+    h = make_harness({"database_worker_pool_max_size": 2})
+    headers = h.login("user_a")
+    start_checkout(h, headers)
+    reads = h.billing.calls.count("list_customer_subscriptions")
+    r = sync(h, headers)
+    assert (r.status_code, r.json()["code"]) == (503, "DEPENDENCY_UNAVAILABLE")
+    assert h.billing.calls.count("list_customer_subscriptions") == reads  # nothing was asked of Stripe
+    customer = customer_of(h, "user_a")
+    h.billing.set_subscriptions(customer, [snapshot(customer, SubscriptionStatus.ACTIVE)])
+    assert send_webhook(h, event_payload(customer)).json()["status"] == "processed"  # the one slot is the webhook's
+
+
+def test_a_user_sync_counts_against_the_per_instance_bound_that_checkout_and_the_portal_share(
+    make_harness: Any,
+) -> None:
+    h = make_harness({"billing_max_concurrent_stripe_calls": 1, "database_worker_pool_max_size": 4})
     first, second = h.login("user_a"), h.login("user_b")
     for headers in (first, second):
         start_checkout(h, headers)
-    original = InMemoryBillingProvider.list_customer_subscriptions
-    entered, release = threading.Event(), threading.Event()
-
-    def held(self: InMemoryBillingProvider, customer_id: str) -> list[SubscriptionSnapshot]:
-        entered.set()
-        release.wait(10)
-        return original(self, customer_id)
-
-    h.billing.list_customer_subscriptions = held.__get__(h.billing)  # type: ignore[method-assign]
+    held = HeldRead(h, customer_of(h, "user_a"))
     holding: list[int] = []
-    thread = threading.Thread(target=lambda: holding.append(sync(h, first).status_code))
-    thread.start()
+    thread = in_thread(lambda: sync(h, first), holding)
     try:
-        assert entered.wait(10)
-        started = time.monotonic()
-        r = sync(h, second)
-        assert (r.status_code, r.json()["code"]) == (503, "DEPENDENCY_UNAVAILABLE")
-        assert time.monotonic() - started < 0.5
+        assert held.entered.wait(10)
+        # Synchronization slots remain, but the one Stripe call this instance allows is in use.
+        for r in (sync(h, second), h.client.post("/api/v1/billing/portal", headers=second), start_checkout(h, second)):
+            assert (r.status_code, r.json()["code"]) == (503, "DEPENDENCY_UNAVAILABLE")
     finally:
-        release.set()
+        held.release.set()
         thread.join(10)
     assert holding == [200]
+    assert sync(h, second).status_code == 200
+
+
+def test_user_syncs_are_limited_for_all_users_together_after_each_users_own_allowance(make_harness: Any) -> None:
+    h = make_harness({"billing_syncs_per_user_per_hour": 1, "billing_syncs_global_per_hour": 2})
+    users = [h.login(name) for name in ("user_a", "user_b", "user_c")]
+    for headers in users:
+        start_checkout(h, headers)
+    reads = h.billing.calls.count("list_customer_subscriptions")
+    a, b, c = users
+    # user_a's second ask is over their own allowance and does not use the shared one.
+    assert [sync(h, a).status_code, sync(h, a).status_code, sync(h, b).status_code, sync(h, c).status_code] == [
+        200,
+        429,
+        200,
+        429,
+    ]
+    assert h.billing.calls.count("list_customer_subscriptions") == reads + 2
 
 
 def test_a_sync_and_a_webhook_for_the_same_customer_converge_and_record_the_plan_change_once(harness: Harness) -> None:

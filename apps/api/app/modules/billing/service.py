@@ -136,6 +136,7 @@ class BillingService:
         checkouts_per_hour: int,
         portal_sessions_per_hour: int,
         syncs_per_hour: int,
+        syncs_global_per_hour: int,
         max_concurrent_stripe_calls: int,
         sync_slots: int = 1,
         sync_wait_seconds: float = 5.0,
@@ -152,6 +153,7 @@ class BillingService:
         self._checkouts_per_hour = checkouts_per_hour
         self._portal_sessions_per_hour = portal_sessions_per_hour
         self._syncs_per_hour = syncs_per_hour
+        self._syncs_global_per_hour = syncs_global_per_hour
         self._stripe_calls = threading.BoundedSemaphore(max_concurrent_stripe_calls)
         self.sync_slots = sync_slots
         self.sync_wait_seconds = sync_wait_seconds
@@ -233,15 +235,19 @@ class BillingService:
         have landed. It takes no input: entitlement still comes only from what
         this server reads from Stripe for the user's own customer, never from
         a redirect parameter. Webhooks, reconciliation, and this share one
-        customer lock and one set of slots, so they converge on one state.
+        customer lock, so they converge on one state. Users cannot crowd out
+        the other two: this counts against the per-instance bound that
+        checkout and the portal share, it never takes the last synchronization
+        slot (``_Slots.admit_user``), and it is limited per user and overall.
         """
         authorize(ctx, BILLING_MANAGE)
         self._require_provider()
         self._rate_limiter.hit(f"billing-sync:{ctx.user_id}", self._syncs_per_hour, 3600)
+        self._rate_limiter.hit("billing-sync:all", self._syncs_global_per_hour, 3600)
         with self._tx.as_tenant(ctx) as t:
             customer_id = t.repo.get_billing_customer_id(ctx.user_id)
         if customer_id is not None:
-            with self._sync_slots.try_admit(), self._tx.as_system() as t:
+            with self._stripe_call_slot(), self._sync_slots.admit_user(), self._tx.as_system() as t:
                 t.repo.lock_customer(customer_id)
                 before = decide(t.repo.list_subscriptions_by_customer(customer_id), self._clock.now()).plan
                 try:
@@ -528,29 +534,39 @@ class _Slots:
     takes the connections that readiness, rate limits, and membership
     refreshes need. Webhook deliveries queue for a slot in the event loop
     first (``routes.build_webhook_router``), where waiting holds no thread;
-    here they contend with reconciliation and with the re-reads signed-in
-    users ask for (``try_admit``). A caller waits briefly. A
+    here they contend with reconciliation. A caller waits briefly. A
     waiting caller holds a threadpool thread (40 by default, shared by every
     synchronous route), so only ``max_waiting`` callers wait; anyone else gets
     ``503`` at once, and Stripe retries the delivery.
+
+    The re-reads signed-in users ask for (``admit_user``) never wait and never
+    take the last slot: at most one slot fewer than exist is held by users, so
+    webhooks and reconciliation always have one. With two worker connections
+    there is one slot, and user re-reads are always refused.
     """
 
     def __init__(self, slots: int, wait_seconds: float, max_waiting: int = 8) -> None:
         self._slots = threading.BoundedSemaphore(slots)
+        self._users = threading.BoundedSemaphore(max(slots - 1, 0))
         self._max_waiting = max_waiting
         self._waiting = 0
         self._lock = threading.Lock()
         self._wait_seconds = wait_seconds
 
     @contextmanager
-    def try_admit(self) -> Iterator[None]:
-        """A slot now or ``503`` at once, never a wait: a user can simply ask again, and webhooks keep their places."""
-        if not self._slots.acquire(blocking=False):
+    def admit_user(self) -> Iterator[None]:
+        """A slot now or ``503`` at once, and never the last one: a user can simply ask again."""
+        if not self._users.acquire(blocking=False):
             raise _busy()
         try:
-            yield
+            if not self._slots.acquire(blocking=False):
+                raise _busy()
+            try:
+                yield
+            finally:
+                self._slots.release()
         finally:
-            self._slots.release()
+            self._users.release()
 
     @contextmanager
     def admit(self) -> Iterator[None]:
