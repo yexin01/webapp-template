@@ -208,9 +208,9 @@ def create_app(container: Container) -> FastAPI:
     return app
 
 
-def bootstrap() -> Container:
-    """Load configuration, configure telemetry, and build the production container."""
-    settings = load_settings()
+def bootstrap(settings: Settings | None = None) -> Container:
+    """Load configuration (unless given, for the telemetry wire test), configure telemetry, and build the container."""
+    settings = settings or load_settings()
     configure_logging(settings.log_level)
     init_error_reporting(settings)
     return build_container(settings)
