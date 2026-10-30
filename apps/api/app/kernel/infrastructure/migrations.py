@@ -34,8 +34,10 @@ LOCAL_SOCKET_DIRECTORIES = frozenset(
 )
 
 # The ledger lives in ``public`` so it exists before the first migration. On
-# Supabase, ``public`` is exposed through the Data API with default grants, so
-# row-level security (with no policies) and revoked grants keep it private.
+# Supabase, ``public`` is exposed through the Data API, and new tables there
+# default to full grants for anon, authenticated, and service_role. Row-level
+# security (with no policies) keeps the first two out, but service_role
+# bypasses it, so only revoking the grants keeps the ledger private.
 _LEDGER_DDL = """
 CREATE TABLE IF NOT EXISTS public.app_schema_migrations (
   version    text PRIMARY KEY,
@@ -47,7 +49,7 @@ REVOKE ALL ON public.app_schema_migrations FROM PUBLIC;
 DO $$
 DECLARE r text;
 BEGIN
-  FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
+  FOREACH r IN ARRAY ARRAY['anon', 'authenticated', 'service_role'] LOOP
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
       EXECUTE format('REVOKE ALL ON public.app_schema_migrations FROM %I', r);
     END IF;
