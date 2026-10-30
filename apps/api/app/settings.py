@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Self
 
-from pydantic import ValidationError, model_validator
+from pydantic import AliasChoices, ValidationError, model_validator
 
 from app.kernel.infrastructure.config import ConfigError, CoreSettings, core_problems
 from app.kernel.infrastructure.db import REQUEST_THREADS
@@ -87,8 +87,24 @@ def thread_budget_problems(s: Settings) -> list[str]:
     ]
 
 
+def _setting_names() -> set[str]:
+    """The keywords ``Settings`` binds: each field's name and the names of its aliases."""
+    names = set(Settings.model_fields)
+    for field in Settings.model_fields.values():
+        alias = field.validation_alias
+        choices = alias.choices if isinstance(alias, AliasChoices) else [alias]
+        names.update(choice for choice in choices if isinstance(choice, str))
+    return names
+
+
 def load_settings(**overrides: object) -> Settings:
-    """Load settings, converting validation errors into name-only messages."""
+    """Load settings, converting validation errors into name-only messages.
+
+    A keyword that names no setting is refused: the model ignores unknown keywords, so a
+    misspelled one would leave its setting at the default.
+    """
+    if unknown := sorted(k for k in overrides if not k.startswith("_") and k not in _setting_names()):
+        raise TypeError(f"load_settings() got unknown settings: {', '.join(unknown)}")
     try:
         return Settings(**overrides)  # type: ignore[arg-type]
     except ValidationError as exc:

@@ -39,7 +39,7 @@ from app.kernel.infrastructure.observability import (
 from app.kernel.infrastructure.store import PgKernelStore
 from app.kernel.jobs import TIME_BUDGET_SECONDS, Job, JobRegistry
 from app.kernel.ports import Analytics, Clock, ErrorReporter, KernelStore
-from app.kernel.wiring import Contribution, Kernel, pick
+from app.kernel.wiring import Contribution, Kernel, Overrides, pick
 from app.modules.billing.module import BillingModule, build_billing
 from app.modules.diagnostics.module import DiagnosticsModule, build_diagnostics
 from app.modules.identity.module import IdentityModule, build_identity
@@ -62,19 +62,22 @@ class Container:
     billing: BillingModule
     projects: ProjectsModule
     llm: LLMModule
-    diagnostics: DiagnosticsModule
     # new:module:fields
+    diagnostics: DiagnosticsModule = field(init=False)  # built last, from every module's probes
     closers: list[Callable[[], None]] = field(default_factory=list)
 
-    def contributions(self) -> list[Contribution]:
+    def module_contributions(self) -> list[Contribution]:
+        """The feature modules' contributions; the integration probes of diagnostics come from these."""
         return [
             self.identity.contribution,
             self.billing.contribution,
             self.projects.contribution,
             self.llm.contribution,
-            self.diagnostics.contribution,
             # new:module:contributions
         ]
+
+    def contributions(self) -> list[Contribution]:
+        return [*self.module_contributions(), self.diagnostics.contribution]
 
     def close(self) -> None:
         self.kernel.analytics.shutdown()
@@ -85,8 +88,12 @@ class Container:
             closer()
 
 
-def build_container(settings: Settings, **overrides: Any) -> Container:
-    """Build the kernel and all modules. Keyword overrides replace individual adapters (tests only)."""
+def build_container(settings: Settings, **adapters: Any) -> Container:
+    """Build the kernel and all modules. Keyword overrides replace individual adapters (tests only).
+
+    An override that no builder looks up is a misspelled key: it raises ``TypeError``.
+    """
+    overrides = Overrides(adapters)
     closers: list[Callable[[], None]] = []
     clock: Clock = pick(overrides, "clock", SystemClock)
     database: Database = pick(overrides, "database", lambda: _database(settings))
@@ -137,26 +144,27 @@ def build_container(settings: Settings, **overrides: Any) -> Container:
     projects = build_projects(kernel, identity.auth)
     # new:module:build
     llm = build_llm(settings, kernel, identity.auth, overrides)
-    probes = [
-        DatabaseProbe(describe_database(settings), store),
-        *identity.contribution.probes,
-        *billing.contribution.probes,
-        *llm.contribution.probes,
-        AnalyticsProbe(describe_analytics(settings), analytics),
-        ErrorReportingProbe(describe_error_reporting(settings), error_reporter),
-    ]
-    diagnostics = build_diagnostics(settings, settings, kernel, identity.auth, probes)
-    return Container(
+    container = Container(
         settings=settings,
         kernel=kernel,
         identity=identity,
         billing=billing,
         projects=projects,
         llm=llm,
-        diagnostics=diagnostics,
         # new:module:container
         closers=closers,
     )
+    probes = [
+        DatabaseProbe(describe_database(settings), store),
+        *(probe for contribution in container.module_contributions() for probe in contribution.probes),
+        AnalyticsProbe(describe_analytics(settings), analytics),
+        ErrorReportingProbe(describe_error_reporting(settings), error_reporter),
+    ]
+    container.diagnostics = build_diagnostics(settings, settings, kernel, identity.auth, probes)
+    if unread := overrides.unread():
+        container.close()
+        raise TypeError(f"build_container() got unknown overrides: {', '.join(unread)}")
+    return container
 
 
 def create_app(container: Container) -> FastAPI:

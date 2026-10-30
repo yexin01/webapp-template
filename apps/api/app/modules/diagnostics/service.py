@@ -39,6 +39,9 @@ class DiagnosticsService:
     ) -> None:
         self._enabled = enabled
         self._operators = operators
+        keys = [probe.info.key for probe in probes]
+        if duplicates := sorted({key.value for key in keys if keys.count(key) > 1}):
+            raise ValueError(f"Duplicate integration probe keys: {', '.join(duplicates)}")
         self._probes = {probe.info.key: probe for probe in probes}
         self._rate_limiter = rate_limiter
         self._tx = transactions

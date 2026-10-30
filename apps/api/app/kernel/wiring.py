@@ -6,7 +6,7 @@ Used only by each module's ``module.py`` and by ``app.bootstrap``.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import Any, TypeVar
 
@@ -57,9 +57,40 @@ class Contribution:
     closers: list[Callable[[], None]] = field(default_factory=list)
 
 
+class Overrides(Mapping[str, Any]):
+    """Adapter overrides for ``build_container`` (tests only; ENV-08).
+
+    It remembers which keys the builders looked up, so ``unread()`` names an override that
+    nothing consumed: a misspelled key, which would otherwise leave the test running on a
+    different adapter than the one it meant to inject.
+    """
+
+    def __init__(self, values: Mapping[str, Any]) -> None:
+        self._values = dict(values)
+        self._asked: set[str] = set()
+
+    def __getitem__(self, key: str) -> Any:
+        self._asked.add(key)
+        return self._values[key]
+
+    def __contains__(self, key: object) -> bool:
+        if isinstance(key, str):
+            self._asked.add(key)
+        return key in self._values
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._values)
+
+    def __len__(self) -> int:
+        return len(self._values)
+
+    def unread(self) -> list[str]:
+        return sorted(self._values.keys() - self._asked)
+
+
 def pick[T](overrides: Mapping[str, Any], key: str, factory: Callable[[], T]) -> T:
     """An explicit override wins, including an explicit ``None`` (tests only; ENV-08)."""
     return overrides[key] if key in overrides else factory()
 
 
-__all__ = ["AuthDeps", "Contribution", "Kernel", "pick"]
+__all__ = ["AuthDeps", "Contribution", "Kernel", "Overrides", "pick"]

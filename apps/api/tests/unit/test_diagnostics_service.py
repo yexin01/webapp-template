@@ -225,3 +225,10 @@ def test_nothing_is_audited_where_diagnostics_do_not_exist() -> None:
         service(tx=tx).integrations(OUTSIDER)
     assert service(tx=tx).integrations(PERSONAL)
     assert tx.tx.audits == []
+
+
+def test_two_probes_for_one_integration_are_refused_not_merged() -> None:
+    """A dict keyed by integration used to keep the last probe and silently drop the other."""
+    tx = _Transactions(SAFE)
+    with pytest.raises(ValueError, match="Duplicate integration probe keys: llm"):
+        service(tx=tx, probes=(_ProviderProbe(tx), _ProviderProbe(tx)))
