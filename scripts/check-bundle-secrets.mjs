@@ -42,6 +42,7 @@ const SECRET_PATTERNS = [
   /\bsk-ant-[A-Za-z0-9_-]{20,}/, // Anthropic API keys
   /\bsk-proj-[A-Za-z0-9_-]{20,}/, // OpenAI project keys
   /\bsntrys_[A-Za-z0-9+/=_-]{20,}/, // Sentry auth tokens
+  /\bph[xsar]_[A-Za-z0-9]{20,}/, // PostHog personal, secret and OAuth keys (the public project token is phc_)
   /postgres(?:ql)?:\/\/[^\s"']+:[^\s"'@]+@/, // database URLs with a password
   /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
 ];
@@ -193,6 +194,7 @@ function selfTest() {
       "sk-ant-": `sk-${"ant"}-api03-${token(40)}`,
       "sk-proj-": `sk-${"proj"}-${token(40)}`,
       sntrys_: `${"sntrys"}_${token(40)}`,
+      "ph[xsar]_": `${"phx"}_${token(40)}`,
       "[sr]k_": `${"sk"}_${"live"}_${token(24)}`,
       whsec_: `${"whsec"}_${token(24)}`,
       "postgres": `postgresql://app:${token(16)}@db.example.internal/app`,
