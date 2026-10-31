@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Document role** | Authoritative engineering implementation specification for this repository |
-| **Revision** | 2 — 2026-10-14 |
+| **Revision** | 3 — 2026-10-30 (cycle 1 fix round: [ADR-0004](adr/0004-cycle-1-adopted-decisions.md)) |
 | **Audience** | AI development agents, software engineers, reviewers |
 | **Owner** | Repository owner — approves decisions, scope changes, and every remote action |
 | **Priority** | Security, correctness, maintainability, reproducibility |
@@ -43,9 +43,9 @@ Requirements carry stable identifiers (for example `AUTH-03`). Identifiers are n
 | Threat model | §13.2 of this document | Initial version. If it outgrows this document it moves to `dev-docs/threat-model.md`, and §13.2 becomes a link. |
 | Performance test plan | §15.2 of this document | Maintained here |
 | Requirements traceability matrix | §21 of this document | Maintained here |
-| Architecture Decision Records | `dev-docs/adr/NNNN-short-title.md` | ADR-0001 (approved recommendations for DEC-007 to DEC-012); ADR-0002 (DEC-002 option (b), DEC-009 value, DEC-012 contacts, DEC-003 to DEC-005 adopter-owned); ADR-0003 (modular monolith, request-scoped transactions, outbox, jobs, generator) |
-| Evidence records | `dev-docs/evidence/` | `2026-10-14-local-verification.md`, `2026-10-14-diagnostics-perf-local.md`, `2026-10-14-adr-0002-perf07-local.md`, `2026-10-14-adr-0003-modular-architecture.md`, `dec-001-vercel-python.md` (the DEC-001 local proof), and `2026-10-15-review-fixes.md` (a full review and its fixes) (mocked integrations, local only) |
-| Adopter-facing documentation | `README.md`, `docs/architecture.md`, `docs/integrations.md`, `docs/operations.md`, `docs/data-inventory.md`, `perf/README.md`, `perf/run-plan-template.md` | Exists |
+| Architecture Decision Records | `dev-docs/adr/NNNN-short-title.md` | ADR-0001 (approved recommendations for DEC-007 to DEC-012); ADR-0002 (DEC-002 option (b), DEC-009 value, DEC-012 contacts, DEC-003 to DEC-005 adopter-owned); ADR-0003 (modular monolith, request-scoped transactions, outbox, jobs, generator); ADR-0004 (decisions adopted by delegation in the cycle 1 fix round, awaiting owner confirmation) |
+| Evidence records | `dev-docs/evidence/` | `2026-10-14-local-verification.md`, `2026-10-14-diagnostics-perf-local.md`, `2026-10-14-adr-0002-perf07-local.md`, `2026-10-14-adr-0003-modular-architecture.md`, `dec-001-vercel-python.md` (the DEC-001 local proof), `2026-10-15-review-fixes.md` (a full review and its fixes), the two `2026-10-15-second-review-*.md` records, and `2026-10-30-cycle-1-fix-round.md` (the cycle 1 fixes by package, the merged-tree checks, and what was not run) (mocked integrations, local only) |
+| Adopter-facing documentation | `README.md`, `docs/setup.md`, `docs/deployment.md`, `docs/architecture.md`, `docs/integrations.md`, `docs/operations.md`, `docs/limitations.md`, `docs/data-inventory.md`, `perf/README.md`, `perf/run-plan-template.md` | Exists |
 | Community files | `LICENSE`, `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, `.github/` | Exist. Contacts are adopter placeholders that `init-template` fills in and `check:placeholders` enforces (DEC-012, ADR-0002) |
 
 ---
@@ -115,30 +115,32 @@ These decisions are confirmed. A confirmed technology choice is not evidence tha
   3. Set the status to `RESOLVED` with a link to the ADR or approval.
   4. In the same change, update the affected sections and the traceability matrix.
 - Decision statuses are `OPEN`, `RESOLVED`, and `SUPERSEDED`.
+- A decision that the owner delegated ("recommend the options, then choose the recommended one") and an agent adopted keeps the status `OPEN` with the qualifier "adopted by delegation". It records the chosen option, the alternative, and the cost of reversal in an ADR, and stays reversible. It becomes `RESOLVED` only when the owner records approval (date and option) as above. Nothing is ever recorded as "decided by the owner" without that approval.
 
 ### 3.2 Register summary
 
 | ID | Decision | Status | Blocks | Next action |
 |---|---|---|---|---|
-| DEC-001 | Python backend on Vercel | OPEN — local proof recorded 2026-10-14 ([evidence](evidence/dec-001-vercel-python.md)); platform verification pending | All backend implementation beyond the proof | Owner authorizes the preview deployment and chooses the topology (§18, P1) |
+| DEC-001 | Python backend on Vercel | OPEN — local proof recorded 2026-10-14 ([evidence](evidence/dec-001-vercel-python.md)); topology B (one project with Vercel Services, Beta) adopted by delegation 2026-10-30 ([ADR-0004 §1](adr/0004-cycle-1-adopted-decisions.md)); platform verification pending | The platform items of Gate E | Owner authorizes the preview deployment, runs the two-minute check, and confirms or reverses the topology (§18, P1; §23) |
 | DEC-002 | Individual billing vs. organization entitlements | RESOLVED 2026-10-14 — option (b) ([ADR-0002](adr/0002-organization-entitlements-contacts-adopter-decisions.md)) | — | — |
 | DEC-003 | Performance targets | RESOLVED 2026-10-14 — adopter-owned (ADR-0002) | — (the template claims no targets) | Each adopter sets targets from its own preview baseline (`perf/run-plan-template.md`) |
 | DEC-004 | Data retention, export, and deletion | RESOLVED 2026-10-14 — adopter-owned (ADR-0002) | Deletion and export features remain out of the template; no deletion-completeness claim | Each adopter completes the checklist in `docs/data-inventory.md` |
 | DEC-005 | Backup and recovery | RESOLVED 2026-10-14 — adopter-owned (ADR-0002) | No recovery-readiness claim | Each adopter follows the checklist in `docs/operations.md` (a local restore drill exists) |
-| DEC-006 | External integration verification | OPEN until verified | Any "sandbox-tested" or "live-tested" claim; Gate E | Owner provides sandbox keys in `.env`; then run the `/integrations` checks and sandbox e2e |
+| DEC-006 | External integration verification | OPEN until verified | Any "sandbox-tested" or "live-tested" claim; Gate E | Owner provides sandbox keys in `.env`; then run `pnpm verify:sandbox` (setup check, Stripe sandbox suite, sandbox e2e) and the `/integrations` checks |
 | DEC-007 | Frontend framework, repository layout, toolchain, and API contracts | RESOLVED 2026-10-14 — recommendation approved ([ADR-0001](adr/0001-approved-recommendations.md)) | — | — |
-| DEC-008 | Data access path and RLS enforcement model | RESOLVED 2026-10-14 — option A approved (ADR-0001) | — | Validate on Vercel in DEC-001 |
+| DEC-008 | Data access path and RLS enforcement model | RESOLVED 2026-10-14 — option A approved (ADR-0001); carried out by the `app_login` role (DB-11, [ADR-0004 §3](adr/0004-cycle-1-adopted-decisions.md)) | — | Validate on Vercel in DEC-001 |
 | DEC-009 | Organization membership source of truth and staleness bound | RESOLVED 2026-10-14 — option A approved (ADR-0001); bound 300 s confirmed (ADR-0002) | — | — |
 | DEC-010 | Billing state and plan-change policy | RESOLVED 2026-10-14 — recommendation approved (ADR-0001) | — | — |
 | DEC-011 | Rate limiting and shared counters | RESOLVED 2026-10-14 — option A approved (ADR-0001) | — | Configure platform rate-limit rules at deployment time |
 | DEC-012 | License and community contacts | RESOLVED 2026-10-14 — Apache-2.0 (ADR-0001); contacts are adopter placeholders (ADR-0002) | — | — |
-| DEC-013 | Preventing a second subscription while one is unsettled | OPEN (recorded 2026-10-15) | Any change to when checkout is refused beyond BILL-07 | Owner chooses an option (below) |
+| DEC-013 | Preventing a second subscription while one is unsettled | OPEN (recorded 2026-10-15) — option (B) adopted by delegation 2026-10-30 ([ADR-0004 §2](adr/0004-cycle-1-adopted-decisions.md)); implemented and tested with mocks, sandbox verification NOT RUN | Owner confirmation; sandbox verification (DEC-006) | Owner confirms or reverses option (B) |
+| DEC-014 | The diagnostics operator capability: approval (ADM-02) and a second factor for operators | OPEN (recorded 2026-10-30) | ADM-02 acceptance of the operator capability | Owner chooses an option (below) |
 
 ### 3.3 Decision entries
 
 #### DEC-001 — Python Backend on Vercel
 
-- **Status:** OPEN — mandatory technical validation.
+- **Status:** OPEN — mandatory technical validation. Topology B was adopted by delegation on 2026-10-30 ([ADR-0004 §1](adr/0004-cycle-1-adopted-decisions.md)), reversible, awaiting owner confirmation.
 - **Owner:** Repository owner.
 - **Blocks:**
   - Backend implementation beyond the proof.
@@ -153,6 +155,7 @@ These decisions are confirmed. A confirmed technology choice is not evidence tha
   - Production deployment is out of scope unless separately authorized.
   - Candidate framework: FastAPI (ASGI) with Pydantic v2. This is a recommendation that the proof must validate.
 - **Local proof (2026-10-14):** [`proofs/dec-001/`](../proofs/dec-001/README.md), with results in [`evidence/dec-001-vercel-python.md`](evidence/dec-001-vercel-python.md). It found three defects, all fixed. Items that only the platform can show remain `NOT VERIFIED`.
+- **Topology (adopted by delegation, 2026-10-30):** option B, one Vercel project with Vercel Services: `web` and `api` and the four crons in the root [`vercel.json`](../vercel.json) ([ADR-0004 §1](adr/0004-cycle-1-adopted-decisions.md)). The condition in the evidence record ("Services generally available") is **not met**: Services is Beta on all plans. Every project variable reaches both services, so FE-02 holds in the code and not at the environment level (T-22). Whether the Next.js proxy runs inside a service is **NOT VERIFIED**: Vercel's reference says "Middleware is not supported inside a service" and `vercel build` emits the proxy anyway ([sources](evidence/dec-001-vercel-python.md#nextjs-proxy-under-services-not-verified)). Page protection therefore has a second, client-side layer (FE-15), and the API authorizes every operation either way. The two-minute check for the first preview is in [`proofs/dec-001/README.md`](../proofs/dec-001/README.md#first-preview-the-two-minute-check).
 - **Required evidence.** Record each item as `PASS`, `FAIL`, or `NOT VERIFIED`, with method, environment, date, and commit:
   1. **Runtime and framework:** the supported Python version and the candidate framework serve requests locally and in preview.
   2. **Dependency packaging:**
@@ -200,7 +203,7 @@ These decisions are confirmed. A confirmed technology choice is not evidence tha
   - Every item is `PASS`, or each `FAIL` has an owner-approved mitigation, or the owner decides on escalated alternatives.
   - An ADR records the framework and topology.
 - **Interim rule:**
-  - No backend code exists outside the proof.
+  - No backend code exists outside the proof. *(Superseded on 2026-10-14 by deviation D-001: the template was implemented ahead of the proof, with local-only verification.)*
   - If a required capability fails, stop the affected work and present alternatives.
   - Do not change the deployment provider or add infrastructure without approval.
 
@@ -309,24 +312,27 @@ These decisions are confirmed. A confirmed technology choice is not evidence tha
   - `mock`: deterministic in-process fake; no network.
   - `sandbox`: the provider's test mode or sandbox account.
   - `live`: production credentials.
+  - `disabled`: off; no provider is called (analytics, error reporting, and the LLM check).
 - **Mocked tests never prove connectivity.**
 
 | Provider | Credentials (names only, never values) | Callback / configuration surfaces | Verification procedure |
 |---|---|---|---|
-| Clerk | Publishable key; secret key; JWT verification key or JWKS URL; webhook signing secret (if DEC-009 uses webhooks) | Sign-in/up redirect URLs; allowed origins / authorized parties; webhook endpoint | Sandbox: development instance with synthetic users; verify token validation, session expiry, organization membership changes |
+| Clerk | Publishable key; secret key; JWT verification key or JWKS URL (an API setting; the web app only checks its format); webhook signing secret (if DEC-009 uses webhooks) | Sign-in/up redirect URLs; allowed origins / authorized parties; webhook endpoint; Organizations enabled with **Membership optional** (personal accounts allowed) | Sandbox: development instance with synthetic users; verify token validation, session expiry, organization membership changes |
 | Stripe | Secret key (test mode/sandbox); publishable key; per-endpoint, per-environment webhook signing secret; Pro monthly and yearly price IDs | Checkout success/cancel URLs; Customer Portal return URL (if DEC-010 adopts it); webhook endpoint | Sandbox: Stripe CLI and test clocks for checkout, renewal, failure, cancellation, reactivation, retry |
-| Supabase | Pooled connection string for the application role; separate migration-role connection string; project URL | Network restrictions; roles; RLS | Sandbox: non-production project; migrations, RLS tests, connection behavior under load |
+| Supabase | Pooled connection string for the `app_login` role (`DATABASE_URL`); separate migration-role connection string (`MIGRATION_DATABASE_URL`); project URL | Network restrictions; roles; RLS | Sandbox: non-production project; migrations, RLS tests, connection behavior under load |
 | PostHog | Project ingest key (public); host | Allowed domains; data retention settings | Sandbox: separate non-production project; event allowlist and redaction checks |
-| Sentry | Frontend and backend DSNs; CI-only auth token for source maps | Environments; scrubbing rules; sample rates | Sandbox: separate project or environment; redaction checks |
-| LLM provider | API key; model identifier | Spend limits at the provider | Provider not yet selected. Sandbox: a minimal-token connectivity check under an approved spending cap |
+| Sentry | Frontend and backend DSNs; auth token, organization slug, and project slug for source maps (the web project's build environment, not CI) | Environments; scrubbing rules; sample rates | Sandbox: separate project or environment; redaction checks |
+| LLM provider | API key; model identifier (neither is needed with `LLM_MODE=disabled`) | Spend limits at the provider | Provider not yet selected. Sandbox: a minimal-token connectivity check under an approved spending cap |
 
+- **Clerk Organizations setting.** The template needs personal accounts (TEN-01: the personal workspace and the personal Pro context). Clerk's default for applications created since 2025-08-22 is Membership required, under which every user must create or join an organization and has no personal workspace: the documentation says "This is the default setting since on August 22, 2025" ([Clerk: configure organizations](https://clerk.com/docs/guides/organizations/configure)). Only a person can change it, in the Clerk dashboard or with `npx clerk@latest enable orgs` without `--force-selection`; the instance secret key cannot (the Backend API has no field for it, per the review).
 - **Required evidence:** for each provider, a dated evidence record stating the mode, environment, procedure, and result. Live verification happens only with explicit authorization.
+- **Automated entry points** (built, tested with mocks or locally, **NOT RUN** against any provider): `pnpm check:setup [--send-test-events]` (the probes behind `/integrations`, an evidence block, and the manual steps still needed), `pnpm setup:stripe`, `pnpm test:stripe-sandbox` (`apps/api/tests/sandbox/`), and `pnpm verify:sandbox`, which runs the setup check, the Stripe sandbox suite, and the signed-in end-to-end tests, each only when its keys are present, and prints a record in the form of section 20.
 - **Resolution criteria:** each provider is classified as mocked, sandbox-tested, or live-tested, with evidence. The LLM provider is selected and recorded.
 - **Interim rule:** every integration is reported as `mocked`.
 
 #### DEC-007 — Frontend Framework, Repository Layout, Toolchain, and API Contracts
 
-- **Status:** RESOLVED 2026-10-14 — the owner approved the recommendation; see [ADR-0001](adr/0001-approved-recommendations.md). The text below is kept as the decision record.
+- **Status:** RESOLVED 2026-10-14 — the owner approved the recommendation; see [ADR-0001](adr/0001-approved-recommendations.md). The text below is kept as the decision record. Local PostgreSQL is plain `postgres:17.6-alpine` (`pnpm db:up`), not the Supabase CLI listed under Toolchain: deviation D-004.
 - **Owner:** Repository owner.
 - **Blocks:** scaffolding (P2).
 - **Rationale:** strict TypeScript is approved, but the framework is not. That choice determines routing, rendering, Clerk integration, Vercel topology, and where server-side code may run.
@@ -362,7 +368,7 @@ These decisions are confirmed. A confirmed technology choice is not evidence tha
 
 #### DEC-008 — Data Access Path and RLS Enforcement Model
 
-- **Status:** RESOLVED 2026-10-14 — the owner approved the recommendation; see [ADR-0001](adr/0001-approved-recommendations.md). The text below is kept as the decision record.
+- **Status:** RESOLVED 2026-10-14 — the owner approved the recommendation; see [ADR-0001](adr/0001-approved-recommendations.md). The text below is kept as the decision record. Option A is carried out by the `app_login` role: DB-11 and [ADR-0004 §3](adr/0004-cycle-1-adopted-decisions.md).
 - **Owner:** Repository owner.
 - **Blocks:** schema, RLS policies, and repository implementation (P3).
 - **Options:**
@@ -462,19 +468,39 @@ These decisions are confirmed. A confirmed technology choice is not evidence tha
 
 #### DEC-013 — Preventing a Second Subscription While One Is Unsettled
 
-- **Status:** OPEN — recorded 2026-10-15 by the review of the billing module.
+- **Status:** OPEN — recorded 2026-10-15 by the review of the billing module. **Option (B) adopted by delegation on 2026-10-30** ([ADR-0004 §2](adr/0004-cycle-1-adopted-decisions.md)), reversible, awaiting owner confirmation. BILL-07 implements it; it is tested with mocks, and the sandbox verification below is NOT RUN.
 - **Owner:** Repository owner.
-- **Blocks:** any change to when checkout is refused beyond BILL-07.
-- **Rationale:** BILL-07 refuses checkout only when the user already has an *entitling* subscription. A user whose subscription is `incomplete` (an asynchronous or authentication-pending payment), `unpaid`, or `paused`, or who starts two checkouts in two tabs, can complete a second checkout. Stripe then holds two subscriptions and charges both. The entitlement decision picks one, so nothing visible goes wrong except the second charge.
+- **Blocks:** owner confirmation, and sandbox verification of the flow (DEC-006).
+- **Rationale:** BILL-07 used to refuse checkout only when the user already had an *entitling* subscription. A user whose subscription is `unpaid` or `paused`, who has a paying subscription on a price outside the catalog, or who starts two checkouts in two tabs, could complete a second checkout. Stripe then holds two subscriptions and charges both. The entitlement decision picks one, so nothing visible goes wrong except the second charge. *Correction (2026-10-30): this entry first named `incomplete` subscriptions from failed Checkout payments. Since API version 2025-03-31.basil, Stripe creates the subscription only after payment completes, and "Failed payment attempts no longer result in an incomplete subscription with a finalized invoice" ([Stripe changelog](https://docs.stripe.com/changelog/basil/2025-03-31/checkout-legacy-subscription-upgrade)). So `incomplete` is only a defensive block.*
 - **Already in place (no policy change):** synchronization logs `billing_multiple_entitling_subscriptions` when one user has more than one entitling subscription, and `docs/operations.md` tells operators to cancel and refund the duplicate.
 - **Options:**
   - **(A)** Refuse checkout while any non-terminal subscription exists (`incomplete`, `past_due`, `unpaid`, `paused`), and send the user to the Customer Portal instead.
   - **(B)** (A) plus storing the open Checkout Session per user and expiring it before creating another, which closes the two-tab case.
   - **(C)** Keep BILL-07 as is and rely on detection and manual refunds.
-- **Recommendation:** (B).
+- **Recommendation:** (B). Adopted by delegation.
 - **Required evidence:** owner choice; sandbox verification of the chosen flow with Stripe test cards for asynchronous and authentication-required payments (DEC-006).
-- **Resolution criteria:** BILL-07 updated, tests for each refused state and for the two-tab case.
-- **Interim rule:** BILL-07 as written, with detection and the operator procedure.
+- **Resolution criteria:** BILL-07 updated, tests for each refused state and for the two-tab case. Done with mocks (`apps/api/tests/integration/test_billing.py`); the owner's approval and the sandbox run remain.
+- **Interim rule:** option (B) as built (BILL-07). Detection (`billing_multiple_entitling_subscriptions`) and the operator procedure stay.
+
+#### DEC-014 — The Diagnostics Operator Capability
+
+- **Status:** OPEN — recorded 2026-10-30 by the cycle 1 review (finding `secarch-adm02-operator-approval`).
+- **Owner:** Repository owner.
+- **Blocks:** ADM-02 acceptance of the operator capability. Nothing else: the capability exists as described below.
+- **Rationale:** ADM-02 requires a register entry and approval for any operator or support capability. The diagnostics tooling had neither. A signed-in user whose Clerk user ID is in `DIAGNOSTICS_OPERATOR_IDS` can read the integration configuration report and run authenticated checks against the configured providers (a Sentry test event, a PostHog event, Clerk and Stripe calls, the LLM provider). It is on by default outside production, can be switched on in production with `DIAGNOSTICS_ENABLED=true`, answers 404 to everyone else, is rate-limited, and audits every run and refusal. In `local` with no operators listed, any signed-in user is an operator. An operator is a listed account with a valid session: no second factor is required. It was introduced after a broken-access-control review ([evidence](evidence/2026-10-14-diagnostics-perf-local.md)). Its defaults were chosen during implementation and have not been approved by the owner.
+- **Questions:**
+  1. Should the capability exist in the template, and in which environments?
+  2. Is a single factor enough for an operator outside `local`?
+  3. Who may be listed, and where (Clerk user IDs differ per instance)?
+- **Options:**
+  - **(A)** Keep the current model and require a verified second factor for operators outside `APP_ENV=local`: expose the session token's `fva` claim from `ClerkTokenVerifier`, and answer 404 when the second factor is unverified or older than 60 minutes. The review notes that Clerk v2 session tokens carry `fva` by default ([session tokens](https://clerk.com/docs/guides/sessions/session-tokens); not re-read for this entry). Needs code and tests; not built.
+  - **(B)** Keep the current model without the second-factor rule.
+  - **(C)** Diagnostics only in `local` and `preview`.
+- **Recommendation:** (A).
+- **Impact:** the diagnostics module, the identity verifier, their tests, and the operations guide.
+- **Required evidence:** owner choice; for (A), tests for an unverified and a stale second factor.
+- **Resolution criteria:** an ADR records the choice, and the ADM-02 row of §21 is updated.
+- **Interim rule:** the current model, as built. The capability stays off in production unless `DIAGNOSTICS_ENABLED=true`.
 
 ---
 
@@ -544,6 +570,11 @@ Since ADR-0003, the API layers below apply **inside every feature module** (`app
   - they run through the CLI or a secret-protected HTTP endpoint;
   - the platform schedule is kept identical to the registry.
 - **ARCH-17** New feature modules are generated with `pnpm new:module`. CI proves that a generated module passes every gate.
+- **ARCH-18** Composition fails loudly. A wiring mistake stops the application at startup or fails a test; it is never ignored:
+  - an adapter override that no builder reads, and a settings keyword that names no setting, raise;
+  - two probes for one integration raise. Modules contribute probes and analytics events through their `Contribution`, so adding either never edits the composition root;
+  - no two settings classes read one environment variable, and `app/settings.py` calls every module's `*_problems` function;
+  - layer imports are allowlisted per layer (`apps/api/tests/architecture/test_layer_imports.py`), so a package that no import-linter contract names cannot enter a domain, service, probe, or route.
 
 ### 4.3 Protected request lifecycle
 
@@ -581,6 +612,8 @@ Since ADR-0003, the API layers below apply **inside every feature module** (`app
   - `GET /api/v1/health` is a liveness check with no dependency calls.
   - `GET /api/v1/ready` checks dependencies with bounded timeouts and never reveals configuration or secrets.
   - Semantics are adjusted to the runtime model established by DEC-001.
+- **API-07** A module declares its own error outcomes. A `DomainError` subclass declares `status`, a client error (4xx) or 503, or the class cannot be defined; the error handler maps it with no kernel change. A request transaction keeps its writes for such an error and rolls back for anything else. A 5xx `DomainError` is reported to the error tracker with its code, at most once a minute per cause per instance; `NOT_CONFIGURED` is reported at warning level.
+- **API-08** Every response conforms to the OpenAPI document. The committed document declares each operation's errors as `application/problem+json`, and a test session fails when any response differs from it in status, content type, or body. A test that makes a route raise an error it cannot raise is marked `contract_exempt`.
 
 ---
 
@@ -598,13 +631,15 @@ Since ADR-0003, the API layers below apply **inside every feature module** (`app
 ### 5.2 Configuration requirements
 
 - **ENV-01** Each environment uses separate credentials. Production credentials never reach `local`, `test`, pull-request CI, or `preview`.
-- **ENV-02** Each provider has an explicit integration mode: `mock`, `sandbox`, or `live`.
+- **ENV-02** Each provider has an explicit integration mode: `mock`, `sandbox`, `live`, or `disabled` (off: no provider is called; analytics, error reporting, and the LLM check).
   - `mock` is the default for automated tests.
   - `live` is accepted only when `APP_ENV=production`; startup fails otherwise.
+  - In `preview` and `production` every mode is set explicitly (ENV-09).
 - **ENV-03** Each application has one centralized, typed configuration module.
   - It validates at startup which settings are required or optional per environment, and their formats.
   - It fails fast with a message that names the variable but never prints its value.
   - The frontend module separates public variables from server-only variables.
+  - The API and web validators are held to one shared set of cases (`packages/contracts/config-cases.json`): a rule that one learns and the other lacks fails a test.
 - **ENV-04** Key/mode consistency checks run at startup. For example, a live Stripe key outside production, or a test key in production live mode, refuses to start.
 - **ENV-05** Production-targeting safeguards:
   - Development and test commands require `APP_ENV` to be `local` or `test`.
@@ -618,6 +653,11 @@ Since ADR-0003, the API layers below apply **inside every feature module** (`app
   - is excluded from production builds;
   - refuses to activate unless `APP_ENV=test`;
   - is covered by a CI check that asserts it is absent from production artifacts.
+- **ENV-09** Configuration is bound to the platform and to its origins. Messages name variables and enum labels, never values.
+  - An unset `APP_ENV` on Vercel is taken from `VERCEL_ENV` (`development` is `local`). A contradicting value is refused: `production` on a preview or development deployment, `local` or `test` on a preview or production deployment, and (API) `local` in a deployed bundle. `preview` stays valid on a production deployment (a first deployment or a staging project). On Vercel the web build requires `APP_ENV` and `CLERK_SECRET_KEY`.
+  - `APP_BASE_URL` is required in `preview` and `production`, by the API and by the web build. It is an http(s) origin and uses https in production. It is never derived from a `VERCEL_*` variable.
+  - `CLERK_AUTHORIZED_PARTIES` entries are origins. Unset means the origin of `APP_BASE_URL`. When `APP_ENV` and `VERCEL_ENV` are both `preview`, the deployment's own origins are added to the list. The API and the web proxy compute the list with the same rules, and the web build inlines it, so a change needs a new deployment.
+  - Only the repository-root `.env` is read. A `.env.local`, `.env.development*`, `.env.production*`, `.env.test*`, or `apps/web/.env*` file makes the web build fail, naming the file.
 
 ---
 
@@ -631,7 +671,7 @@ Since ADR-0003, the API layers below apply **inside every feature module** (`app
   - commands; testing; deployment; troubleshooting;
   - a link to this specification.
 - **REPO-02** `.env.example` satisfies ENV-06 and contains safe placeholders only.
-- **REPO-03** One documented set of commands is used identically locally and in CI: setup, dev, lint, format, typecheck, unit, integration, e2e, build, `db:migrate`, `db:seed`, `db:reset`, and the performance scripts.
+- **REPO-03** One documented set of commands is used identically locally and in CI: setup, dev, lint, format, typecheck, unit, integration, e2e, build, `db:migrate`, `db:seed`, `db:reset`, and the performance scripts. `pnpm verify` runs what CI requires, in CI's order, and the CI jobs `api` and `web` run the same script (`node scripts/verify.mjs --job api` and `--job web`). The API tests require a database (`pytest --require-db`) instead of skipping.
 - **REPO-04** Lockfiles are committed, and installs use frozen lockfiles. Runtime versions are pinned in version files.
 - **REPO-05** Database migrations are version-controlled (§8.3). Seed data is deterministic and synthetic.
 - **REPO-06** A safe development reset procedure exists. It works only on local targets and is guarded by ENV-05.
@@ -641,7 +681,7 @@ Since ADR-0003, the API layers below apply **inside every feature module** (`app
   - is idempotent.
 
   CI runs it in a temporary copy and asserts that no original identifiers remain.
-- **REPO-08** A clean clone runs the full automated suite in mock mode without any external account. Running the app locally with real authentication requires only the adopter's own provider accounts, and the documentation says so.
+- **REPO-08** A clean clone runs the full automated suite in mock mode without any external account. Running the app locally with real authentication requires only the adopter's own provider accounts, and the documentation says so. The web app shows no page without a real Clerk instance, so `pnpm dev` stops with one line asking for the two Clerk keys, while `pnpm build:check`, the tests, and `pnpm check:setup` need no account.
 - **REPO-09** Community and repository policy files:
   - `LICENSE` (DEC-012), `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`;
   - issue and pull request templates;
@@ -655,6 +695,7 @@ Since ADR-0003, the API layers below apply **inside every feature module** (`app
   - Follow only the README.
   - Record the steps, the duration, and any deviation as Gate A evidence.
 - **REPO-12** `.gitignore` excludes dependencies, build output, caches, environment files, keys, local tool state, and raw test and performance artifacts.
+- **REPO-13** An initialized copy carries no template history. On its first run `pnpm init-template` removes the template's own records (`proofs/`, `docs-notes/`, and the files in `dev-docs/evidence/`), replaces `AGENTS.md` with an adopter version, keeps this specification and the ADRs as inherited reference under a banner, drops the template-only prose, and turns links to removed files into plain text, so `pnpm check:links` passes. A finished copy is never touched again, and `--keep-template-material` opts out.
 
 ---
 
@@ -682,7 +723,7 @@ Clerk provides authentication. It does not replace application authorization.
 ### 7.2 Authorization and tenancy
 
 - **TEN-01** The tenant context is either personal (the user) or an organization. It is derived from the request target and verified server-side.
-- **TEN-02** Every protected backend operation invokes an explicit, deny-by-default authorization policy. A route-manifest test fails if any route lacks a declared authorization requirement.
+- **TEN-02** Every protected backend operation invokes an explicit, deny-by-default authorization policy. A route-manifest test fails if any route lacks a declared authorization requirement. A route declares it with `requires(...)` (a permission, or an access kind for a route no permission governs). A declared permission that the request never evaluates answers 500 and is rolled back (fail closed).
 - **TEN-03** Every tenant-owned row carries a tenant key. Repository methods for tenant data require a tenant context argument, and unscoped queries against tenant data are prohibited.
 - **TEN-04** Database-level row-level security is enabled and forced on all tenant tables (DEC-008), with automated tests (DB-07).
 - **TEN-05** Responses do not reveal resource existence:
@@ -698,6 +739,7 @@ Clerk provides authentication. It does not replace application authorization.
 
 - **ADM-01** Administrative operations (organization administration, and any operator tooling) require an explicit role check. Each operation writes an audit record containing the actor, action, target, timestamp, request ID, and outcome, with no secrets or request bodies.
 - **ADM-02** The template contains no global "super-admin" bypass. Any operator or support capability requires a register entry and approval.
+- **ADM-03** A session that someone else started (a Clerk dashboard impersonation, a Backend API actor token, or an agent task: the token carries an `act` claim) is refused with `403` unless `CLERK_ALLOW_IMPERSONATION=true`. When it is allowed, every audit entry names the actor (`app.audit_log.impersonator_clerk_id`) and the request logs `actor_session`. Diagnostics answer `404` to such a session.
 
 ### 7.4 Required negative security tests
 
@@ -715,6 +757,7 @@ Clerk provides authentication. It does not replace application authorization.
 | NT-10 | Entitlement manipulation: forged success redirect, replayed checkout session ID, client-asserted subscription state | No Pro access |
 | NT-11 | Forged, expired, wrong-issuer, wrong-authorized-party, and `alg=none` tokens | `401` |
 | NT-12 | A non-subscribing member uses a Pro-gated feature in an organization where another member is a subscriber | `403`; Pro is never shared (DEC-002 option (b)). The full truth table is in §9.9 |
+| NT-13 | A session started by someone else (the token carries an `act` claim) | `403` unless `CLERK_ALLOW_IMPERSONATION=true`; then the audit entry names the actor |
 
 ---
 
@@ -730,7 +773,8 @@ Clerk provides authentication. It does not replace application authorization.
 | `billing_customers` | User ↔ Stripe customer | Unique user; unique Stripe customer ID |
 | `subscriptions` | Synchronized Stripe subscription state for one user | Unique Stripe subscription ID; status check constraint; price, interval, current period end, cancel-at-period-end, last-synchronized marker |
 | `billing_events` | Webhook ledger for idempotency | Primary key is the Stripe event ID; type; object ID; received/processed timestamps; processing status. No full payload stored by default (DEC-004) |
-| `audit_log` | Administrative and security-relevant actions | Append-only for the application role |
+| `billing_checkout_sessions` | The user's open Stripe Checkout Session (BILL-07) | One row per user (primary key, removed with the user); session ID, request key, expiry; no URL. Readable and writable by the API role only |
+| `audit_log` | Administrative and security-relevant actions | Append-only for the application role. Names the impersonating actor when impersonation is allowed (ADM-03) |
 | Example tenant resource | Demonstrates tenant scoping, RLS, and pagination | Tenant key; composite index on tenant key and sort key |
 
 ### 8.2 Database requirements
@@ -747,10 +791,14 @@ Clerk provides authentication. It does not replace application authorization.
 - **DB-07** Automated RLS tests use at least two synthetic users and two synthetic organizations. For every policy they cover a permitted case, a denied case, missing context, and wrong context.
 - **DB-08** Each test run or worker uses an isolated, ephemeral test database or schema that is dropped afterwards. Test tooling refuses non-test targets (ENV-05).
 - **DB-09** Fixtures are deterministic: fixed identifiers and timestamps, a seeded random generator, and reserved example domains. They contain no real personal data.
+- **DB-11** The API logs in as a role of its own, `app_login` (DEC-008, [ADR-0004 §3](adr/0004-cycle-1-adopted-decisions.md)): it owns nothing, has no `BYPASSRLS`, `CREATEROLE`, or `REPLICATION`, is `NOINHERIT`, and is a member of `app_api` and `app_worker` only. It has no `LOGIN` or password until `pnpm db:api-login` sets both. Migrations, seed, reset, and `api-login` use `MIGRATION_DATABASE_URL`, which the running API never reads.
+  - In `preview` and `production`, a process whose login role is a superuser, has `BYPASSRLS` or `CREATEROLE`, is a member of such a role, or owns a table, view, or materialized view in schema `app` refuses every database transaction (a 503 that names the fix) and reports not ready.
+  - Non-local hosts default to `sslmode=require`. That does not check the server's certificate, so it does not stop an active man-in-the-middle.
+  - **Residual risk.** `app_login` can still `SET ROLE app_worker`, whose policies let every row through on several tables. Code that runs arbitrary SQL (an injection, raw driver use in an adopter's module) can therefore still read across tenants. Row-level security does not stop SQL injection. A second login role that is a member of `app_worker` only, with its own pool, would close the rest; it is not built.
 
 ### 8.3 Migration safety
 
-- **MIG-01** Migrations are ordered, version-controlled, and immutable once merged. Shared environments only roll forward. Down migrations are optional and local-only.
+- **MIG-01** Migrations are ordered, version-controlled, and immutable once merged. Shared environments only roll forward. Down migrations are optional and local-only. One recorded exception: D-003.
 - **MIG-02** A destructive change requires:
   - explicit review;
   - an expand → migrate → contract plan where overlapping application versions are possible;
@@ -759,12 +807,12 @@ Clerk provides authentication. It does not replace application authorization.
 
   Destructive changes include drops, renames, type narrowing, and data rewrites.
 - **MIG-03** CI applies all migrations to an empty database, runs schema linting, verifies that generated types and contracts are current, and runs the RLS tests.
-- **MIG-04** A dedicated migration role runs migrations in a controlled deployment step. The application never runs migrations at request time.
+- **MIG-04** A dedicated migration role runs migrations in a controlled deployment step. The application never runs migrations at request time. The role's connection is `MIGRATION_DATABASE_URL`, and the hosted step is the manually dispatched workflow `.github/workflows/db-migrate.yml`; nothing migrates on deploy.
 - **MIG-05** No agent or automated process runs migrations or data deletion against non-local databases without owner authorization.
 
 ### 8.4 Backup and restore
 
-- **DB-10** Backup and restore procedures are documented, and restoration is tested in an isolated environment with synthetic data. The template tests restoration locally (`pnpm db:restore-drill`). Recovery objectives and the hosted restore test are adopter-owned (DEC-005, ADR-0002; checklist in `docs/operations.md`).
+- **DB-10** Backup and restore procedures are documented, and restoration is tested in an isolated environment with synthetic data. The template tests restoration locally (`pnpm db:restore-drill`). The procedure works for any target, including a Supabase project where the restoring role is not a superuser: `pg_restore --no-owner --single-transaction`, then `supabase/restore/post-restore.sql`. Recovery objectives and the hosted restore test are adopter-owned (DEC-005, ADR-0002; checklist in `docs/operations.md`).
 
 ---
 
@@ -775,7 +823,7 @@ Clerk provides authentication. It does not replace application authorization.
 | Layer | Owner | Rule |
 |---|---|---|
 | 1. Stripe payment and subscription state | Stripe | The external source of truth for payment state |
-| 2. Synchronized billing records | Application database | Updated only from verified Stripe data (webhooks, reconciliation) |
+| 2. Synchronized billing records | Application database | Updated only from verified Stripe data (webhooks, reconciliation, and a re-read the signed-in user requests for their own customer) |
 | 3. Entitlement decision | Domain function | Pure function of user, context, billing records, and time |
 | 4. Plan and billing presentation | Frontend | Renders server-provided state; decides nothing |
 
@@ -788,6 +836,7 @@ Clerk provides authentication. It does not replace application authorization.
   - Clients request a plan key (`pro_monthly` or `pro_yearly`), never a price ID.
   - The server validates the plan key against an allowlist.
   - Sandbox integration tests verify that the configured prices exist and match the key mode.
+- **BILL-23** The template never creates or changes the Customer Portal configuration (ADR-0001, DEC-010). It reads it (`describe_portal()`). The `/integrations` Stripe check fails (`portal_mismatch`) when the default configuration is missing or inactive, payment-method update or invoice history is off, cancellation is off or not at period end, switching is off or lacks `price`, or the switchable prices are not exactly the two Pro prices; a key that cannot read portal configurations gives "not checked", not a failure. A rejected API key or a rejected create call is `503 NOT_CONFIGURED` with one ERROR log, and so is a Checkout or portal URL outside `stripe.com` and the optional `STRIPE_CUSTOM_DOMAIN`. `pnpm setup:stripe` creates only the Pro product and the missing prices, in a sandbox, and never writes `.env`.
 
 ### 9.3 Checkout and association
 
@@ -795,8 +844,11 @@ Clerk provides authentication. It does not replace application authorization.
 - **BILL-05** The server creates Checkout Sessions for the authenticated user only.
   - Sessions carry the internal user reference and that user's customer.
   - Success and cancel URLs are built from the configured application base URL, never from client input.
-- **BILL-06** The checkout success page shows a "confirming" state and polls the billing-status endpoint. Redirect parameters never grant entitlement.
-- **BILL-07** Checkout is refused when the user already has an entitled subscription. The user is directed to plan management instead.
+- **BILL-06** The checkout success page shows a "confirming" state, polls the billing-status endpoint, and after 3 s asks the server once to re-read from Stripe (BILL-22). Redirect parameters never grant entitlement. *(Changed 2026-10-30. This is a billing behavior change that awaits the owner's approval, §23.)*
+- **BILL-07** Checkout is refused while the user has any subscription that is not over, and the user is directed to plan management instead (DEC-013 option B, adopted by delegation: [ADR-0004 §2](adr/0004-cycle-1-adopted-decisions.md)). The states: an entitled subscription (`already_pro`); `unpaid` or `paused`, or `past_due` on a price outside the catalog (`payment_required`); `trialing`, or `active` on a price outside the catalog (`subscription_exists`); `incomplete` (`payment_pending`, defensive: no plan-management button). The refusal is decided from stored state with no Stripe call (`409 CONFLICT`).
+  - Before a later checkout creates a session, the server expires the user's stored open session at Stripe and re-reads Stripe's own subscriptions; if one is not over, it refuses again. If the earlier session cannot be closed, no new one is created (`503`, and the stored row stays so a retry closes it).
+  - The open session is stored per user (`billing_checkout_sessions`: session ID, request key, expiry; never the URL). A retry with the same `Idempotency-Key` returns its session while it is open.
+- **BILL-22** The signed-in user can ask the server to re-read their own customer from Stripe (`POST /api/v1/billing/sync`), with the same lock and synchronization as a webhook. The request takes no input and never reads a session ID. It counts against the per-instance Stripe-call bound, never waits, never takes the last synchronization slot (webhooks and reconciliation keep one), and is limited per user (`BILLING_SYNCS_PER_USER_PER_HOUR`); no limit is shared by all users. A failure leaves the page polling.
 
 ### 9.4 Webhook processing
 
@@ -812,7 +864,7 @@ Clerk provides authentication. It does not replace application authorization.
 - **BILL-11** The handler responds `2xx` only after commit.
   - Transient failures return `5xx` so that Stripe retries.
   - Events that cannot be associated with a user are recorded as needing reconciliation and acknowledged, to prevent unbounded retries.
-- **BILL-12** The handled event set is documented and verified against current Stripe documentation during implementation. At minimum it covers checkout completion, subscription create/update/delete, and invoice paid/payment failed. Unhandled event types are acknowledged and counted.
+- **BILL-12** The handled event set is documented and verified against current Stripe documentation during implementation. At minimum it covers checkout completion, subscription create/update/delete, and invoice paid/payment failed. Unhandled event types are acknowledged and counted. The event destination uses the **Snapshot** payload format: a correctly signed body that is not a snapshot event (a Thin event) is answered `400 INVALID_REQUEST` with a message that says to choose Snapshot, and is logged without its body.
 - **BILL-13** Webhook processing completes well within platform and Stripe timeouts, measured in DEC-001 and P7.
 - **BILL-14** Concurrent and duplicate deliveries for the same subscription produce the correct final state. A parallel-delivery test proves this.
 
@@ -853,7 +905,7 @@ Clerk provides authentication. It does not replace application authorization.
 
 ### 9.8 Presentation
 
-- **BILL-20** A single billing-status endpoint feeds the paywall, settings, and navigation. The states are: Free, Pro (renews on <date>), Pro (cancels on <date>), payment issue, and processing.
+- **BILL-20** A single billing-status endpoint feeds the paywall, settings, and navigation. The states are: Free, Pro (renews on <date>), Pro (cancels on <date>), payment issue, and processing. It carries `checkout_blocked` (BILL-07); the page offers Upgrade only when that is null.
 - **BILL-21** Pro-gated APIs return `403` with `code: ENTITLEMENT_REQUIRED`, which the frontend maps to the dedicated paywall. The paywall and status presentation stay consistent across all surfaces.
 
 ### 9.9 Organization context (DEC-002)
@@ -877,7 +929,7 @@ Clerk provides authentication. It does not replace application authorization.
 
 - One automated test per supported row in §9.5 and per transition in §9.6.
 - Webhook forgery, replay, duplicate, out-of-order, and concurrent-delivery tests.
-- Sandbox integration tests use the Stripe CLI and test clocks for renewal, renewal failure, recovery, cancellation, and reactivation. They require DEC-006 sandbox authorization.
+- Sandbox integration tests use the Stripe CLI and test clocks for renewal, renewal failure, recovery, cancellation, and reactivation. They require DEC-006 sandbox authorization. The opt-in suite is `pnpm test:stripe-sandbox` (`apps/api/tests/sandbox/`, 5 tests): it collects and skips without a key, and **has not been run**. It does not cover retry exhaustion.
 
 ---
 
@@ -891,13 +943,13 @@ Clerk provides authentication. It does not replace application authorization.
 - **LLM-04** Input size and output token limits are enforced server-side before any call.
 - **LLM-05** Per-user and global rate limits apply (DEC-011), plus a per-instance concurrency bound.
 - **LLM-06** Cost protection:
-  - Real providers are disabled by default (`mock` mode).
+  - Real providers are off by default (`mock` mode). `disabled` is also supported in every environment: it needs no key or model and wires no provider. Production accepts `disabled` or `live`.
   - The connectivity check is authenticated, rate-limited, and uses minimal tokens.
   - A global spending budget is enforced (DEC-011).
   - Provider-side spending limits are documented.
 - **LLM-07** Prompts, responses, credentials, and personal data are not logged. Only metadata is recorded.
 - **LLM-08** A deterministic mock adapter is used for automated tests.
-- **LLM-09** Provider unavailability affects only explicitly dependent features. Readiness does not fail because of the LLM provider.
+- **LLM-09** Provider unavailability affects only explicitly dependent features. Readiness does not fail because of the LLM provider. The connectivity check is optional: with `LLM_MODE=disabled` it answers `200` with `error_code: not_configured`, and the diagnostics page skips it.
 - **LLM-10** Configuration for enabling a real provider is documented. The provider choice is made in DEC-006.
 
 ---
@@ -914,14 +966,15 @@ Clerk provides authentication. It does not replace application authorization.
   - Request bodies are never captured.
   - Breadcrumbs are filtered.
   - Sample rates are set per environment, and release and environment are tagged.
+  - The browser records no spans and sends no sampling decision, so the API samples a page's requests at `SENTRY_TRACES_SAMPLE_RATE`.
 - **OBS-03** PostHog configuration:
-  - Events and properties come from a typed allowlist.
+  - Events and properties come from an allowlist: the template's own, plus the events a module registers at wiring time (`Contribution.analytics_events`; registration refuses a duplicate name, a property named like personal data or a secret, and a name outside lower-case snake case). The browser enforces its allowlist in `before_send`, so a direct SDK call cannot send another event or property. `posthog-js` may be imported only from `apps/web/src/lib/analytics.ts`; the lint guard that enforces it takes effect with §23 next step 4.
   - Input autocapture is disabled or masked.
   - Session recording is disabled by default; enabling it requires approval.
   - Users are identified by internal ID, never by email.
   - Consent behavior is an adopter decision (DEC-004, ADR-0002; `docs/data-inventory.md` checklist item 8).
-- **OBS-04** Backend logs are structured. They carry a request ID and pseudonymous internal user and tenant IDs, and never secrets, tokens, request bodies, or prompts.
-- **OBS-05** A correlation ID is returned in responses and attached to error reports.
+- **OBS-04** Backend logs are structured. They carry a request ID and pseudonymous internal user and tenant IDs (`user_id` and `org_id`, on every line of an authenticated request and as tags on error events; never an identity provider's IDs), and never secrets, tokens, request bodies, or prompts.
+- **OBS-05** A correlation ID is returned in responses and attached to error reports. The error state shows it to the user (`Reference: <request ID>`), and a browser report about a failed API call carries it as the `request_id` tag.
 - **OBS-06** Telemetry is non-blocking: bounded buffers, timeouts, and graceful degradation. Authentication, billing, and authorization never depend on analytics or monitoring availability, as proven by tests with telemetry endpoints unavailable.
 - **OBS-07** Telemetry volume is bounded through sampling, client-event rate limits, and error de-duplication.
 - **OBS-08** Leakage tests:
@@ -929,13 +982,14 @@ Clerk provides authentication. It does not replace application authorization.
   - Logs and mocked telemetry transports are captured.
   - The test asserts that the canaries are absent.
 - **OBS-09** Telemetry retention and deletion behavior is documented. Retention follows each provider's project settings, and adopters choose the periods (DEC-004, ADR-0002).
+- **OBS-10** Telemetry reaches the provider before an idle instance is frozen. A request that queued an error event or an analytics event hands a bounded flush to a thread after its response is sent: it waits at most 2 s (`TELEMETRY_FLUSH_SECONDS`), never changes the response, is single-flight, and runs outside the request-thread budget. Whether Vercel keeps the instance alive long enough is **NOT VERIFIED** (DEC-001); the sampled transaction of the request itself can still be lost.
 
 ---
 
 ## 12. Frontend Quality and Accessibility
 
 - **FE-01** Layouts are responsive and markup is semantic. The proposed conformance target for template-provided UI is WCAG 2.2 Level AA. Automated checks cannot prove conformance, so a manual keyboard and screen-reader pass is required.
-- **FE-02** The frontend holds no business logic, server secrets, or direct database or Stripe-secret access. If server-rendering code exists (DEC-007), it only calls the Python API. Lint rules enforce this.
+- **FE-02** The frontend holds no business logic, server secrets, or direct database or Stripe-secret access. If server-rendering code exists (DEC-007), it only calls the Python API. Lint rules enforce this. The recorded baseline renders no API data on the server: static route shells and data loaded in the browser ([ADR-0004 §6](adr/0004-cycle-1-adopted-decisions.md)). Under the Vercel Services topology the web service can read every project variable (T-22): FE-02 holds in the code, not at the environment level.
 - **FE-03** Loading, empty, success, validation, and error states are consistent and come from shared components.
 - **FE-04** Expired authentication and session failures are handled per AUTH-06, without data loss where practical (for example, by preserving form state).
 - **FE-05** Protected-route presentation complements, and never replaces, backend authorization.
@@ -955,6 +1009,8 @@ Clerk provides authentication. It does not replace application authorization.
   - `src/app` holds routes, `src/features/<feature>` exposes a public `index.ts`, `src/ui` holds shared presentation, and `src/lib` holds infrastructure.
   - Lint rules forbid deep cross-feature imports and imports from upper layers.
 - **FE-14** The API client is generated from the OpenAPI contract, so paths, parameters, and bodies are checked at compile time.
+- **FE-15** Pages are default-deny. A page requires sign-in unless it is listed in `PUBLIC_PAGES` (`apps/web/src/lib/page-access.ts`), the one allowlist, and a path it does not match is not public. Two layers read the list: the proxy (`apps/web/src/proxy.ts`) on the server, and `PageGate` in the root layout in the browser, so protection does not depend on the proxy running everywhere the app is deployed (DEC-001). Making a page public also means listing it in `EXPECTED_PUBLIC_ROUTES` (`apps/web/src/lib/app-routes.testing.ts`); fitness tests fail when a page is public that was not meant to be. The layers are presentation (FE-05): the API authorizes every operation.
+- **FE-16** Operator tools (the header's Integrations link, the home page's check button, the dashboard's LLM card) render only when `GET /api/v1/diagnostics/access` answers `available: true`. The endpoint answers every signed-in caller, writes no audit entry or counter, and shares one predicate with the integrations listing. The UI reads no Clerk role: a screen offers an action only when the list response's `can` allows it (ARCH-03; `apps/web/src/no-client-roles.test.ts`).
 
 ---
 
@@ -1021,7 +1077,7 @@ A successful scan is evidence only of the checks it performed. It is never a gua
 | T-09 | Price or plan tampering at checkout | 1 | BILL-03, BILL-05, BILL-07 | Checkout security tests |
 | T-10 | Secret leakage to client bundles, logs, telemetry, or the repository | 1, 5 | ENV-03, ENV-06, ENV-07, SEC-05, OBS-02, OBS-04 | Bundle scan, secret scan, OBS-08 |
 | T-11 | Personal data leakage into telemetry | 3 | OBS-02, OBS-03, OBS-08 | OBS-08 |
-| T-12 | Injection (SQL, script) | 1, 2 | SEC-01, parameterized queries | SAST, unsafe-input tests |
+| T-12 | Injection (SQL, script) | 1, 2 | SEC-01, parameterized queries; DB-11 (partial: code that runs arbitrary SQL can still `SET ROLE app_worker`) | SAST, unsafe-input tests |
 | T-13 | Resource exhaustion (payload size, request rate, unbounded queries) | 1, 2 | SEC-09, DB-04, §15.3 | Resilience and stress tests |
 | T-14 | LLM cost abuse | 3 | LLM-03 to LLM-06 | LLM budget and rate tests |
 | T-15 | Malicious or vulnerable dependency | 5 | SEC-04, SEC-07, SEC-10 | Dependency scan, license check |
@@ -1030,6 +1086,8 @@ A successful scan is evidence only of the checks it performed. It is never a gua
 | T-18 | Test-only auth path reaches production | 5, 6 | ENV-08 | Production artifact check |
 | T-19 | Open redirect through return or checkout URLs | 1 | AUTH-06, BILL-05, SEC-14 | Redirect tests |
 | T-20 | Information disclosure through errors | 1 | API-02, SEC-08 | Error contract tests |
+| T-21 | A provider-side actor (Clerk dashboard impersonation, a Backend API actor token, an agent task) acts as a user without attribution | 3 | ADM-01, ADM-02, ADM-03. Holders of `CLERK_SECRET_KEY` stay trusted: sign-in tokens carry no `act` claim | `test_impersonation.py`, NT-13 |
+| T-22 | API secrets are readable by the web service's server processes, because one Vercel project gives every service every variable (topology B) | 5, 6 | FE-02 (code level), ENV-07 (value-based bundle scan with `--require-values`), DB-11 and the rule that `MIGRATION_DATABASE_URL` and `API_DB_PASSWORD` never go in the project | `pnpm test:vercel-build` (local); platform behavior **NOT VERIFIED** (DEC-001); the owner's acceptance is open ([ADR-0004 §1](adr/0004-cycle-1-adopted-decisions.md)) |
 
 Update this model whenever an endpoint, integration, data category, trust boundary, or deployment component is added.
 
@@ -1053,8 +1111,9 @@ Update this model whenever an endpoint, integration, data category, trust bounda
 - **TEST-01** Tests are deterministic. They use injected clocks and seeded randomness, and do not depend on wall-clock sleeps.
 - **TEST-02** A flaky test is quarantined with a tracked issue. It is never deleted or weakened to obtain a pass.
 - **TEST-03** Domain and entitlement logic is covered exhaustively against its decision matrices. Coverage is reported but is not the only quality signal.
-- **TEST-04** Every evidence record labels each result as `mocked`, `sandbox`, or `live`. A mocked integration is never presented as proof of live connectivity.
+- **TEST-04** Every evidence record labels each result as `mocked`, `sandbox`, or `live`. A command run on one machine against local services (a local database, a container, a build) is labeled `local`, which is never `sandbox` or `live`. A mocked integration is never presented as proof of live connectivity.
 - **TEST-05** Tests never generate uncontrolled high-volume traffic against real Stripe or LLM services.
+- **TEST-06** The end-to-end suite has two tiers. The account-free tier (`pnpm test:e2e`) opens the public pages in Chromium with every non-local request aborted, so clerk-js never loads. It checks the pages, axe (WCAG 2.2 AA; Clerk-drawn controls are not scanned), keyboard order, the proxy redirect, and the sign-in-unavailable state, and it fails on an uncaught page error, a CSP violation, or a failing first-party response. The sandbox tier (`E2E_SANDBOX=1`, or `pnpm verify:sandbox`) signs in with a Clerk sign-in token and needs a development instance with Organizations set to Membership optional.
 
 ---
 
@@ -1159,12 +1218,13 @@ None in the template. Targets are adopter-owned (DEC-003, [ADR-0002](adr/0002-or
 |---|---|---|
 | Static | Formatting, linting, TypeScript and Python strict type checking, import-boundary and cycle checks | None |
 | Unit and contract | Unit tests; OpenAPI validity; generated-contract drift | None |
-| Integration | Ephemeral PostgreSQL; migrations from empty; schema lint; RLS tests; API integration tests | None |
+| Integration | Ephemeral PostgreSQL; migrations from empty; schema lint (squawk); RLS tests; API integration tests; the same database tests on Supabase's Postgres image (job `api-supabase`) | None |
 | Build | Frontend and backend builds; client-bundle secret scan (ENV-07); production-artifact check (ENV-08) | None |
 | Security | Dependency vulnerability scan; static analysis; secret scan; license check | None |
 | End-to-end | Critical flows in mock mode | None |
-| Deployment configuration | Validate deployment configuration and build output locally; no deployment | None |
+| Deployment configuration | `vercel build` of the root `vercel.json` with the pinned CLI, and checks of the output (job `deploy-config`); no deployment | None |
 | Sandbox integration | DEC-006 procedures | Sandbox secrets via protected environments; trusted refs only, with approval |
+| Migration (manual) | `.github/workflows/db-migrate.yml`: `workflow_dispatch` only, from the default branch, for a protected GitHub Environment; `pnpm db:migrate --allow-remote` (MIG-04, MIG-05) | `MIGRATION_DATABASE_URL`, one per Environment |
 
 ### 16.2 CI security
 
@@ -1259,15 +1319,22 @@ Broad implementation does not begin while a decision that blocks it remains open
 
   Verification belongs to the DEC-001 proof.
 
-| Phase | Scope | Entry criteria | Exit evidence | Status (2026-10-14) |
+- **D-003 (2026-10-30).** A one-time exception to MIG-01: the first migration (`20261014000001_core_schema.sql`) was edited in place. `GRANT ... TO CURRENT_USER` crashes Supabase images older than 17.6.1.152 (supautils before 3.2.3) when run as `postgres`, and a later migration cannot run after a first one that crashes.
+  - **Risk:** a database that applied the old file reports `Migration 20261014000001_core_schema.sql was modified after being applied`.
+  - **Mitigations:** nothing shared had applied it (pre-release); a local database is reset with `pnpm db:reset --yes` (ask the owner before resetting theirs); a test rejects `CURRENT_USER`, `SESSION_USER`, and `CURRENT_ROLE` as grantee in any migration, the module template, and the restore drill.
+
+- **D-004 (2026-10-30).** Local PostgreSQL, and the CI database, is plain `postgres:17.6-alpine` (`pnpm db:up`), not the Supabase CLI that DEC-007's toolchain lists.
+  - **Mitigation:** Supabase parity comes from `pnpm test:supabase` and the CI job `api-supabase`, which run the migrations and the database tests on Supabase's Postgres image (the tag is pinned in `scripts/test-supabase-image.mjs`). A hosted Supabase project has not been tested.
+
+| Phase | Scope | Entry criteria | Exit evidence | Status (2026-10-30) |
 |---|---|---|---|---|
 | P0 | Repository inspection, specification consolidation, decision register, `.gitignore`, `AGENTS.md` | — | This revision committed locally; owner review | Done |
-| P1 | DEC-001 proof (local, then authorized preview deployment) | Owner authorizes the Vercel project and preview deployment; non-production Supabase project; Stripe sandbox | `dev-docs/evidence/dec-001-vercel-python.md`; DEC-001 resolved or escalated | Local part done ([evidence](evidence/dec-001-vercel-python.md)): packaging, Services topology, Vercel's runtime shim, transaction pooling, database faults, and a cold-start baseline. It found and fixed three defects. Preview deployment BLOCKED: needs owner authorization |
-| P2 | Scaffold: layout, toolchain, configuration validation, CI skeleton, README, `.env.example`, community files, template initialization | DEC-001, DEC-007 resolved; DEC-012 for license files | Gate A checks | Implemented locally (deviation D-001); community contacts are adopter placeholders (ADR-0002); remote CI never run |
-| P3 | Identity, tenancy, schema, migrations, RLS, authorization, audit | DEC-008, DEC-009 resolved | AUTH, TEN, ADM, DB, MIG requirements; NT-01 to NT-09, NT-11 | Implemented; tests PASS (mocked) |
-| P4 | Billing: checkout, webhooks, synchronization, entitlements, reconciliation, paywall API | DEC-010 resolved; DEC-002 for organization scope | BILL requirements; §9.10 tests; sandbox evidence (DEC-006) | Implemented, including the DEC-002 (b) organization truth table; tests PASS (mocked Stripe API); sandbox NOT VERIFIED |
+| P1 | DEC-001 proof (local, then authorized preview deployment) | Owner authorizes the Vercel project and preview deployment; non-production Supabase project; Stripe sandbox | `dev-docs/evidence/dec-001-vercel-python.md`; DEC-001 resolved or escalated | Local part done ([evidence](evidence/dec-001-vercel-python.md)): packaging, Services topology, Vercel's runtime shim, transaction pooling, database faults, and a cold-start baseline. It found and fixed three defects. Topology B (one project with Vercel Services) adopted by delegation on 2026-10-30 ([ADR-0004 §1](adr/0004-cycle-1-adopted-decisions.md)): root `vercel.json`, `pnpm test:vercel-build`, and the CI job `deploy-config` give local packaging evidence. The proxy under Services and the shared environment are NOT VERIFIED. Preview deployment BLOCKED: needs owner authorization |
+| P2 | Scaffold: layout, toolchain, configuration validation, CI skeleton, README, `.env.example`, community files, template initialization | DEC-001, DEC-007 resolved; DEC-012 for license files | Gate A checks | Implemented locally (deviation D-001); community contacts are adopter placeholders (ADR-0002); `pnpm verify`, `pnpm check:setup`, `pnpm build:check`, and the adopter-copy policy of init-template (REPO-13) added 2026-10-30; remote CI never run |
+| P3 | Identity, tenancy, schema, migrations, RLS, authorization, audit | DEC-008, DEC-009 resolved | AUTH, TEN, ADM, DB, MIG requirements; NT-01 to NT-09, NT-11 | Implemented; tests PASS (`local` database, mocked IdP). The API logs in as `app_login` (DB-11); hosted Supabase behavior NOT VERIFIED |
+| P4 | Billing: checkout, webhooks, synchronization, entitlements, reconciliation, paywall API | DEC-010 resolved; DEC-002 for organization scope | BILL requirements; §9.10 tests; sandbox evidence (DEC-006) | Implemented, including the DEC-002 (b) organization truth table; tests PASS (mocked Stripe API). Added 2026-10-30: DEC-013 option B and the user re-read (BILL-07, BILL-22), the portal check, `pnpm setup:stripe`, and the opt-in sandbox suite; the suite and `setup:stripe` were NOT RUN; sandbox NOT VERIFIED |
 | P5 | LLM port and adapter, observability, rate limiting | DEC-011 resolved; LLM provider selected (DEC-006) | LLM, OBS, SEC-09 requirements | Implemented; tests PASS (mocked); providers NOT VERIFIED |
-| P6 | Frontend flows, paywall, error and loading states, accessibility | P3 to P5 APIs available | FE requirements; end-to-end and accessibility evidence | Implemented; unit and account-free e2e PASS; browser and accessibility e2e NOT VERIFIED (needs Clerk sandbox) |
+| P6 | Frontend flows, paywall, error and loading states, accessibility | P3 to P5 APIs available | FE requirements; end-to-end and accessibility evidence | Implemented; unit tests PASS; the account-free browser tier (public pages, axe, keyboard, proxy redirect, sign-in-unavailable state) PASS (mocked: clerk-js blocked, Clerk-drawn controls not scanned); signed-in flows and their accessibility NOT VERIFIED (needs Clerk sandbox) |
 | P7 | Resilience, security hardening, performance baseline and stress; propose targets | Authorized performance environment | Resilience and security evidence; performance reports; DEC-003 target proposal | Resilience and security tests done locally. Performance harness (`perf/`) covers PERF-01 to PERF-07, all recorded locally; PERF-03, PERF-04, and PERF-06 must be re-recorded with the harness corrected on 2026-10-15. Preview runs need the DEC-001 environment. Targets are adopter-owned (ADR-0002) |
 | P8 | Operations documentation, backup and restore, deletion and export, integration classification, handoff | DEC-003, DEC-004, DEC-005, DEC-006 resolved, or explicitly accepted by the owner | Gates D and E; handoff report (§22) | Operations docs, data inventory, and adopter checklists done (DEC-003 to DEC-005 adopter-owned); local restore drill PASS; integrations diagnostics page built. Integration classification pending DEC-006 |
 
@@ -1333,7 +1400,7 @@ The project is never declared complete while a mandatory gate is failing, requir
 - date;
 - commit SHA;
 - environment;
-- integration mode (`mocked`, `sandbox`, or `live`);
+- integration mode (`mocked`, `sandbox`, or `live`; a command run on one machine against local services is also labeled `local`, which is never `sandbox` or `live`);
 - exact commands;
 - a result summary;
 - the artifact location;
@@ -1345,62 +1412,86 @@ Evidence records never contain secrets, tokens, or personal data.
 
 ## 21. Requirements Traceability Matrix
 
-Status as of 2026-10-14. Evidence: [`dev-docs/evidence/2026-10-14-local-verification.md`](evidence/2026-10-14-local-verification.md), [`2026-10-14-diagnostics-perf-local.md`](evidence/2026-10-14-diagnostics-perf-local.md), [`2026-10-14-adr-0002-perf07-local.md`](evidence/2026-10-14-adr-0002-perf07-local.md), and [`2026-10-14-adr-0003-modular-architecture.md`](evidence/2026-10-14-adr-0003-modular-architecture.md), and [`dec-001-vercel-python.md`](evidence/dec-001-vercel-python.md).
+Status as of 2026-10-30. Evidence: [`dev-docs/evidence/2026-10-14-local-verification.md`](evidence/2026-10-14-local-verification.md), [`2026-10-14-diagnostics-perf-local.md`](evidence/2026-10-14-diagnostics-perf-local.md), [`2026-10-14-adr-0002-perf07-local.md`](evidence/2026-10-14-adr-0002-perf07-local.md), [`2026-10-14-adr-0003-modular-architecture.md`](evidence/2026-10-14-adr-0003-modular-architecture.md), [`dec-001-vercel-python.md`](evidence/dec-001-vercel-python.md), the two second-review records of 2026-10-15, and [`2026-10-30-cycle-1-fix-round.md`](evidence/2026-10-30-cycle-1-fix-round.md), which holds the cycle 1 results by package (cited below as "cycle 1: <package>"), the merged-tree checks, and what was not run.
 
-`PASS` here means the check was **executed locally** with **mocked** external integrations and met its criteria. It is not sandbox or live verification (TEST-04).
+`PASS` here means the check was **executed locally** with **mocked** external integrations and met its criteria. It is not sandbox or live verification (TEST-04). Where a row says `NOT RUN`, a test or command exists and was not executed. A test file named without a path is under `apps/api/tests` (API) or `apps/web/src` (web).
 
 | Requirements | Summary | Verification | Gate | Blocked by | Status |
 |---|---|---|---|---|---|
 | ARCH-01, ARCH-02 | Layering, no cycles | `lint-imports` (8 contracts, including `exhaustive` module layers and acyclic modules); mutation-checked | B | — | PASS |
-| ARCH-03 to ARCH-07, ARCH-09 to ARCH-12 | Single rules, adapters, no global state, bounded calls, ADRs | Review; LLM retry tests; timeouts configured; database round-trip deadline (`test_database_faults.py`) | B | — | PASS (review; database deadline tested) |
-| ARCH-08 | No N+1 queries | Query-count tests (project lists, billing status, organization entitlement); single-statement transaction setup; at most 8 statements per request | B | — | PASS |
-| ARCH-13 | Modular monolith boundaries | import-linter contracts; `tests/architecture` (api-only cross-module imports, module shape, unique permissions and event types); mutation-checked | B | — | PASS |
+| ARCH-03 | The frontend renders server decisions and re-derives none | `can` equals the routes for a personal context, an organization admin, and an organization member, and follows a permission change (`test_project_capabilities.py`, and the generated module's test); the UI reads no Clerk role (`apps/web/src/no-client-roles.test.ts`); panels render `can` (`projects-panel.test.tsx`). Mutation: `PROJECT_DELETE` granted to `ALL_ROLES` flips the member's `can.delete` with no web change. [cycle 1: caps](evidence/2026-10-30-cycle-1-fix-round.md#caps) | B | — | PASS (tested; mocked and local) |
+| ARCH-04 to ARCH-07, ARCH-09 to ARCH-12 | Adapters, no global state, bounded calls, ADRs | Review; LLM retry tests; timeouts configured; database round-trip deadline (`test_database_faults.py`); no vendor SDK outside an adapter is also enforced by `tests/architecture/test_layer_imports.py` | B | — | PASS (review; database deadline tested) |
+| ARCH-08 | No N+1 queries | Query-count tests (project lists, billing status, organization entitlement); single-statement transaction setup; at most 8 statements per request; the membership refresh is 8 round trips for any number of memberships (it was 2N+6, 106 at N=50), measured by `test_query_counts.py`. [cycle 1: apix](evidence/2026-10-30-cycle-1-fix-round.md#apix) | B | — | PASS |
+| ARCH-13 | Modular monolith boundaries | import-linter contracts; `tests/architecture` (api-only cross-module imports, module shape, unique permissions and event types); mutation-checked; `tests/architecture/test_layer_imports.py` allowlists the imports of each layer (mutation-checked: installed but unlisted packages injected into a service, the kernel core, a probe, and a router failed it while `lint-imports` stayed green). [cycle 1: apix](evidence/2026-10-30-cycle-1-fix-round.md#apix) | B | — | PASS |
 | ARCH-14 | Transactions: one-statement setup, request scope, release, two pools, admission gate, nesting guard | `test_request_scope.py` (20: also swallowed statement errors, `release()` inside a block, admission given back on `release()`), `test_query_counts.py`, `test_database_faults.py` (hung database, dead idle connections); PERF-07 and PERF-03 local (starvation fix measured); DEC-001 local proof through PgBouncer | B, D | — | PASS (local); platform behavior NOT VERIFIED (DEC-001) |
 | ARCH-15 | Transactional outbox | `test_outbox_jobs.py` (recording, RLS, dispatch, retries, dead letters, leases, retention, billing event; crash-looping events dead-lettered, one lease per event, batched pruning) | B, C | — | PASS (local); after-response dispatch on Vercel NOT VERIFIED (D-002) |
 | ARCH-16 | Scheduled jobs | `test_outbox_jobs.py` (secret auth, 404 when off, each job, registry and `vercel.json` parity, CLI); every job bounded per run (`test_billing.py` batch rotation, drain and prune budgets) | B, C, E | — | PASS (local); Vercel Cron NOT VERIFIED (DEC-001) |
 | ARCH-17 | Module generator | `pnpm test:new-module` (CI step); mutation-checked | A, B | — | PASS |
-| DEC-001 (local part) | Packaging, Services routing, runtime shim, transaction pooling, faults, cold-start baseline | `proofs/dec-001/run.sh`; [evidence](evidence/dec-001-vercel-python.md); `test_deployed_layout.py` | E | DEC-001 (preview deployment) | PASS (local); platform NOT VERIFIED |
+| ARCH-18 | Composition fails loudly | `tests/unit/test_bootstrap.py` (a misspelled override and an unknown settings keyword raise, each unknown name is reported); `tests/unit/test_diagnostics_service.py` (two probes for one integration are refused); `tests/architecture/test_settings.py` (no two settings classes read one variable; every `*_problems` function runs); `tests/integration/test_composition.py` (a probe contributed by any module is listed). Mutation-checked. [cycle 1: apix](evidence/2026-10-30-cycle-1-fix-round.md#apix) | B | — | PASS |
+| DEC-001 (local part) | Packaging, Services routing, runtime shim, transaction pooling, faults, cold-start baseline | `proofs/dec-001/run.sh` (not re-run since the 2026-10-15 corrections); [evidence](evidence/dec-001-vercel-python.md); `test_deployed_layout.py`; `pnpm test:vercel-build` and the CI job `deploy-config` (13 checks; 11 planted defects caught; `local`); `test_vercel_config.py`. [cycle 1: deploy](evidence/2026-10-30-cycle-1-fix-round.md#deploy) | E | DEC-001 (preview deployment) | PASS (local); platform NOT VERIFIED |
+| DEC-001 (topology) | Topology B, one project with Vercel Services, adopted by delegation | The root `vercel.json`; `test_vercel_config.py`; `pnpm test:vercel-build`. Beta on all plans. NOT VERIFIED on the platform: the shared environment (T-22), whether the proxy runs inside a service, the Framework Preset, the crons (production only), the router's order, `VERCEL_REGION`, limits, Instant Rollback ([evidence](evidence/dec-001-vercel-python.md#nextjs-proxy-under-services-not-verified); [ADR-0004 §1](adr/0004-cycle-1-adopted-decisions.md)) | E | DEC-001 (preview deployment); the owner's confirmation | NOT VERIFIED (adopted by delegation, awaiting confirmation) |
 | API-01 to API-06 | Versioning, problem details, pagination, bearer-only, idempotency, health | Contract and platform tests; account-free e2e | B | — | PASS |
-| ENV-01 | Separate credentials per environment | Operational | E | DEC-006 | NOT VERIFIED |
-| ENV-02 to ENV-06 | Modes, validation, key/mode consistency, production guards, `.env.example` | Config tests; migration guard tests (libpq `host`/`hostaddr`/`service` overrides, `APP_ENV` for seed and reset); web `env.ts`/`env.server.ts` tests | A, C | — | PASS (2026-10-15 review fixes) |
-| ENV-07 | No server-only values in the bundle | `check:bundle-secrets` (plus negative test) | C | — | PASS |
+| API-07 | Module-declared errors; 5xx reports | `test_error_taxonomy.py`, `tests/architecture/test_errors.py`, `test_server_error_reporting.py` (a captured Sentry transport: one scrubbed event with the request ID, once a minute per cause), `test_request_scope.py`. Mutation-checked. [cycle 1: apix](evidence/2026-10-30-cycle-1-fix-round.md#apix) | B, C | — | PASS (mocked transports) |
+| API-08 | Responses conform to the OpenAPI document | `tests/openapi_contract.py` as a session-wide recorder; `test_contract_conformance.py` (every operation signed in, signed out, invalid, and with the identity provider down); `test_openapi_contract.py` (the checker and the document's policy). Eight edits of the committed document each failed the test that should. The check found two tests that make a route raise an error it cannot raise (`test_request_scope.py`, and the conflict case of `test_outbox_jobs.py`); both are marked `contract_exempt`. [cycle 1: test](evidence/2026-10-30-cycle-1-fix-round.md#test) | B | — | PASS (local) |
+| ENV-01 | Separate credentials per environment | Operational. An automated guard binds `APP_ENV` to `VERCEL_ENV` (ENV-09), so local or test values are refused on Vercel and production values on a preview (`test_platform_config.py`, `env.server.test.ts`). [cycle 1: config](evidence/2026-10-30-cycle-1-fix-round.md#config) | E | DEC-006; the DEC-001 preview | NOT VERIFIED |
+| ENV-02 to ENV-05 | Modes, validation, key/mode consistency, production guards | Config tests; migration guard tests (libpq `host`/`hostaddr`/`service` overrides, `APP_ENV` for seed and reset); web `env.ts`/`env.server.ts` tests; the shared cases in `packages/contracts/config-cases.json` (116 checks pass in each app). [cycle 1: config](evidence/2026-10-30-cycle-1-fix-round.md#config), [cycle 1: web2](evidence/2026-10-30-cycle-1-fix-round.md#web2) | A, C | — | PASS (2026-10-15 review fixes; cycle 1) |
+| ENV-06, REPO-02 | `.env.example` lists every variable with its purpose, the environments where it applies, required or optional, and a safe placeholder | `test_config.py` (the file's variables load); `apps/web/src/lib/env-example.test.ts` (the shipped Clerk placeholder pair passes the web validators for a build and fails in production) | A, C | — | PASS, except the environments column: `.env.example` tags each variable by kind (required, mode, optional; public, server) but not by where it applies, and no test ties the settings, `SERVER_VARIABLES`, `SERVER_ONLY_NAMES`, and the file together (finding `config-env-registry`). Closed when the file carries a per-variable environments tag and a parity test lists every setting; the documentation round owns the file, so check it before changing this row to PASS |
+| ENV-07 | No server-only values in the bundle | `check:bundle-secrets` (plus negative test) (now also the passwords inside both database URLs and `API_DB_PASSWORD`, PostHog secret keys, and `--require-values`, which fails a scan that compared nothing; the web service of `pnpm test:vercel-build` is built with generated canary values). [cycle 1: deploy](evidence/2026-10-30-cycle-1-fix-round.md#deploy) | C | — | PASS |
 | ENV-08 | No test-only auth path in the application | Review | C | — | PASS (review) |
-| REPO-01 to REPO-08, REPO-10, REPO-12 | Docs, commands, lockfiles, migrations, seed, reset, init (including contacts), mock-mode tests, no credentials | Clean clone; `test:init-template` (also a CI step); gitleaks history and tracked files | A | — | PASS |
-| REPO-09 | Community files and policies | Files exist; contact placeholders filled by `init-template` and enforced by `check:placeholders` (CI) | A | — | PASS (ADR-0002) |
-| REPO-11 | Clean-clone onboarding | Fresh clone (shared caches; see limitations) | A | — | PASS |
-| AUTH-01 to AUTH-05 | Server-side token verification | Unit tests with generated keys; end-to-end through the app | C | — | PASS (mocked IdP) |
-| AUTH-06 | Session expiry UX | Component test; real Clerk flow | B | DEC-006 | NOT VERIFIED (sandbox) |
-| TEN-01 to TEN-06, TEN-08 | Tenant context, deny-by-default, scoping, RLS, 404/403 | NT-01 to NT-04, NT-08, NT-09, route manifest, RLS tests | C | — | PASS |
+| ENV-09 | Platform binding, origins, one root `.env` | `test_platform_config.py` (the `VERCEL_ENV` x `APP_ENV` matrix, derivation, bundle), `test_deployed_layout.py`, `test_config.py`, `test_config_cases.py`; `env.server.test.ts`, `env-cases.test.ts`, `src/next-config.test.ts`, `env-files.test.ts`. 48 mutation reverts each failed their test. [cycle 1: config](evidence/2026-10-30-cycle-1-fix-round.md#config), [cycle 1: web2](evidence/2026-10-30-cycle-1-fix-round.md#web2) | A, C, E | The DEC-001 preview (real `VERCEL_ENV`, `VERCEL_URL`, `VERCEL_BRANCH_URL`) | PASS (local); the platform's inputs NOT VERIFIED |
+| REPO-01, REPO-04 to REPO-08, REPO-10, REPO-12 | Docs, lockfiles, migrations, seed, reset, init (including contacts), mock-mode tests, no credentials | Clean clone (2026-10-14, see REPO-11); `test:init-template` (also a CI step); gitleaks history and tracked files; `pnpm build:check`, the tests, and `pnpm check:setup` need no account. [cycle 1: onboard](evidence/2026-10-30-cycle-1-fix-round.md#onboard) | A | — | PASS |
+| REPO-03 | One command set, locally and in CI | `pnpm verify` (steps in CI's order; `scripts/tests/verify.test.mjs`); the CI jobs `api` and `web` run `node scripts/verify.mjs --job api` and `--job web`; `pytest --require-db` (`test_require_db.py`). [cycle 1: test](evidence/2026-10-30-cycle-1-fix-round.md#test) | A | Remote CI not authorized | PASS (local: every step ran, but not as one `pnpm verify` command); CI calling it NOT VERIFIED (never run remotely) |
+| REPO-09 | Community files and policies | Files exist; contact placeholders filled by `init-template` and enforced by `check:placeholders` (CI). The recommended GitHub settings (branch protection, required checks, secret scanning push protection, private vulnerability reporting) are listed for the owner in `docs/setup.md`; none is applied, because applying them is a remote change. No `CODEOWNERS` file exists (SEC-12) | A | Remote settings not authorized | PASS for the files (ADR-0002); the settings NOT VERIFIED (not applied) |
+| REPO-11 | Clean-clone onboarding | Fresh clone on 2026-10-14 (shared caches; see limitations). Cycle 1 changed the flow: the first build needs no Clerk key (`pnpm build:check`), `pnpm check:setup` is new, and `pnpm dev` stops until the two Clerk keys are pasted. Re-record the run (bootstrap, init-template, `pnpm db:up`, `pnpm db:migrate`, the tests, `pnpm build:check`, `pnpm check:setup`) with that one human step. [cycle 1: onboard](evidence/2026-10-30-cycle-1-fix-round.md#onboard) | A | — | NOT VERIFIED (the 2026-10-14 PASS predates the new flow) |
+| REPO-13 | An initialized copy carries no template history | `scripts/test-init-template.mjs`: removal, the neutral `AGENTS.md`, exactly one inherited-reference banner, template-only prose stripped, links resolve, `--keep-template-material` changes nothing, a finished copy is never touched again. Every assertion was mutation-checked. [cycle 1: onboard](evidence/2026-10-30-cycle-1-fix-round.md#onboard) | A | — | PASS (local) |
+| AUTH-01 to AUTH-05 | Server-side token verification | Unit tests with generated keys; end-to-end through the app; the web proxy applies the same `azp` list (`proxy.test.ts`, with real Clerk verification against a throwaway key pair). [cycle 1: web2](evidence/2026-10-30-cycle-1-fix-round.md#web2) | C | — | PASS (mocked IdP) |
+| AUTH-06 | Session expiry UX | Silent refresh implemented and tested with mocks (`client.test.ts`: a 401 for a request that carried a token is retried once with a fresh token, under the same deadline). The sign-in step is a link the user clicks, so form state is kept (FE-04), not an automatic redirect: a deviation from AUTH-06's wording for the owner to confirm. [cycle 1: web](evidence/2026-10-30-cycle-1-fix-round.md#web) | B | DEC-006 | NOT VERIFIED (sandbox: the real Clerk flow) |
+| TEN-01 to TEN-06, TEN-08 | Tenant context, deny-by-default, scoping, RLS, 404/403 | NT-01 to NT-04, NT-08, NT-09, route manifest, RLS tests; every route declares `requires(...)`, and a declared permission that is never evaluated fails closed (`tests/integration/test_platform.py`). [cycle 1: apix](evidence/2026-10-30-cycle-1-fix-round.md#apix) | C | — | PASS |
 | TEN-07 | Membership change enforcement | NT-05 (bound, webhook, outage), NT-06 (re-check, serialization) | C | — | PASS (300 s, confirmed in ADR-0002) |
-| ADM-01, ADM-02 | Admin authorization and audit | NT-07; audit assertions | C | — | PASS |
+| ADM-01 | Admin authorization and audit | NT-07; audit assertions; the impersonating actor is recorded when impersonation is allowed (`test_impersonation.py`); the access probe writes no audit entry (`test_diagnostics_access.py`) | C | — | PASS |
+| ADM-02 | No super-admin bypass; an operator capability needs a register entry and approval | NT-07; review (no bypass in the code). The diagnostics operator allowlist is the operator capability, now registered as DEC-014 | C | DEC-014 (owner approval) | PASS for the absence of a bypass; BLOCKED for the approval of the operator capability |
+| ADM-03 | Actor sessions refused unless allowed, and audited | `test_impersonation.py`, `test_clerk_verifier.py`; mutation-checked (actor refusal off, actor not passed to the audit insert, `act` ignored, operator check without the actor). NT-13. [cycle 1: apix](evidence/2026-10-30-cycle-1-fix-round.md#apix) | C | — | PASS (mocked IdP); real Clerk actor tokens NOT VERIFIED |
 | DB-01 to DB-09 | Integrity, indexes, transactions, bounds, pooling, RLS, isolation, fixtures | RLS and integration tests | B, C | — | PASS |
-| DB-10 | Backup and restore | Local restore drill; adopter checklist and hosted restore-test procedure | E | — | PASS (local drill and documentation). Hosted restore is adopter-owned (ADR-0002) |
-| MIG-01 to MIG-05 | Migration safety | Checksum tamper test; non-local refusal; idempotent apply | B, C | — | PASS (CI stage not yet executed remotely) |
-| BILL-01 to BILL-21 | Entitlements, checkout, webhooks, transitions, reconciliation, presentation | Unit matrix; billing integration tests; web unit tests | B, C | — | PASS (mocked Stripe API; real signature verification) |
-| BILL-* sandbox | Real Stripe test-mode behavior (test clocks, portal) | Sandbox procedure in docs/integrations.md | E | DEC-006 | NOT VERIFIED |
+| DB-10 | Backup and restore | Local restore drill (restores with `pg_restore --no-owner --single-transaction`, then `supabase/restore/post-restore.sql`; fails when that file is emptied); the same procedure by hand on the Supabase image; adopter checklist and hosted restore-test procedure. [cycle 1: db](evidence/2026-10-30-cycle-1-fix-round.md#db) | E | — | PASS (local drill and documentation). Hosted restore is adopter-owned (ADR-0002) |
+| DB-11 | Runtime login role `app_login` | `test_login_role.py`, `test_runtime_roles.py`, the assertion migrations `20261030000011` and `20261015000006`; `pnpm test:supabase` on the Supabase image (464 passed, 5 skipped, `local`); `test_database_tls.py`. Mutation-checked (the guard call removed: 4 tests; `app_login` created with `INHERIT`: 16 tests). Per-command policies on `projects` (`test_a_member_may_update_a_row_another_member_created`). [cycle 1: db](evidence/2026-10-30-cycle-1-fix-round.md#db) | B, C | A hosted Supabase project (DEC-006) | PASS (local); hosted behavior NOT VERIFIED. Residual risk: a query can still `SET ROLE app_worker` (DB-11) |
+| MIG-01, MIG-02, MIG-05 | Migration safety | Checksum tamper test; non-local refusal; idempotent apply; the one-time in-place edit of migration 1 is deviation D-003, guarded by `test_migration_grants.py`. [cycle 1: db](evidence/2026-10-30-cycle-1-fix-round.md#db) | B, C | — | PASS, with the recorded exception D-003 |
+| MIG-03 | Schema lint, empty-database apply, contracts, RLS tests in CI | squawk 2.70.0 over the migrations (`pnpm api:lint`, `.squawk.toml`, `test_migration_lint.py`); the CI jobs `api` and `api-supabase`; the step that applies migrations twice. `CREATE INDEX CONCURRENTLY` cannot run in the transactional runner, so that rule is switched off and the manual procedure is documented. [cycle 1: db](evidence/2026-10-30-cycle-1-fix-round.md#db) | B, C | — | PASS (local); the CI stage has not run remotely |
+| MIG-04 | A dedicated migration role in a controlled step | `MIGRATION_DATABASE_URL`; `.github/workflows/db-migrate.yml` (`workflow_dispatch` only, default branch, protected Environment; `test_ci_workflows.py`); its commands ran in a fresh archive copy against a scratch database (`local`). [cycle 1: deploy](evidence/2026-10-30-cycle-1-fix-round.md#deploy) | B, C, E | A hosted project; DEC-001; DEC-006 | PASS (a controlled step exists); the hosted run NOT VERIFIED |
+| BILL-01 | One entitlement implementation returns the plan and the feature entitlements | Unit matrix (`test_entitlements.py`) | B, C | — | PASS for the plan decision. The feature set is not returned: `decide()` yields a plan, a reason, and the subscription, and gating is the binary `require_pro` (finding `stripe-plans-hardcoded-price-keyed-entitlement`). Gap recorded; the choice in §23 next step 7 is the owner's |
+| BILL-02 to BILL-05, BILL-08 to BILL-11, BILL-13 to BILL-19, BILL-21 | Entitlements, checkout, webhooks, transitions, reconciliation, presentation | Unit matrix; billing integration tests; web unit tests | B, C | — | PASS (mocked Stripe API; real signature verification) |
+| BILL-06, BILL-07, BILL-12, BILL-20, BILL-22 | Success-page re-read, checkout refusal (DEC-013 option B), Snapshot payloads, `checkout_blocked`, the user's re-read | `test_billing.py`, `test_stripe_adapter.py`, `test_entitlements.py`, `test_rls.py`; web `features/billing` tests. Mutation-checked: expire before create, live re-read, retry replay, failure to close, replaced-session cleanup, users never take the last slot, a re-read counts against the Stripe-call bound, no shared bucket. [cycle 1: stripe](evidence/2026-10-30-cycle-1-fix-round.md#stripe) | B, C | The owner's approval of the behavior change (§23); DEC-006 for the sandbox run | PASS (mocked Stripe API); sandbox NOT RUN |
+| BILL-23 | Portal configuration verified read-only; a misconfigured Stripe is visible | `test_portal_policy.py`, `test_stripe_adapter.py`, `test_stripe_setup.py`. Field names come from the installed SDK's types and ran against loopback stubs only. [cycle 1: stripe](evidence/2026-10-30-cycle-1-fix-round.md#stripe) | B, E | DEC-006 | PASS (mocked); a real portal configuration, `setup:stripe`, and the restricted-key permission NOT VERIFIED |
+| BILL-* sandbox | Real Stripe test-mode behavior (test clocks, portal) | `pnpm test:stripe-sandbox` (`apps/api/tests/sandbox/`, 5 tests: collects, and skips without a key); sandbox procedure in docs/integrations.md. Retry exhaustion is not covered. [cycle 1: stripe](evidence/2026-10-30-cycle-1-fix-round.md#stripe) | E | DEC-006 | NOT VERIFIED (the suite exists and has NOT been run) |
 | BILL-ORG-01 | Interim organization gating | — | C | — | RETIRED (superseded by BILL-ORG-02, ADR-0002) |
 | BILL-ORG-02 | Organization entitlement policy, DEC-002 (b) | Truth-table tests (`test_org_entitlements.py`); NT-12 | C | — | PASS |
-| LLM-01 to LLM-10 | Port, normalization, bounded retries, limits, budget, privacy, mock, isolation, docs | Adapter and platform tests | B, C, D | — | PASS (mocked provider) |
+| LLM-01 to LLM-10 | Port, normalization, bounded retries, limits, budget, privacy, mock, isolation, docs | Adapter and platform tests; `disabled` mode (`test_llm_disabled.py`: no key or model, no provider, `200 not_configured` without the rate limiter). [cycle 1: config](evidence/2026-10-30-cycle-1-fix-round.md#config) | B, C, D | — | PASS (mocked provider) |
 | LLM real provider | Connectivity with a real key | Sandbox check | E | DEC-006 | NOT VERIFIED |
-| OBS-01 to OBS-08 | Telemetry configuration, redaction, allowlists, non-blocking, leakage | Unit and leakage tests; outage tests | C, D | — | PASS (mocked transports) |
+| OBS-01 to OBS-08, OBS-10 | Telemetry configuration, redaction, allowlists, non-blocking, leakage, flush after the response | Unit and leakage tests; outage tests; `test_telemetry_wire.py` (canaries absent from every payload a loopback stub received, in raw, URL-encoded, and JSON-escaped form); `test_request_telemetry.py` (OBS-04, OBS-05); `test_telemetry_flush.py` (OBS-10); `test_analytics_events.py` and the web analytics tests (OBS-03: registry and runtime allowlist); `test_sentry_tracing.py`. Mutation-checked. [cycle 1: obs](evidence/2026-10-30-cycle-1-fix-round.md#obs) | C, D | — | PASS (mocked transports); OBS-10's platform half NOT VERIFIED (DEC-001); the `posthog-js` import guard waits for the lint wiring (§23 next step 4) |
 | OBS real services | PostHog and Sentry capture without personal data | Sandbox inspection | E | DEC-006 | NOT VERIFIED |
 | OBS-09 | Telemetry retention | Documentation; adopter checklist | E | — | PASS (documented; adopters set the periods) |
-| FE-02, FE-03, FE-05 to FE-07, FE-10 | Boundaries, states, protected routes, paywall, 404, error mapping | ESLint bans; Vitest; account-free e2e | B | Owner applies the `eslint.config.mjs` change (§23) | PASS, except the stricter FE-02/ENV-07 lint guards (`eslint.guards.mjs`), which are written and tested but not yet enabled |
-| FE-01, FE-04, FE-08, FE-09, FE-11 | Accessibility, session UX, error boundaries, keyboard, browser flows | axe and Playwright page and authenticated suites | B | DEC-006 (Clerk sandbox) | NOT VERIFIED |
+| FE-02, FE-03, FE-06, FE-10 | Boundaries, states, paywall, error mapping | ESLint bans; Vitest (an error code the web does not know shows the server's message for a 4xx and offers a retry for a 503: `client.test.ts`); account-free e2e | B | Owner applies the `eslint.config.mjs` change (§23) | PASS, except the stricter FE-02/ENV-07 lint guards (`eslint.guards.mjs`), which are written and tested but not yet enabled. Under Services, FE-02 holds in the code, not at the environment level (T-22) |
+| FE-05, FE-07 | Protected-route presentation; 404 page | Proxy default deny (`page-access.test.ts`, `proxy.test.ts`: mocked); client page gate (`page-gate.test.tsx`, `layout.test.tsx`: mocked); account-free e2e (the 307 and the public pages: mocked). A signed-in user sees the 404 page; a signed-out visitor to an unknown path is sent to sign-in. [cycle 1: web](evidence/2026-10-30-cycle-1-fix-round.md#web), [cycle 1: web2](evidence/2026-10-30-cycle-1-fix-round.md#web2) | B | The DEC-001 preview; DEC-006 | PASS (mocked). Whether the proxy runs inside a Vercel service: NOT VERIFIED. The real redirect after Clerk loads: NOT RUN (sandbox). The API authorizes every call either way |
+| FE-15 | Pages are default-deny, in two layers | `page-access.test.ts` (walks `src/app`; a page that is public and not expected fails; a second root layout fails), `proxy.test.ts`, `page-gate.test.tsx`, `layout.test.tsx` (renders the real layout around every route, signed out). Built output: the seven pages are still static. Mutation-checked. [cycle 1: web2](evidence/2026-10-30-cycle-1-fix-round.md#web2) | B | — | PASS (mocked: all gate tests mock Clerk) |
+| FE-16 | Operator tools follow the API's answer | `test_diagnostics_access.py` (unit and integration: agreement with the integrations route for eight configurations, no audit row or counter, the body is exactly `{"available": bool}`); `diagnostics-access.test.tsx`; `no-client-roles.test.ts`. [cycle 1: web2](evidence/2026-10-30-cycle-1-fix-round.md#web2) | B, C | — | PASS |
+| FE-01, FE-04, FE-08, FE-09, FE-11 | Accessibility, session UX, error boundaries, keyboard, browser flows | Account-free tier: axe (WCAG 2.2 AA) on the landing page, `/sign-in`, `/sign-up`, and the 404 page; keyboard order; the sign-in-unavailable state; desktop and Pixel 7 (`apps/web/e2e/pages.spec.ts`: 56 passed, 14 skipped, `mocked`, clerk-js blocked). Authenticated suites: `authenticated.spec.ts` (sandbox). [cycle 1: test](evidence/2026-10-30-cycle-1-fix-round.md#test) | B | DEC-006 (Clerk sandbox) | NOT VERIFIED. The public pages PASS (mocked); the Clerk-drawn controls and the signed-in flows are NOT RUN |
 | FE-13 | Feature folders and import boundaries | ESLint `import/no-restricted-paths` (`eslint.boundaries.mjs`); 23 tests lint real snippets through the real configuration; mutation-checked | B | — | PASS |
 | FE-14 | Typed API client generated from OpenAPI | `tsc` with `@ts-expect-error` checks on paths and params; client tests | B | — | PASS |
 | FE-12 | Frontend performance budgets | Measurements | D | Preview environment (DEC-001) | NOT VERIFIED (budgets adopter-owned; Core Web Vitals not measured) |
-| SEC-01 to SEC-05, SEC-07 to SEC-10, SEC-13 to SEC-15 | Validation, headers, secrets, audits, lockfiles, errors, limits, licenses, webhooks, redirects | Tests; audits; gitleaks (CI, and a pre-commit hook installed with `pnpm hooks:install`); license allowlist with reviewed exceptions | C | Owner reviews the license exceptions (§23) | PASS (as of 2026-10-15); the pre-commit hook was not run locally (gitleaks not installed) |
+| SEC-01 to SEC-05, SEC-07, SEC-08, SEC-10, SEC-13 to SEC-15 | Validation, headers, secrets, audits, lockfiles, errors, licenses, webhooks, redirects | Tests; audits; gitleaks (CI: the pinned CLI, SHA-256 checked, over the history reachable from the commit; a pre-commit hook installed with `pnpm hooks:install`, which falls back to a pinned container image); the production dependency audit through npm's bulk advisory endpoint (`scripts/npm-audit-bulk.mjs`); license allowlist with reviewed exceptions; Clerk's required CSP hosts pinned per directive (`csp.test.ts`), with `'unsafe-inline'` kept (nonce CSP deferred, [ADR-0004 §11](adr/0004-cycle-1-adopted-decisions.md)). [cycle 1: deploy](evidence/2026-10-30-cycle-1-fix-round.md#deploy), [cycle 1: web](evidence/2026-10-30-cycle-1-fix-round.md#web) | C | Owner reviews the license exceptions (§23) | PASS (as of 2026-10-30, `local`). The hook ran in a scratch repository (a clean commit passes, a planted key is refused); the CI scan has not run remotely |
+| SEC-09 | Rate limiting (DEC-011) and resource-exhaustion controls | Per-user PostgreSQL counters for checkout, the portal, the billing re-read, LLM checks, diagnostics, and the membership miss refresh; payload, page, timeout, and concurrency bounds (§15.3); their tests | C | — | PASS for the controls that exist. Known limits: ordinary writes (project create and delete, and generated modules) have no per-user limit; `GET /api/v1/jobs/{name}` runs the job on every authorized call with no single-flight guard, so a leaked `CRON_SECRET` can fan out reconciliation runs; the coarse per-IP rule is configured on the platform at deployment (DEC-011), not in code, and is not applied (`docs/limitations.md`) |
 | SEC-06 | Static analysis (CodeQL) | Workflow defined | C | Remote CI not authorized | NOT VERIFIED |
 | SEC-11 | Vulnerability reporting | SECURITY.md with an adopter placeholder enforced by `check:placeholders` | A | — | PASS (ADR-0002) |
 | SEC-12 | Required review of migrations and workflows | CODEOWNERS and branch protection | A | Remote settings not authorized | NOT VERIFIED |
-| TEST-01 to TEST-05 | Test discipline | Review; deterministic clocks; labeled evidence | B | — | PASS |
+| TEST-01, TEST-02, TEST-04, TEST-05 | Test discipline | Review; deterministic clocks; labeled evidence; `pytest --require-db` instead of silent skips | B | — | PASS |
+| TEST-03 | Exhaustive decision matrices; coverage reported | Review; the decision matrices are tested. Coverage is not measured: no `pytest-cov` or `@vitest/coverage-v8` is installed. [cycle 1: test](evidence/2026-10-30-cycle-1-fix-round.md#test) | B | A coverage tool | NOT VERIFIED |
+| TEST-06 | Two end-to-end tiers | Account-free: 56 passed, 14 skipped (`mocked`; the final run, committed state, `--retries=0`); sandbox: `pnpm verify:sandbox` with no `.env` skips every part, exits 0, and prints a record that says NOT VERIFIED. Mutation-checked, including the guards for a CSP violation, an uncaught error, and a skipped handshake. [cycle 1: test](evidence/2026-10-30-cycle-1-fix-round.md#test) | B, E | DEC-006 | PASS (mocked) for the account-free tier; the sandbox tier NOT RUN |
 | PERF-01 to PERF-07 | Performance scenarios | Reports per §15.2 | D | Preview environment (DEC-001) | NOT VERIFIED (all seven recorded **locally** for relative comparison only; PERF-03, PERF-04, and PERF-06 to be re-recorded with the corrected harness; no preview runs) |
 | Performance acceptance | Approved targets met | §15.4 | D | — | RETIRED for the template: adopter-owned (ADR-0002) |
-| CI-SEC-01 to CI-SEC-05 | CI security | Workflow review; first remote run | A, C | Remote CI not authorized | NOT VERIFIED (implemented) |
-| OPS-01 to OPS-03, §16.4, §16.5 | Deployment, rollback, operations | docs/operations.md | E | DEC-001 | BLOCKED |
+| CI-SEC-01 to CI-SEC-05 | CI security | Workflow review; `apps/api/tests/unit/test_ci_workflows.py` (every action pinned to a commit, no secrets and no `pull_request_target` in CI, the migration workflow is manual with least privilege and one secret); first remote run. [cycle 1: deploy](evidence/2026-10-30-cycle-1-fix-round.md#deploy) | A, C | Remote CI not authorized | NOT VERIFIED (implemented) |
+| OPS-01 to OPS-03, §16.4, §16.5 | Deployment, rollback, operations | `docs/deployment.md` and `docs/operations.md`, written for topology B; nothing was deployed | E | DEC-001 (preview deployment; the owner's confirmation of B) | NOT VERIFIED (documented for the adopted topology; no procedure has run on the platform) |
+| §16.1 Deployment configuration | Validate deployment configuration and build output locally; no deployment | `pnpm test:vercel-build` and the CI job `deploy-config`: `vercel build` of the root `vercel.json` with the pinned CLI, 13 checks, 11 planted defects caught; `test_vercel_config.py`. [cycle 1: deploy](evidence/2026-10-30-cycle-1-fix-round.md#deploy) | A, E | Remote CI not authorized | PASS (local packaging evidence, TEST-04); platform NOT VERIFIED (DEC-001) |
 | Account deletion and export | Deletion and export behavior | — | E | — | RETIRED for the template: adopter-owned (ADR-0002); no feature ships |
-| Integration diagnostics | Per-provider configuration report and checks; operator-only; no secrets | Diagnostics integration, unit, and adapter tests | C, E | — | PASS (mocked providers) |
+| Integration diagnostics | Per-provider configuration report and checks; operator-only; no secrets; the command-line equivalent | Diagnostics integration, unit, and adapter tests; `GET /api/v1/diagnostics/access`; `pnpm check:setup` and `diagnose` (`test_doctor.py`, `test_diagnostics_cli.py`, `scripts/tests/preflight.test.mjs`); the Stripe portal check (BILL-23); `pnpm verify:sandbox` (`scripts/tests/verify-sandbox.test.mjs`). [cycle 1: onboard](evidence/2026-10-30-cycle-1-fix-round.md#onboard) | C, E | — | PASS (mocked providers); no command ran against a provider |
 | Integration classification | Mocked, sandbox, or live per provider | Evidence records; `/integrations` checks in sandbox mode | E | DEC-006 | All providers **mocked** |
 
 ## 22. Required Handoff Report
@@ -1422,7 +1513,7 @@ The report clearly distinguishes verified behavior from assumptions, mocks, and 
 
 ---
 
-## 23. Current Status (2026-10-15)
+## 23. Current Status (2026-10-30)
 
 - **Implemented:**
   - **Python API as a modular monolith** (ADR-0003):
@@ -1431,27 +1522,38 @@ The report clearly distinguishes verified behavior from assumptions, mocks, and 
     - a transactional outbox with after-response dispatch;
     - scheduled jobs (CLI and secret-protected HTTP for Vercel Cron);
     - composed per-module settings;
-    - migrations with forced RLS: core schema, outbox, billing reconciliation, membership verification, and the outbox lease index.
+    - migrations with forced RLS: core schema, outbox, billing reconciliation, membership verification, the outbox lease index, the `app_login` runtime role and its assertion, per-command project policies, the open Checkout Session per user, and the impersonating actor on audit entries.
+  - **Cycle 1 additions** ([record](evidence/2026-10-30-cycle-1-fix-round.md); decisions in [ADR-0004](adr/0004-cycle-1-adopted-decisions.md)):
+    - the API logs in as `app_login`, never the table owner, and refuses an unsafe login role in preview and production (DB-11);
+    - module-declared errors, 5xx reports, composition that fails loudly, and route authorization declarations that fail closed (API-07, ARCH-18, TEN-02); sessions started by someone else are refused unless allowed (ADM-03);
+    - billing: DEC-013 option B, the user's own re-read, the read-only portal check, `pnpm setup:stripe`, and the opt-in sandbox suite (BILL-06, BILL-07, BILL-22, BILL-23);
+    - configuration bound to the platform and to its origins (ENV-09), and `LLM_MODE=disabled`;
+    - telemetry: internal user and organization IDs on logs and error events, a runtime analytics allowlist, module-owned events, and a flush after the response (OBS-03 to OBS-05, OBS-10).
   - **Next.js web app:**
     - code organized by feature (`src/features/*`, `src/ui`, `src/lib`), with the boundaries enforced by ESLint (FE-13);
     - a typed client generated from OpenAPI (`openapi-fetch`);
-    - a minimal UI for every integration, including the operator-only `/integrations` page.
+    - a minimal UI for every integration, including the `/integrations` page, shown only to a caller the API says may use it (FE-16);
+    - pages default-deny in two layers (FE-15), and panels that offer only what the API's `can` allows (ARCH-03).
   - **Developer experience:**
-    - `pnpm new:module` generates a tenant-scoped module end to end, and CI verifies the generator;
+    - `pnpm new:module` generates a tenant-scoped module end to end, including its `can` flags, and CI verifies the generator;
+    - `pnpm verify`, `pnpm verify:quick`, `pnpm verify:sandbox`, `pnpm check:setup`, `pnpm build:check`, and `pnpm setup:stripe`;
     - `docs/architecture.md`;
-    - init-template with contact placeholders.
-  - **Deployment proof (DEC-001, local part):** `proofs/dec-001` packages the template with the Vercel CLI and runs it through Vercel's runtime shim, Services routing, and a transaction-mode pooler, without deploying. It found three defects, all fixed: the API could not start from a bundle, a hung database was unbounded, and stale pooled connections failed requests after a pooler restart.
-  - **Product decisions:** DEC-002 (b) organization entitlements; adopter checklists for DEC-003 to DEC-005.
+    - init-template with contact placeholders and the adopter-copy policy (REPO-13).
+  - **Deployment:** the root `vercel.json` (topology B, adopted by delegation), `pnpm test:vercel-build` and the CI job `deploy-config`, a manually dispatched migration workflow, and the pinned secret scan.
+  - **Deployment proof (DEC-001, local part):** `proofs/dec-001` packages the template with the Vercel CLI and runs it through Vercel's runtime shim, Services routing, and a transaction-mode pooler, without deploying. It found three defects, all fixed: the API could not start from a bundle, a hung database was unbounded, and stale pooled connections failed requests after a pooler restart. It has not been re-run since the 2026-10-15 corrections.
+  - **Product decisions:** DEC-002 (b) organization entitlements; adopter checklists for DEC-003 to DEC-005; DEC-013 option (B) by delegation.
   - **Verification tooling:**
-    - 8 import contracts plus architecture tests;
-    - query-count tests;
+    - 8 import contracts plus architecture tests, including a per-layer import allowlist;
+    - query-count tests, and a recorder that checks every test response against the OpenAPI document;
+    - the telemetry wire harness;
+    - the account-free browser tier;
     - the local performance harness, PERF-01 to PERF-07;
     - the local restore drill.
 - **Integrations:** all **mocked**. No sandbox or live service has been contacted.
 - **Local evidence:**
-  - API 466 tests, web 219 unit tests (1 skipped until the lint-guard wiring in next step 4), 32 account-free e2e checks (18 sandbox-only skipped), and the generator check pass (2026-10-15, after the second review: [`2026-10-15-second-review-identity-db.md`](evidence/2026-10-15-second-review-identity-db.md) and [`2026-10-15-second-review-billing-web-tooling.md`](evidence/2026-10-15-second-review-billing-web-tooling.md); the first review's fixes are in [`2026-10-15-review-fixes.md`](evidence/2026-10-15-review-fixes.md)).
-  - The DEC-001 local proof passes ([`dec-001-vercel-python.md`](evidence/dec-001-vercel-python.md)).
-  - Lint, strict types, build, contract drift, init-template, placeholder, bundle-secret, audit, and license checks pass. `test:init-template` **failed** at `dbf8a9b`, so the first review's PASS for it was wrong; it passes now. A dev-only `braces` advisory with no patched version is reported, not blocking.
+  - The latest record is [`2026-10-30-cycle-1-fix-round.md`](evidence/2026-10-30-cycle-1-fix-round.md): the results of each cycle 1 package, the checks run on the merged tree, and everything that was not run. Its counts are not restated here: each was produced on a package branch before the later merges, so they do not add up to one run. No package ran the full suites on the final merged tree, and `pnpm verify` has not been run as one command.
+  - The earlier records: [`2026-10-15-second-review-identity-db.md`](evidence/2026-10-15-second-review-identity-db.md), [`2026-10-15-second-review-billing-web-tooling.md`](evidence/2026-10-15-second-review-billing-web-tooling.md), and, for the first review's fixes, [`2026-10-15-review-fixes.md`](evidence/2026-10-15-review-fixes.md).
+  - The DEC-001 local proof passes ([`dec-001-vercel-python.md`](evidence/dec-001-vercel-python.md)); packaging is also asserted by `pnpm test:vercel-build` (13 checks).
   - At 20 ms DB RTT (local), request scope cut p50 latency by 25% to 33% beyond the one-statement setup.
 
   Details: [`dec-001-vercel-python.md`](evidence/dec-001-vercel-python.md), [`2026-10-14-adr-0003-modular-architecture.md`](evidence/2026-10-14-adr-0003-modular-architecture.md), and the earlier records.
@@ -1459,34 +1561,47 @@ The report clearly distinguishes verified behavior from assumptions, mocks, and 
 
   | Gate | Status | Reason |
   |---|---|---|
-  | A | NOT VERIFIED | Remote CI has never run (needs authorization to push) |
-  | B | NOT VERIFIED | Browser and signed-in e2e need Clerk sandbox keys (DEC-006) |
-  | C | NOT VERIFIED | CodeQL (remote CI) and sandbox verification pending; local security tests PASS |
+  | A | NOT VERIFIED | Remote CI has never run (needs authorization to push). The clean-clone run (REPO-11) must be re-recorded after cycle 1 |
+  | B | NOT VERIFIED | Signed-in end-to-end tests need Clerk sandbox keys (DEC-006). The account-free browser tier passes (mocked) |
+  | C | NOT VERIFIED | CodeQL (remote CI) and sandbox verification pending; local security tests PASS; DEC-014 awaits the owner |
   | D | NOT VERIFIED | Local PERF-01 to PERF-07 recorded; PERF-03, PERF-04, and PERF-06 must be re-recorded (the earlier figures were whole-run averages, and PERF-06 could not detect reprocessing). Preview runs need DEC-001. Targets are adopter-owned (ADR-0002) |
-  | E | BLOCKED | DEC-001 (preview deployment and topology choice; the local proof is done), DEC-006 (integration classification) |
+  | E | BLOCKED | DEC-001 (preview deployment; topology B is adopted by delegation, and the proxy under Services and the shared environment are NOT VERIFIED), DEC-006 (integration classification) |
 
 - **Decisions:**
   - DEC-002 to DEC-012: RESOLVED (ADR-0001, ADR-0002). DEC-003 to DEC-005 are adopter-owned.
-  - Architecture: ADR-0003.
-  - **Open:** DEC-001 and DEC-006, which need owner action, and DEC-013 (preventing a second subscription while one is unsettled), recorded by the 2026-10-15 review.
-  - **Awaiting owner approval** (2026-10-15 second review): the opt-in `STRIPE_PRICE_PRO_MONTHLY_RETAINED` and `STRIPE_PRICE_PRO_YEARLY_RETAINED` settings (a billing-related choice, §17 rule 5; empty by default), and the defaults and choices listed under "Not fixed" in both second-review records.
-- **Deviations:** D-001 and D-002 (§18).
-- **Remote actions:** none. No push, publication, deployment, or release has occurred.
+  - Architecture: ADR-0003. ADR-0004 records the decisions that agents adopted by delegation in cycle 1.
+  - **Open:** DEC-001 (topology B adopted by delegation; the preview deployment and the owner's confirmation are pending), DEC-006, DEC-013 (option (B) adopted by delegation; confirmation and the sandbox run pending), and DEC-014 (the diagnostics operator capability, recorded by cycle 1).
+  - **Awaiting owner approval:**
+    - the opt-in `STRIPE_PRICE_PRO_MONTHLY_RETAINED` and `STRIPE_PRICE_PRO_YEARLY_RETAINED` settings (a billing-related choice, §17 rule 5; empty by default), and the defaults and choices listed under "Not fixed" in both second-review records;
+    - the billing behavior change of BILL-06: the success page, the portal return, and a refused checkout ask the server to re-read from Stripe once (BILL-22);
+    - the other decisions of ADR-0004, including the departure from FE-02 at the environment level under Services, and the AUTH-06 wording deviation (a sign-in link the user clicks, not an automatic redirect).
+- **Deviations:** D-001 to D-004 (§18).
+- **Remote actions:** none. No push, publication, deployment, or release has occurred. One disclosed accident: during a manual run, the real Stripe CLI ran once with a synthetic, invalid key and Stripe rejected it; nothing was created or changed.
+- **Known limitations and deferred work** (cycle 1; the reasons are in the evidence record):
+  - Eleven review findings were deferred: provider-call bulkheads at the ports, generated modules that copy security code, oversized units, untyped outbox events, a per-feature web data layer, a forms foundation, a test kit for adopters, PostHog organization groups, online index builds, a Clerk organization-lifecycle sandbox test, and supply-chain gates that need a pnpm major upgrade.
+  - SEC-09: ordinary writes have no per-user limit, and the jobs endpoint has no single-flight guard.
+  - DB-11: a query can still `SET ROLE app_worker`; row-level security does not stop SQL injection.
+  - The CSP keeps `'unsafe-inline'`, with no nonce and no violation reporting; there is no first-party telemetry relay ([ADR-0004 §11](adr/0004-cycle-1-adopted-decisions.md)).
+  - Plans are hard-wired as Free and Pro, and entitlement is keyed by price; `decide()` returns no feature set (BILL-01).
+  - Coverage is not measured (TEST-03).
 - **Next steps (owner action required):**
-  1. Add sandbox keys to `.env`, and your Clerk user ID to `DIAGNOSTICS_OPERATOR_IDS` (or use `APP_ENV=local`). Then run the `/integrations` checks, the sandbox e2e suites (`E2E_SANDBOX=1`), and the procedures in `docs/integrations.md`, and record the evidence (DEC-006).
-  2. Authorize pushing to a remote, so CI, CodeQL, and the generator check run (Gates A and C).
-  3. Authorize the DEC-001 Vercel preview deployment, and choose the topology: two projects, or one project with Services (see the [evidence](evidence/dec-001-vercel-python.md#topology-options-input-for-the-owner-not-a-decision)). The preview covers what only the platform can show (Gates D and E):
+  1. Create a Clerk development instance with Organizations enabled and **Membership optional**, add the sandbox keys to `.env`, and put your Clerk user ID in `DIAGNOSTICS_OPERATOR_IDS` (or use `APP_ENV=local`). Run `pnpm check:setup`, then `pnpm verify:sandbox`, which runs the setup check, the Stripe sandbox suite (after `pnpm setup:stripe`), and the signed-in end-to-end tests, each when its keys are present. Save the record it prints under `dev-docs/evidence/` (DEC-006).
+  2. Authorize pushing to a remote, so CI, CodeQL, the generator check, and the `deploy-config` job run (Gates A and C).
+  3. Authorize the DEC-001 Vercel preview deployment, run the [two-minute check](../proofs/dec-001/README.md#first-preview-the-two-minute-check), and confirm or reverse topology B ([ADR-0004 §1](adr/0004-cycle-1-adopted-decisions.md), and the [evidence](evidence/dec-001-vercel-python.md#topology-options-input-for-the-owner-not-a-decision)). The preview covers what only the platform can show (Gates D and E):
+     - whether the Next.js proxy runs inside a service, whether the Services Framework Preset takes effect, and which variables the web service can read;
      - cold starts and limits;
      - the production router;
      - Supabase's pooler;
      - genuine Stripe deliveries;
      - Vercel Cron (it runs on production deployments only, so a preview cannot verify it);
-     - after-response dispatch;
+     - after-response dispatch and the telemetry flush;
      - preview performance runs.
-  4. Enable the stricter web lint guards: in `apps/web/eslint.config.mjs`, spread `guardConfigs(import.meta.dirname)` from `eslint.guards.mjs` and remove the inline env and import rules, then remove `.skip` from the wiring test in `src/boundaries.test.ts`. Agents are not permitted to edit lint configuration in this repository.
+  4. Enable the stricter web lint guards: in `apps/web/eslint.config.mjs`, spread `guardConfigs(import.meta.dirname)` from `eslint.guards.mjs` and remove the inline env and import rules, then remove `.skip` from the wiring test in `src/boundaries.test.ts`. Agents are not permitted to edit lint configuration in this repository. The same step turns on the `posthog-js` import guard (OBS-03).
   5. Review the license exceptions in `scripts/check-licenses.mjs`: the Sentry CLI (`sentry`, FSL-1.1-Apache-2.0, build time only) and the weak-copyleft packages (psycopg, certifi, libvips, tzdata).
-  6. Decide DEC-013.
-  7. Approve or remove the retained-price settings, and confirm the defaults listed under "Not fixed" in the two second-review records (for example: outbox lease 900 s, migration lock timeout 5 s, `DATABASE_POOL_MAX_SIZE` at most 30, a domain `503` keeps the request's writes).
-- **Next steps (no owner action needed):** re-record PERF-03, PERF-04, and PERF-06 locally with the corrected harness.
+  6. Confirm or reverse DEC-013 option (B), and approve the BILL-06 behavior change.
+  7. Decide the retained-price settings and the entitlement key, and confirm the defaults listed under "Not fixed" in the two second-review records (for example: outbox lease 900 s, migration lock timeout 5 s, `DATABASE_POOL_MAX_SIZE` at most 30, a domain `503` keeps the request's writes). The cycle 1 review offers two options for the first: (A) approve `STRIPE_PRICE_PRO_MONTHLY_RETAINED` and `STRIPE_PRICE_PRO_YEARLY_RETAINED` as they are; or (B) grant Pro by the Stripe product, so that any monthly or yearly price of the Pro product grants Pro, the retained settings are deleted, and `STRIPE_PRODUCT_PRO` is added (the reviewer recommends B; it needs no migration, contract, or web change; it is not implemented; and the next `reconcile --apply` would give Pro back to anyone a past price change dropped). The same item covers `decide()` returning a feature set (BILL-01).
+  8. Decide DEC-014: keep the operator model and add a verified second factor (recommended), keep it as it is, or limit diagnostics to local and preview.
+  9. Confirm or reverse the other decisions of [ADR-0004](adr/0004-cycle-1-adopted-decisions.md).
+- **Next steps (no owner action needed):** re-record PERF-03, PERF-04, and PERF-06 locally with the corrected harness; run `pnpm verify` end to end on an idle machine and record it; re-record the clean-clone run (REPO-11).
 
 **Final principle:** build a template that is secure by default, modular by design, reproducible from a clean clone, and honest about its verified limits. Do not trade correctness, security, or maintainability for superficial completion.
