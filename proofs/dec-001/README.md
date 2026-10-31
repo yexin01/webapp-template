@@ -2,7 +2,7 @@
 
 Disposable proof for [DEC-001](../../dev-docs/engineering-implementation-plan.md#dec-001--python-backend-on-vercel). It packages the real template with the Vercel CLI and exercises the packaged function **on this machine only**. Results are recorded in [`dev-docs/evidence/dec-001-vercel-python.md`](../../dev-docs/evidence/dec-001-vercel-python.md).
 
-Nothing here is template code. Delete this folder once DEC-001 is resolved, together with the `dec001` tests in [`apps/api/tests/integration/test_perf_harness.py`](../../apps/api/tests/integration/test_perf_harness.py), which skip once the folder is gone.
+Nothing here is template code. Delete this folder once DEC-001 is resolved, together with the `dec001` tests in [`apps/api/tests/integration/test_perf_harness.py`](../../apps/api/tests/integration/test_perf_harness.py), which skip once the folder is gone. The root [`vercel.json`](../../vercel.json) that the proof builds is template code (topology B, adopted by delegation: [ADR-0004 §1](../../dev-docs/adr/0004-cycle-1-adopted-decisions.md)) and stays.
 
 ## Safety
 
@@ -48,8 +48,23 @@ These items stay `NOT VERIFIED` until the owner authorizes a preview deployment 
 - genuine Stripe sandbox webhook deliveries and retries;
 - the job routes on the platform, called by hand with `Authorization: Bearer <CRON_SECRET>`;
 - after-response outbox dispatch when the platform freezes the instance (deviation D-002).
+- whether the Next.js proxy runs inside a service (the two-minute check below);
+- that Vercel accepts the Services configuration on a real project (Services is Beta) and that the Services Framework Preset takes effect;
+- which variables the web service's server processes can read (Vercel documents the environment variables of a project as shared by its services).
 
 Vercel Cron itself invokes **production** deployments only, never previews. Verifying that it calls the job routes needs a production deployment, which is a separate authorization.
+
+### First preview: the two-minute check
+
+Whether the Next.js proxy (`apps/web/src/proxy.ts`, Clerk's `auth.protect()`) runs when the web app is a Vercel service is **NOT VERIFIED**: Vercel's Build Output API reference says "Middleware is not supported inside a service", while `vercel build` emits the proxy as a function. The sources are in [the DEC-001 record](../../dev-docs/evidence/dec-001-vercel-python.md#nextjs-proxy-under-services-not-verified). The web app has a second, client-side page gate for that reason, and the API authorizes every operation either way. Run this once on the first preview deployment, which needs the owner's authorization:
+
+1. Signed out, run `curl -sI https://<preview>/dashboard`. If the preview is behind Deployment Protection, add `-H "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET"` (see the end of this file); without it Vercel answers `401` and the check says nothing.
+2. Read the status line and the `location` header:
+   - `307` with a `location` of `/sign-in?redirect_url=...`: the proxy ran inside the service. On a Clerk development instance the `location` may instead be Clerk's own handshake URL, which Clerk's middleware also produces (which of the two a plain `curl -sI` gets: NOT VERIFIED).
+   - `200`: only the client page gate protects pages, and it redirects in the browser. This is acceptable.
+   - Anything else (`401` from Vercel, `404`, `5xx`): fix that first.
+3. Open the preview URL in a browser, sign in, and open `/dashboard`. Staying on `/dashboard` means the origins were derived correctly. A loop between `/sign-in` and the page means the origin is not authorized: the API logs `clerk_azp_refused` with the origin to add to `CLERK_AUTHORIZED_PARTIES`. A preview on `*.vercel.app` needs Clerk development keys.
+4. Record the result (`sandbox`, with the date, the commit, and which layer acted) under `dev-docs/evidence/`.
 
 ### Probing a preview
 
@@ -64,6 +79,11 @@ A preview with its own Clerk instance and secrets therefore fails `auth_rejectio
 2. Deploy the preview from a dedicated proof branch. Set these five values as Preview variables scoped to that branch only (Vercel lets a Preview variable apply to a single Git branch), never to all previews or to Production:
    - `CLERK_JWT_KEY`: the contents of `<dir>/keys/jwt-public.pem`, pasted as they are, on several lines. Do not copy it from `proof.env`, which holds it on one line, in quotes, ending in a `\n` escape: the web app's configuration check, which `next build` runs, refuses that form with or without the quotes;
    - `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` (the API derives the token issuer from it), `CLERK_AUTHORIZED_PARTIES`, `CRON_SECRET`, and `STRIPE_WEBHOOK_SECRET`: the values in `<dir>/proof.env`.
+
+   The API and the web build both refuse a preview without these, so set them too (the web build reads the origin variables when it is built: set them before you deploy, and deploy again after changing either):
+   - `APP_BASE_URL`: the origin the preview is opened at, for example the proof branch's stable branch URL. It is required on every preview.
+   - `CLERK_AUTHORIZED_PARTIES` must list the proof's `azp` (the value in `proof.env`) **and** the origin of `APP_BASE_URL`, unless that origin is the deployment's own URL or its branch URL: on a preview deployment of a preview application (`APP_ENV=preview` and `VERCEL_ENV=preview`), `https://$VERCEL_URL` and `https://$VERCEL_BRANCH_URL` are added to the list automatically. Without the origin of `APP_BASE_URL` in the effective list, the API stops with "CLERK_AUTHORIZED_PARTIES must list the origin of APP_BASE_URL".
+   - The four integration modes (`BILLING_MODE`, `LLM_MODE`, `ANALYTICS_MODE`, `ERROR_REPORTING_MODE`) and `APP_ENV=preview` come from the project's Preview variables; a preview without them does not start. `mock` and `disabled` are valid there.
 
    The rest of `proof.env` is for the local run only. While these values are set, that preview trusts only the proof's tokens and signing secret: sign-in does not work on it, and genuine Stripe sandbox deliveries fail their signature check (`400 WEBHOOK_SIGNATURE_INVALID`). That failure is not the raw-body failure the proof rules out. Verify sign-in and genuine deliveries and retries on a preview that has the sandbox values instead (the Stripe endpoint's own signing secret), or after removing the proof values. Afterwards, remove the variables and delete `<dir>`.
 3. Run the probe from the repository root. The preview's database must be non-production with synthetic data only, because the probe creates users, projects, and ledger rows:
