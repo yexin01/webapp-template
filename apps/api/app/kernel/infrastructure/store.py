@@ -17,11 +17,13 @@ from app.kernel.ports import ConnectionDescription, JobRun, LoginRole
 _MAX_ERROR_LENGTH = 500
 
 # What the login role could do in a query that does not switch role. Reads catalogs every role can read.
+# A member of a CREATEROLE role counts: before PostgreSQL 16 that role can add its members to any other role that
+# is not a superuser, the owner of the tables included.
 _LOGIN_ROLE_SQL = """
 SELECT s.rolsuper AS superuser, s.rolbypassrls AS bypass_rls, s.rolcreaterole AS create_role,
   EXISTS (
     SELECT 1 FROM pg_roles r
-    WHERE (r.rolsuper OR r.rolbypassrls) AND r.oid <> s.oid AND pg_has_role(s.oid, r.oid, 'MEMBER')
+    WHERE (r.rolsuper OR r.rolbypassrls OR r.rolcreaterole) AND r.oid <> s.oid AND pg_has_role(s.oid, r.oid, 'MEMBER')
   ) AS privileged_membership,
   ARRAY(
     SELECT c.relname::text FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace

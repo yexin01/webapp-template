@@ -45,7 +45,7 @@ class LoginRole:
     superuser: bool = False
     bypass_rls: bool = False
     create_role: bool = False
-    # Member of a superuser or BYPASSRLS role, so it can switch into one.
+    # Member of a superuser, BYPASSRLS, or CREATEROLE role, so it can switch into one.
     privileged_membership: bool = False
     # Tables in schema ``app`` it owns, or whose owner it is a member of.
     owned_tables: tuple[str, ...] = ()
@@ -61,7 +61,7 @@ class LoginRole:
         if self.create_role:
             found.append("the login role can create roles")
         if self.privileged_membership:
-            found.append("the login role is a member of a superuser or BYPASSRLS role")
+            found.append("the login role is a member of a superuser, BYPASSRLS, or CREATEROLE role")
         if self.owned_tables:
             found.append("the login role owns, or can act as the owner of, " + ", ".join(self.owned_tables))
         return tuple(found)
