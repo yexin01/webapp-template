@@ -287,7 +287,7 @@ Only the owner can give these; an agent never does them on its own initiative.
 The template leaves these decisions to each adopter ([ADR-0002](../dev-docs/adr/0002-organization-entitlements-contacts-adopter-decisions.md)). **[YOU D17]** Make and record them.
 
 1. Security and conduct contacts: `pnpm init-template` asks for them, and CI fails while placeholders remain.
-2. Data retention, deletion, export, and analytics consent: [data-inventory.md](data-inventory.md#adopter-decision-checklist). This includes account deletion: whether users may delete their own account in Clerk (S12 in [setup.md](setup.md#clerk)), and what you do about a deleted user's data. The template ends the user's subscription at the period's end and keeps everything else ([operations.md](operations.md#a-user-deleted-in-clerk)).
+2. Data retention, deletion, export, and analytics consent: [data-inventory.md](data-inventory.md#adopter-decision-checklist). This includes account deletion: whether users may delete their own account in Clerk (S12 in [setup.md](setup.md#clerk)), and what you do about a deleted user's data. The template expires the user's open Checkout Sessions, ends the user's subscription at the period's end, and keeps everything else ([operations.md](operations.md#a-user-deleted-in-clerk)).
 3. Backup objectives, plus a timed hosted restore test: [operations.md](operations.md#backup-and-restore).
 4. Performance targets, from your own preview baseline: [perf/run-plan-template.md](../perf/run-plan-template.md).
 5. Sandbox verification of every integration you use: [integrations.md](integrations.md#status-of-each-integration).

@@ -424,7 +424,7 @@ These change what an adopter or the owner runs. Each row is a decision; each rev
 
 - **Positive.** A committed, locally tested deployment baseline; a login role that cannot be the table owner; checkout that refuses a second subscription while one is unsettled (the two-tab race is closed after the fact); misconfiguration that names itself instead of failing silently; one command, `pnpm verify`, that means the same locally and in CI.
 - **Costs.** Beta platform dependence (§1), the shared-environment departure from FE-02 (§1), more Stripe calls at checkout (§2), a sign-in loop when an origin is not listed (§9), one extra request per page load for every signed-in user (§7), every monthly or yearly price of the Pro product granting Pro, whatever it charges (§16), and one extra worker transaction per counted write (§17).
-- **Not verified.** Everything in the "NOT VERIFIED" lists above. The preview deployment (§1) is the single owner action that settles most of them.
+- **Not verified.** Everything in the "NOT VERIFIED" lists above. The preview deployment (§1) is the single owner action that answers most of them; its optional questions ([deployment.md](../../docs/deployment.md#questions-the-first-preview-can-also-answer)) answer two more.
 
 ## Open for the owner
 

@@ -253,7 +253,7 @@ Those belong to the hosted restore test above.
 
 Current behavior:
 
-- `user.deleted` from Clerk revokes all of the user's organization memberships, and no membership read taken earlier can restore them. Billing sets the user's subscription to end at the period's end ([above](#a-user-deleted-in-clerk)). Application data and billing records are retained.
+- `user.deleted` from Clerk revokes all of the user's organization memberships, and no membership read taken earlier can restore them. Billing expires the user's open Checkout Sessions and sets the user's subscription to end at the period's end ([above](#a-user-deleted-in-clerk)). Application data and billing records are retained.
 - Webhook ledgers store event IDs and types only, not payloads.
 - Telemetry retention follows each provider's project settings.
 
