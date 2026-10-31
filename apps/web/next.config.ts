@@ -23,8 +23,9 @@ const isDev = process.env.NODE_ENV !== "production";
 // only the variables the web app reads (env.server.ts), so a local run never gives
 // API secrets such as STRIPE_SECRET_KEY and DATABASE_URL to the web process. On
 // Vercel the platform sets the process environment, and one project gives every
-// service every variable (docs/deployment.md).
-loadEnvFiles(repoRoot, isWebVariable, process.env);
+// service every variable (docs/deployment.md). `pnpm build:check` sets SKIP_ROOT_ENV_FILE so that
+// its build is the same on every machine whatever the .env holds.
+if (process.env.SKIP_ROOT_ENV_FILE !== "1") loadEnvFiles(repoRoot, isWebVariable, process.env);
 
 function nextConfig(phase: string): NextConfig {
   const stray = strayEnvFiles(repoRoot, webDir);
