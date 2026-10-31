@@ -16,6 +16,16 @@ from app.kernel.infrastructure.redaction import MAX_TEXT_LENGTH, REDACTED, TRUNC
 from app.kernel.request_context import request_id_var
 
 JWT = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJjYW5hcnkifQ.c2lnbmF0dXJlY2FuYXJ5"
+UNICODE_ADDRESSES = [
+    pytest.param("josé@example.com", id="an accented letter"),
+    pytest.param("jose\u0301@example.com", id="a letter and a combining accent"),
+    pytest.param("josé+tag@example.co.uk", id="a plus tag after an accent"),
+    pytest.param("иван@example.ru", id="Cyrillic"),
+    pytest.param("用户@example.cn", id="Chinese"),
+    pytest.param("user@münchen.de", id="an internationalized domain"),
+    pytest.param("иван@пример.рф", id="a domain and a top-level domain in Cyrillic"),
+    pytest.param("用户@例子.中国", id="a domain and a top-level domain in Chinese"),
+]
 SECRET = "sk_" + "live_CANARY1234567890"
 MB = 1_000_000
 
@@ -42,6 +52,18 @@ class TestPatterns:
     @pytest.mark.parametrize("joiner", ["+", "-", "_", "%", "7"])
     def test_an_email_address_written_right_after_another_is_redacted(self, joiner: str) -> None:
         assert not re.search("jane|bob|example", redact_text(f"x to=jane@example.com{joiner}bob@example.org y"))
+
+    @pytest.mark.parametrize("address", UNICODE_ADDRESSES)
+    def test_an_email_address_in_any_script_is_redacted(self, address: str) -> None:
+        assert redact_text(f"failed for {address} now") == f"failed for {REDACTED} now"
+
+    @pytest.mark.parametrize("joiner", ["+", "-", "_", "%", "7"])
+    def test_an_email_address_in_any_script_written_right_after_another_is_redacted(self, joiner: str) -> None:
+        assert redact_text(f"x to=josé@example.com{joiner}иван@пример.рф y") == f"x to={REDACTED} y"
+
+    @pytest.mark.parametrize("text", ["ça va@bien", "a@b", "5€ @ 3", "@пример.рф", "иван@", "иван@пример"])
+    def test_text_without_the_parts_of_an_address_is_kept(self, text: str) -> None:
+        assert redact_text(f"x {text} y") == f"x {text} y"
 
     @pytest.mark.parametrize(
         ("prefix", "kept"),
@@ -267,6 +289,11 @@ class TestRedactionCost:
             pytest.param("a@" + "b." * 20_000, id="dotted labels after an @"),
             pytest.param("a" * 20_000 + "@" + "b." * 10_000, id="a long local part before a dotted domain"),
             pytest.param("a@b.cc" + ".d@e" * 10_000, id="near-addresses after an address"),
+            pytest.param("é" * 40_000, id="a run of accented letters"),
+            pytest.param("é.%+-_" * 7_000, id="mixed local-part characters, accented"),
+            pytest.param("é" * 40_000 + "@", id="accented local-part characters before an @"),
+            pytest.param("é" * 20_000 + "@" + "д." * 10_000, id="an accented local part before a dotted domain"),
+            pytest.param("é@b.cc" + ".д@e" * 10_000, id="near-addresses after an accented address"),
             pytest.param("eyJ-" * 10_000, id="a run of JWT-like segments"),
             pytest.param("eyJaaaaa." * 5_000, id="dotted JWT-like segments"),
             pytest.param("postgres://" * 4_000, id="DSN schemes"),
@@ -317,6 +344,16 @@ class TestRedactionCost:
     def test_a_secret_cut_by_the_cap_is_dropped(self, secret: str, kept: str) -> None:
         filler = "x " * 2_044  # 4088 characters: the cap falls inside the secret
         assert redact_text(f"{filler}{secret} tail") == f"{filler}{kept}{TRUNCATED}"
+
+    @pytest.mark.parametrize(
+        "address", ["josé@example.com", "jose\u0301@example.com", "иван@пример.рф", "用户@例子.中国"]
+    )
+    def test_an_address_in_any_script_is_dropped_wherever_the_cap_cuts_it(self, address: str) -> None:
+        kept = set()
+        for cut in range(len(address) + 1):  # the cap falls `cut` characters into the address
+            filler = " " * (MAX_TEXT_LENGTH - cut)
+            kept.add(redact_text(f"{filler}{address} tail").removeprefix(filler).removesuffix(TRUNCATED))
+        assert kept == {""}
 
     @pytest.mark.parametrize("password", ["Tr0ub4dor&3xyz", "p:ss:word9", "S3cr3t!Pass", "a$b#c*d(e)f[g]h"])
     def test_a_dsn_cut_by_the_cap_is_dropped_wherever_the_cut_falls(self, password: str) -> None:

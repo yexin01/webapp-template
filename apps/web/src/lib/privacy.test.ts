@@ -74,6 +74,51 @@ describe("redaction", () => {
     },
   );
 
+  const ADDRESSES_IN_ANY_SCRIPT = [
+    "josé@example.com",
+    "jose\u0301@example.com",
+    "josé+tag@example.co.uk",
+    "иван@example.ru",
+    "用户@example.cn",
+    "user@münchen.de",
+    "иван@пример.рф",
+    "用户@例子.中国",
+  ];
+
+  it.each(ADDRESSES_IN_ANY_SCRIPT)("removes the email address %s", (address) => {
+    expect(redactText(`failed for ${address} now`)).toBe("failed for [REDACTED] now");
+  });
+
+  it.each(["+", "-", "_", "%", "7"])(
+    "removes an email address in any script written right after another, joined by %s",
+    (joiner) => {
+      expect(redactText(`x to=josé@example.com${joiner}иван@пример.рф y`)).toBe("x to=[REDACTED] y");
+    },
+  );
+
+  it.each(["ça va@bien", "a@b", "5€ @ 3", "@пример.рф", "иван@", "иван@пример"])(
+    "keeps %s, which holds no email address",
+    (text) => {
+      expect(redactText(`x ${text} y`)).toBe(`x ${text} y`);
+    },
+  );
+
+  it.each(["josé@example.com", "jose\u0301@example.com", "иван@пример.рф", "用户@例子.中国"])(
+    "drops the email address %s however the length limit cuts it",
+    (address) => {
+      const kept = new Set<string>();
+      for (let cut = 0; cut <= address.length; cut++) {
+        const filler = " ".repeat(4096 - cut);
+        kept.add(
+          redactText(`${filler}${address} tail`)
+            .slice(filler.length)
+            .replace(/\[truncated\]$/, ""),
+        );
+      }
+      expect([...kept]).toEqual([""]);
+    },
+  );
+
   it("removes what the unbounded email pattern removed, on 20,000 generated strings", () => {
     const unbounded = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
     const fragments = [
@@ -140,6 +185,11 @@ describe("redaction cost on long strings (OBS-06)", () => {
     ["dotted labels after an @", ...unchanged(`a@${"b.".repeat(RUN / 2)}`)],
     ["addresses written one after another", `a@b.cc${".d@e.ff".repeat(RUN / 7)}`, "[REDACTED]"],
     ["near-addresses after one", `a@b.cc${".d@e".repeat(RUN / 4)}`, `[REDACTED]${".d@e".repeat(RUN / 4)}`],
+    ["accented local-part characters", ...unchanged("é.%+-_".repeat(RUN / 6))],
+    ["accented local-part characters before an @", ...unchanged(`${"é".repeat(RUN)}@`)],
+    ["accented local-part characters before an address", `${"é".repeat(RUN)}@example.com`, "[REDACTED]"],
+    ["dotted Cyrillic labels after an @", ...unchanged(`a@${"д.".repeat(RUN / 2)}`)],
+    ["addresses in Cyrillic written one after another", `й@д.сс${".д@е.фф".repeat(RUN / 7)}`, "[REDACTED]"],
   ])(
     "redacts email addresses in linear time on a run of %s, even without the length cap",
     (_label, text, expected) => {

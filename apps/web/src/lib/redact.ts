@@ -41,12 +41,13 @@ const SENSITIVE_PARAMETER_NAMES = [...SENSITIVE_QUERY_PARAMETERS.map(escapeRegEx
   "|",
 );
 
-const EMAIL_LOCAL = "[A-Za-z0-9._%+-]";
-const EMAIL_DOMAIN = "@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}";
+// Letters, digits, and combining accents of any script; the top-level domain is letters.
+const EMAIL_LOCAL = "[\\p{L}\\p{N}\\p{M}._%+-]";
+const EMAIL_DOMAIN = "@[\\p{L}\\p{N}\\p{M}.-]+\\.\\p{L}{2,}";
 // Tried only from the start of a local-part run (linear, whole address), with any glued on: "a@b.cc+d@e.ff".
 const EMAIL = new RegExp(
-  `(?<!${EMAIL_LOCAL})${EMAIL_LOCAL}+${EMAIL_DOMAIN}(?:[0-9._%+-]${EMAIL_LOCAL}*${EMAIL_DOMAIN})*`,
-  "g",
+  `(?<!${EMAIL_LOCAL})${EMAIL_LOCAL}+${EMAIL_DOMAIN}(?:[\\p{N}\\p{M}._%+-]${EMAIL_LOCAL}*${EMAIL_DOMAIN})*`,
+  "gu",
 );
 
 // Each pattern runs in linear time: no long run of characters is rescanned from every position in it.
@@ -66,7 +67,7 @@ const PATTERNS: [RegExp, string][] = [
 /** The longest string the patterns scan, so the work per string is bounded. */
 const MAX_TEXT_LENGTH = 4096;
 // A token cut in half by the limit could escape its pattern, so it is dropped as well.
-const TOKEN_AT_END = /(?<![\w.%+/=~@-])[\w.%+/=~@-]+$/;
+const TOKEN_AT_END = /(?<![\p{L}\p{N}\p{M}_.%+/=~@-])[\p{L}\p{N}\p{M}_.%+/=~@-]+$/u;
 
 /** Redacts secret- and email-shaped text. Text past `maxLength` characters is dropped and marked. */
 export function redactText(value: string, maxLength = MAX_TEXT_LENGTH): string {
