@@ -144,7 +144,9 @@ export function createApiClient(getToken: TokenGetter, options: ApiClientOptions
     baseUrl: "",
     fetch: transport(timeoutMs, getToken),
     headers: { Accept: "application/json" },
-    credentials: "omit",
+    // The page's own cookies only: Vercel Deployment Protection answers 401 to a request without its cookie
+    // (a protected preview). The API reads none of them (API-04).
+    credentials: "same-origin",
     cache: "no-store",
   });
 
