@@ -219,19 +219,37 @@ def test_nt06_concurrent_downgrade_waits_for_privileged_transaction(harness: Har
     assert downgrade_committed.is_set()
 
 
+def audit_rows(harness: Harness) -> list[tuple[Any, ...]]:
+    """Every audit entry in full: who acted, in which organization, on what, with what outcome, for which request."""
+    return superuser_query(
+        harness.database_url,
+        "SELECT u.clerk_user_id, a.org_id, a.action, a.target_type, a.target_id, a.outcome, a.request_id "
+        "FROM app.audit_log a LEFT JOIN app.users u ON u.id = a.actor_user_id ORDER BY a.id",
+    )
+
+
 def test_nt07_member_cannot_perform_admin_action_and_denial_is_audited(harness: Harness, world: dict[str, Any]) -> None:
-    r = harness.client.delete(f"/api/v1/orgs/{ACME}/projects/{world['acme_project']}", headers=world["bob"])
+    r = harness.client.delete(
+        f"/api/v1/orgs/{ACME}/projects/{world['acme_project']}",
+        headers={**world["bob"], "X-Request-ID": "req-denied-0001"},
+    )
     assert r.status_code == 403
-    audit = superuser_query(harness.database_url, "SELECT action, outcome FROM app.audit_log")
-    assert ("project:delete", "denied") in audit
+    org_uuid, _ = _ids(harness)
+    assert audit_rows(harness) == [
+        ("user_bob", org_uuid, "project:delete", "project", world["acme_project"], "denied", "req-denied-0001")
+    ]
 
 
 def test_admin_delete_succeeds_and_is_audited(harness: Harness, world: dict[str, Any]) -> None:
-    r = harness.client.delete(f"/api/v1/orgs/{ACME}/projects/{world['acme_project']}", headers=world["alice"])
-    assert r.status_code == 204
-    assert ("project:delete", "succeeded") in superuser_query(
-        harness.database_url, "SELECT action, outcome FROM app.audit_log"
+    r = harness.client.delete(
+        f"/api/v1/orgs/{ACME}/projects/{world['acme_project']}",
+        headers={**world["alice"], "X-Request-ID": "req-deleted-0001"},
     )
+    assert r.status_code == 204
+    org_uuid, _ = _ids(harness)
+    assert audit_rows(harness) == [
+        ("user_alice", org_uuid, "project:delete", "project", world["acme_project"], "succeeded", "req-deleted-0001")
+    ]
 
 
 def test_nt09_client_supplied_authority_fields_are_rejected(harness: Harness, world: dict[str, Any]) -> None:
