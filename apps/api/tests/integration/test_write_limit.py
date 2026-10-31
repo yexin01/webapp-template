@@ -147,6 +147,17 @@ def test_a_refused_write_never_takes_a_request_transaction(
     assert len(begun) == 1
 
 
+def test_a_counted_write_adds_one_short_worker_transaction(make_harness: Callable[..., Harness]) -> None:
+    """The cost docs/limitations.md names: a counter update is BEGIN, setup, the upsert, and COMMIT."""
+    from tests.integration.test_query_counts import counting_round_trips
+
+    limiter = make_harness().container.kernel.rate_limiter
+    limiter.hit("writes:user:probe", 60, 60)  # opens the worker connection the measured call reuses
+    with counting_round_trips() as trips:
+        limiter.hit("writes:user:probe", 60, 60)
+    assert trips.total == 4
+
+
 def test_the_token_is_still_verified_once_per_request(harness: Harness, monkeypatch: pytest.MonkeyPatch) -> None:
     verified: list[str] = []
     original = harness.verifier.verify
