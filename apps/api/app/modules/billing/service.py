@@ -49,6 +49,7 @@ from app.modules.billing.domain import (
     checkout_block,
     decide,
     entitling_subscriptions,
+    live_subscriptions,
     summarize,
 )
 from app.modules.billing.ports import (
@@ -235,7 +236,12 @@ class BillingService:
                     if url is not None:
                         return url
                 self._close_open_checkout(provider, ctx, open_checkout)
-                self._refuse_checkout(provider.list_customer_subscriptions(customer_id))
+                try:
+                    at_stripe = provider.list_customer_subscriptions(customer_id)
+                except InvalidRequestError as rejected:
+                    customer_id = self._replace_deleted_customer(provider, ctx, customer_id, rejected)
+                else:
+                    self._refuse_checkout(at_stripe)
             # Stripe replays the session an earlier request created with the same key, even if it was closed
             # since. Tying the key to the session just closed makes a replay of this request return the new
             # session, and a request made after a newer session was saved never return a dead one.
@@ -257,6 +263,52 @@ class BillingService:
         block = checkout_block(subscriptions, self._clock.now())
         if block is not None:
             raise ConflictError(_CHECKOUT_REFUSALS[block])
+
+    def _replace_deleted_customer(
+        self, provider: BillingProvider, ctx: TenantContext, customer_id: str, rejected: InvalidRequestError
+    ) -> str:
+        """Stripe rejected the stored customer. If it no longer exists and nothing live depends on it, link a new one.
+
+        Deleting a customer cancels its subscriptions, and Stripe cannot create a customer under that ID again, so
+        without a new link every checkout of the user would be rejected for good. A customer Stripe still has is a
+        real rejection and stays one. The new customer's idempotency key names the old one, so Stripe does not
+        replay the deleted customer, and a repeat gets the customer already made.
+        """
+        if provider.customer_exists(customer_id):
+            raise rejected
+        created = provider.create_customer(ctx.user_id, replaces=customer_id)
+        with self._tx.as_system() as t:
+            # Under the customer's lock, as a webhook is: the stored subscriptions are read as they are now.
+            t.repo.lock_customer(customer_id)
+            self._refuse_if_alive(t.repo.list_subscriptions_by_customer(customer_id), customer_id)
+            linked = t.repo.relink_customer(ctx.user_id, customer_id, created, self._clock.now())
+            if linked == created:
+                t.repo.resolve_flagged_events(customer_id)
+        if linked == created:
+            logger.warning(
+                "billing_customer_relinked", extra={"stripe_customer_id": created, "replaced_customer_id": customer_id}
+            )
+        return linked
+
+    def _refuse_if_alive(self, stored: Sequence[SubscriptionSnapshot], customer_id: str) -> None:
+        """Refuse with 409 and an ERROR naming the ids, if a subscription of the deleted customer is not over.
+
+        That happens when the keys belong to another Stripe account than the one the subscription was bought in
+        (a new sandbox, with the database kept): nothing there can end it, so an operator has to.
+        """
+        alive = live_subscriptions(stored, self._clock.now())
+        if not alive:
+            return
+        logger.error(
+            "billing_customer_gone_with_subscription",
+            extra={
+                "stripe_customer_id": customer_id,
+                "stripe_subscription_ids": ",".join(s.stripe_subscription_id for s in alive),
+            },
+        )
+        raise ConflictError(
+            "Your billing account could not be matched to your subscription. Nothing was started; contact support."
+        )
 
     @staticmethod
     def _open_session_url(provider: BillingProvider, checkout: OpenCheckout) -> str | None:
@@ -311,9 +363,31 @@ class BillingService:
             raise ConflictError("There is no billing account to manage yet.")
         self._rate_limiter.hit(f"portal:{ctx.user_id}", self._portal_sessions_per_hour, 3600)
         with self._stripe_call_slot():
-            url = provider.create_portal_session(customer_id=customer_id, return_url=self._urls.portal_return)
+            try:
+                url = provider.create_portal_session(customer_id=customer_id, return_url=self._urls.portal_return)
+            except InvalidRequestError as rejected:
+                self._explain_deleted_customer(provider, ctx, customer_id, rejected)
+                raise
         self._analytics.capture(ctx.user_id, "billing_portal_opened", {})
         return url
+
+    def _explain_deleted_customer(
+        self, provider: BillingProvider, ctx: TenantContext, customer_id: str, rejected: InvalidRequestError
+    ) -> None:
+        """Stripe rejected the portal for the stored customer. If Stripe deleted it, say what the user can do.
+
+        There is nothing to manage in a customer that does not exist; the next checkout links a new one
+        (``_replace_deleted_customer``). A subscription still stored as live is an operator's to settle.
+        """
+        if provider.customer_exists(customer_id):
+            return
+        with self._tx.as_tenant(ctx) as t:
+            stored = [s for s in t.repo.list_subscriptions(ctx.user_id) if s.stripe_customer_id == customer_id]
+        self._refuse_if_alive(stored, customer_id)
+        raise ConflictError(
+            "Your billing account no longer exists at Stripe, so there is nothing to manage. "
+            "Start a new subscription from the billing page."
+        ) from rejected
 
     def sync_from_stripe(self, ctx: TenantContext) -> BillingSummary:
         """Re-read the signed-in user's own customer from Stripe, as a webhook would (BILL-02, BILL-06).

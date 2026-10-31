@@ -24,7 +24,7 @@ The template never stores email addresses, names, or payment details. Those stay
 | `organizations` | Clerk organization ID, deleted time | Tenant boundary | Kept; marked deleted on `organization.deleted`. |
 | `organization_memberships` | User, organization, role, verification time | Authorization mirror (DEC-009) | Replaced on each re-verification; removed when Clerk reports removal or user deletion. |
 | `projects` | Name (**free text a user may fill with personal data**), creator | Sample tenant data | Until the user deletes the project. |
-| `billing_customers` | User → Stripe customer ID, when last reconciled | Billing link | Kept indefinitely. Payment records are never deleted (DEC-004 interim rule). |
+| `billing_customers` | User → Stripe customer ID, when last reconciled | Billing link | Kept indefinitely. Payment records are never deleted (DEC-004 interim rule). When Stripe deletes a customer, the next checkout replaces the ID in this row; the subscriptions that ended under the old customer keep the old ID. |
 | `subscriptions` | Status, plan, period dates, cancellation dates | Entitlements | Kept indefinitely. |
 | `billing_events` | Stripe event ID, event type, customer ID, timestamps, attempt count; **no payloads** | Webhook idempotency ledger | Kept indefinitely. |
 | `identity_events` | Clerk/Svix event ID, event type, timestamps; **no payloads** | Webhook idempotency ledger | Kept indefinitely. |

@@ -21,6 +21,7 @@ import pytest
 from app.kernel.errors import DependencyUnavailableError, EntitlementRequiredError, InvalidRequestError
 from app.kernel.tenancy import ContextKind, TenantContext
 from app.modules.billing.adapters.fakes import InMemoryBillingProvider
+from app.modules.billing.adapters.repository import PgBillingRepository
 from app.modules.billing.adapters.stripe import to_snapshot
 from app.modules.billing.domain import (
     PRO_INSIGHT,
@@ -902,6 +903,227 @@ def test_sync_is_not_available_without_billing_or_in_an_organization(make_harnes
     r = sync(h, h.login("user_a"))
     assert (r.status_code, r.json()["code"]) == (503, "NOT_CONFIGURED")
     assert h.client.post("/api/v1/billing/sync").status_code == 401
+
+
+# -- A customer Stripe deleted (BILL-04) --------------------------------------
+
+
+def customer_gone(h: Harness, name: str = "user_a") -> tuple[dict[str, str], str]:
+    """A user with a customer (made by a first checkout) that Stripe has since deleted."""
+    headers = h.login(name)
+    assert start_checkout(h, headers).status_code == 200
+    customer = customer_of(h, name)
+    h.billing.delete_customer(customer)
+    return headers, customer
+
+
+def flagged_events(h: Harness) -> int:
+    rows = superuser_query(
+        h.database_url, "SELECT count(*) FROM app.billing_events WHERE status = 'needs_reconciliation'"
+    )
+    return int(rows[0][0])
+
+
+def test_a_user_whose_stripe_customer_was_deleted_gets_a_new_one_at_the_next_checkout(harness: Harness) -> None:
+    """Before: every checkout was rejected (400), for good: the stored customer could not be replaced."""
+    headers, old = customer_gone(harness)
+    user = user_id_of(harness, headers)
+    assert send_webhook(harness, event_payload(old, event_id="evt_before")).json()["status"] == "needs_reconciliation"
+    assert flagged_events(harness) == 1
+
+    r = start_checkout(harness, headers, plan="pro_yearly")
+
+    assert r.status_code == 200, r.text
+    new = customer_of(harness, "user_a")
+    assert new != old
+    assert harness.billing.customer_requests[-1] == {"user_id": user, "replaces": old}
+    assert harness.billing.checkout_requests[-1]["customer_id"] == new  # the session is the new customer's
+    assert r.json()["url"] in {
+        harness.billing.open_checkout_session_url(s) for s in harness.billing.open_sessions(user)
+    }
+    assert flagged_events(harness) == 0  # events about the deleted customer cannot be reconciled any more
+    assert superuser_query(
+        harness.database_url, "SELECT reconciled_at FROM app.billing_customers WHERE user_id = %s", (user,)
+    ) == [(harness.clock.now(),)]  # the new link joins the back of the reconciliation rotation
+    # The new customer works like any other: its subscription grants Pro.
+    harness.billing.set_subscriptions(new, [snapshot(new, SubscriptionStatus.ACTIVE)])
+    assert send_webhook(harness, event_payload(new)).json()["status"] == "processed"
+    assert harness.client.get("/api/v1/billing/status", headers=headers).json()["plan"] == "pro"
+
+
+def test_the_subscriptions_that_ended_under_the_deleted_customer_stay_as_history(harness: Harness) -> None:
+    headers = harness.login("user_a")
+    old = make_pro(harness, "user_a")
+    harness.billing.set_subscriptions(old, [snapshot(old, SubscriptionStatus.CANCELED)])
+    assert sync(harness, headers).json()["state"] == "canceled"
+    harness.billing.delete_customer(old)
+
+    assert start_checkout(harness, headers).status_code == 200
+
+    new = customer_of(harness, "user_a")
+    assert new != old
+    assert superuser_query(harness.database_url, "SELECT stripe_customer_id, status FROM app.subscriptions") == [
+        (old, "canceled")
+    ]
+    # Nothing is reported about it every day: the old customer is out of the rotation, and the history is not
+    # compared with the new customer's subscriptions.
+    report = harness.container.billing.service.reconcile(user_id=None, apply=False)
+    assert (report.customers_checked, report.divergences, report.rejected_customers) == (1, [], [])
+
+
+def test_two_checkouts_at_once_after_a_deletion_link_one_new_customer(harness: Harness) -> None:
+    """Both replace the customer with the one Stripe makes for the same key; the later link finds it already made."""
+    headers, old = customer_gone(harness)
+    both_created = threading.Barrier(2)
+    original = InMemoryBillingProvider.create_customer
+
+    def meet_then_create(self: InMemoryBillingProvider, user_id: uuid.UUID, *, replaces: str | None = None) -> str:
+        created = original(self, user_id, replaces=replaces)
+        both_created.wait(10)  # neither has linked yet
+        return created
+
+    harness.billing.create_customer = meet_then_create.__get__(harness.billing)  # type: ignore[method-assign]
+    answers: list[int] = []
+    threads = [
+        threading.Thread(target=lambda: answers.append(start_checkout(harness, headers).status_code)) for _ in "ab"
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(30)
+
+    assert answers == [200, 200]
+    assert customer_of(harness, "user_a") != old
+    assert superuser_query(harness.database_url, "SELECT count(*) FROM app.billing_customers") == [(1,)]
+    assert len(harness.billing.open_sessions()) == 1  # DEC-013: the later session closed the earlier one
+
+
+def test_a_link_that_another_request_already_replaced_is_kept(harness: Harness) -> None:
+    headers, old = customer_gone(harness)
+    user = user_id_of(harness, headers)
+    transactions = harness.container.kernel.transactions(PgBillingRepository)
+    with transactions.as_system() as t:
+        assert t.repo.relink_customer(user, old, "cus_first", harness.clock.now()) == "cus_first"
+    with transactions.as_system() as t:
+        assert t.repo.relink_customer(user, old, "cus_second", harness.clock.now()) == "cus_first"
+    assert customer_of(harness, "user_a") == "cus_first"
+
+
+def test_a_customer_stripe_still_has_is_never_replaced(harness: Harness) -> None:
+    """A rejection that is not a deleted customer stays a rejection: replacing a live customer could orphan its subscription."""
+    headers = harness.login("user_a")
+    assert start_checkout(harness, headers).status_code == 200
+    old = customer_of(harness, "user_a")
+
+    def rejected(customer_id: str) -> list[SubscriptionSnapshot]:
+        raise InvalidRequestError("The billing request was rejected.")
+
+    harness.billing.list_customer_subscriptions = rejected  # type: ignore[method-assign]
+    r = start_checkout(harness, headers)
+
+    assert (r.status_code, r.json()["code"]) == (400, "INVALID_REQUEST")
+    assert customer_of(harness, "user_a") == old
+    assert len(harness.billing.customer_requests) == 1  # only the first checkout made a customer
+
+
+def test_a_deleted_customer_with_a_subscription_that_is_not_over_is_never_replaced(
+    harness: Harness, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Keys of another Stripe account (a new sandbox, the database kept): nothing there can end the stored subscription."""
+    old = make_pro(harness, "user_a")
+    headers = harness.login("user_a")
+    harness.billing.delete_customer(old)
+    harness.billing.set_subscriptions(old, [])  # the subscription cannot be read by ID either
+    calls = list(harness.billing.calls)
+
+    with caplog.at_level("ERROR"):
+        r = harness.client.post("/api/v1/billing/portal", headers=headers)
+
+    assert (r.status_code, r.json()["code"]) == (409, "CONFLICT")
+    assert "contact support" in r.json()["detail"]
+    [record] = [rec for rec in caplog.records if rec.getMessage() == "billing_customer_gone_with_subscription"]
+    assert (
+        (record.levelname, record.stripe_customer_id, record.stripe_subscription_ids)
+        == (  # type: ignore[attr-defined]
+            "ERROR",
+            old,
+            f"sub_{old[4:]}",
+        )
+    )
+    assert customer_of(harness, "user_a") == old
+    assert "create_customer" not in harness.billing.calls[len(calls) :]
+
+
+def test_a_subscription_that_lands_while_the_customer_is_replaced_stops_the_replacement(
+    harness: Harness, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Read again under the customer's lock: a webhook stored a live subscription after the first look."""
+    headers, old = customer_gone(harness)
+    original = InMemoryBillingProvider.create_customer
+
+    def create_then_store_a_live_subscription(
+        self: InMemoryBillingProvider, user_id: uuid.UUID, *, replaces: str | None = None
+    ) -> str:
+        created = original(self, user_id, replaces=replaces)
+        superuser_query(
+            harness.database_url,
+            "INSERT INTO app.subscriptions (stripe_subscription_id, user_id, stripe_customer_id, status, plan_key) "
+            "VALUES ('sub_landed', %s, %s, 'active', 'pro_monthly')",
+            (user_id, replaces),
+        )
+        return created
+
+    harness.billing.create_customer = create_then_store_a_live_subscription.__get__(harness.billing)  # type: ignore[method-assign]
+    with caplog.at_level("ERROR"):
+        r = start_checkout(harness, headers)
+
+    assert (r.status_code, r.json()["code"]) == (409, "CONFLICT")
+    assert customer_of(harness, "user_a") == old
+    [record] = [rec for rec in caplog.records if rec.getMessage() == "billing_customer_gone_with_subscription"]
+    assert record.stripe_subscription_ids == "sub_landed"  # type: ignore[attr-defined]
+
+
+def test_the_portal_of_a_customer_stripe_deleted_says_there_is_nothing_to_manage(harness: Harness) -> None:
+    headers = harness.login("user_a")
+    old = make_pro(harness, "user_a")
+    harness.billing.set_subscriptions(old, [snapshot(old, SubscriptionStatus.CANCELED)])
+    assert sync(harness, headers).json()["state"] == "canceled"
+    harness.billing.delete_customer(old)
+
+    r = harness.client.post("/api/v1/billing/portal", headers=headers)
+
+    assert (r.status_code, r.json()["code"]) == (409, "CONFLICT")
+    assert "Start a new subscription" in r.json()["detail"]
+    assert customer_of(harness, "user_a") == old  # the portal replaces nothing: the next checkout does
+
+
+def test_a_portal_stripe_rejects_for_a_customer_it_has_stays_a_rejection(harness: Harness) -> None:
+    headers = harness.login("user_a")
+    make_pro(harness, "user_a")
+
+    def rejected(*, customer_id: str, return_url: str) -> str:
+        raise InvalidRequestError("The billing request was rejected.")
+
+    harness.billing.create_portal_session = rejected  # type: ignore[method-assign]
+    r = harness.client.post("/api/v1/billing/portal", headers=headers)
+    assert (r.status_code, r.json()["code"]) == (400, "INVALID_REQUEST")
+
+
+def test_only_the_worker_may_change_which_customer_a_user_has(harness: Harness) -> None:
+    """The API role (requests) can read and create its own link, never move it; the worker moves it for a replacement."""
+
+    def can_update(role: str) -> bool:
+        rows = superuser_query(
+            harness.database_url,
+            "SELECT has_column_privilege(%s, 'app.billing_customers', 'stripe_customer_id', 'UPDATE')",
+            (role,),
+        )
+        return bool(rows[0][0])
+
+    assert (can_update("app_worker"), can_update("app_api")) == (True, False)
+    assert superuser_query(
+        harness.database_url, "SELECT has_column_privilege('app_worker', 'app.billing_customers', 'user_id', 'UPDATE')"
+    ) == [(False,)]  # only the customer ID, never the owner of the link
 
 
 # -- Entitlement and presentation ---------------------------------------------

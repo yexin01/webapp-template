@@ -161,6 +161,14 @@ class TestRequests:
         assert form(request) == {"metadata[app_user_id]": [str(USER)]}
         assert request.headers["idempotency-key"] == f"customer-create-{USER}"
 
+    def test_a_replacement_customer_has_an_idempotency_key_of_its_own(self) -> None:
+        """Stripe replays a response for 24 hours per key, a deleted customer's too: the key names the one replaced."""
+        with stub_server(lambda req: (200, {"id": "cus_new", "object": "customer"})) as stub:
+            assert provider(stub.url).create_customer(USER, replaces="cus_old") == "cus_new"
+        [request] = stub.requests
+        assert form(request) == {"metadata[app_user_id]": [str(USER)]}
+        assert request.headers["idempotency-key"] == f"customer-create-{USER}-replaces-cus_old"
+
     def test_a_portal_session_returns_to_the_given_url(self) -> None:
         session = {
             "id": "bps_1",
@@ -301,6 +309,37 @@ class TestErrors:
             port = probe.getsockname()[1]
         with pytest.raises(DependencyUnavailableError):
             provider(f"http://127.0.0.1:{port}").list_customer_subscriptions("cus_1")
+
+
+class TestCustomerExists:
+    """A customer Stripe deleted answers 200 with ``deleted: true``, or is missing: both mean it no longer exists."""
+
+    @pytest.mark.parametrize(
+        ("status", "body", "expected"),
+        [
+            (200, {"id": "cus_1", "object": "customer"}, True),
+            (200, {"id": "cus_1", "object": "customer", "deleted": True}, False),
+            (404, MISSING, False),
+        ],
+        ids=["live", "deleted", "missing"],
+    )
+    def test_only_a_customer_stripe_still_has_exists(self, status: int, body: dict[str, Any], expected: bool) -> None:
+        with stub_server(lambda req: (status, body)) as stub:
+            assert provider(stub.url).customer_exists("cus_1") is expected
+        assert (stub.requests[0].method, stub.requests[0].path) == ("GET", "/v1/customers/cus_1")
+
+    def test_another_rejection_is_not_a_deleted_customer(self) -> None:
+        body = {"error": {"type": "invalid_request_error", "code": "parameter_invalid_empty", "message": "m"}}
+        with stub_server(lambda req: (400, body)) as stub, pytest.raises(InvalidRequestError):
+            provider(stub.url).customer_exists("cus_1")
+
+    def test_a_rejected_key_and_an_outage_are_not_a_deleted_customer_either(self) -> None:
+        rejected = {"error": {"type": "invalid_request_error", "message": "m"}}
+        with stub_server(lambda req: (401, rejected)) as stub, pytest.raises(ProviderRejectedError):
+            provider(stub.url).customer_exists("cus_1")
+        outage = {"error": {"type": "api_error", "message": "m"}}
+        with stub_server(lambda req: (500, outage)) as stub, pytest.raises(DependencyUnavailableError):
+            provider(stub.url).customer_exists("cus_1")
 
 
 class TestCustomerAdoption:

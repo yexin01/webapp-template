@@ -770,8 +770,8 @@ Clerk provides authentication. It does not replace application authorization.
 | `users` | Internal user mapped to the Clerk user | Unique Clerk user ID |
 | `organizations` | Organization tenant | Unique external organization ID (if DEC-009 option A) |
 | `organization_memberships` | User ↔ organization with role | Unique (organization, user); role check constraint; foreign keys |
-| `billing_customers` | User ↔ Stripe customer | Unique user; unique Stripe customer ID |
-| `subscriptions` | Synchronized Stripe subscription state for one user | Unique Stripe subscription ID; status check constraint; price, interval, current period end, cancel-at-period-end, last-synchronized marker |
+| `billing_customers` | User ↔ Stripe customer | Unique user; unique Stripe customer ID. The ID can be replaced after Stripe deleted the customer (BILL-04) |
+| `subscriptions` | Synchronized Stripe subscription state for one user | Unique Stripe subscription ID; status check constraint; price, interval, current period end, cancel-at-period-end, last-synchronized marker. The customer ID it ended under stays on the row, with no reference to `billing_customers` (BILL-04) |
 | `billing_events` | Webhook ledger for idempotency | Primary key is the Stripe event ID; type; object ID; received/processed timestamps; processing status. No full payload stored by default (DEC-004) |
 | `billing_checkout_sessions` | The user's open Stripe Checkout Session (BILL-07) | One row per user (primary key, removed with the user); session ID, request key, expiry; no URL. Readable and writable by the API role only |
 | `audit_log` | Administrative and security-relevant actions | Append-only for the application role. Names the impersonating actor when impersonation is allowed (ADM-03) |
@@ -841,7 +841,7 @@ Clerk provides authentication. It does not replace application authorization.
 
 ### 9.3 Checkout and association
 
-- **BILL-04** Each user has one Stripe customer, created server-side and stored under unique constraints. Stripe metadata carries the internal user ID only, with no additional personal data.
+- **BILL-04** Each user has one Stripe customer, created server-side and stored under unique constraints. Stripe metadata carries the internal user ID only, with no additional personal data. When Stripe has deleted the customer, the user's next checkout replaces it: the worker points the user's link at a new customer (the Stripe idempotency key names the old one), unless a subscription of the old customer is not over, which is `409` with an ERROR log. Subscriptions that ended under the old customer keep its ID, so `subscriptions` has no reference to `billing_customers` ([ADR-0004 §20](adr/0004-cycle-1-adopted-decisions.md), migration `20261031000070`).
 - **BILL-05** The server creates Checkout Sessions for the authenticated user only.
   - Sessions carry the internal user reference and that user's customer, and offer cards only (`allowed_payment_method_types`; since API version 2026-09-30.endive `payment_method_types` is removed from this call): Pro follows the subscription's status, and a delayed bank debit reads `active` before the funds arrive (docs/limitations.md).
   - Success and cancel URLs are built from the configured application base URL, never from client input.

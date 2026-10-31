@@ -261,6 +261,7 @@ flowchart TD
 - The stored row holds the session ID, the request key, and the expiry, never the URL, and only the API role reads or writes it.
 - The success page polls the billing status and, after 3 s, asks the server once to re-read; the portal returns to `/billing?from=portal`, where the page asks once. The re-read counts against the per-instance Stripe-call bound that checkout and the portal share, never waits, never takes the last synchronization slot (so webhooks and reconciliation keep one), and is limited per user. If it fails, the page keeps polling.
 - The template never creates or changes the Customer Portal configuration; the `/integrations` Stripe check reads it. The webhook endpoint must use the **Snapshot** payload format: a Thin event is answered `400 INVALID_REQUEST` with a message that says so.
+- A customer Stripe has deleted is replaced at the user's next checkout (`BillingService._replace_deleted_customer`): the stored link is pointed at a new customer by the worker, unless a subscription of the old one is not over (then `409` and an ERROR log). Subscriptions that ended under the old customer keep its ID.
 - A rejected API key or a rejected create call is `503 NOT_CONFIGURED`, reported to Sentry once at error level (its details are one warning log line, `stripe_configuration_error`). A Checkout or portal URL whose host is not `stripe.com`, a subdomain of it, or `STRIPE_CUSTOM_DOMAIN` is refused the same way, with one ERROR log of the host.
 
 ## Observability and privacy flow

@@ -154,14 +154,27 @@ class StripeBillingProvider:
             logger.warning("stripe_error", extra={"error_type": type(exc).__name__, "http_status": exc.http_status})
             raise DependencyUnavailableError("Billing is temporarily unavailable.") from exc
 
-    def create_customer(self, user_id: UUID) -> str:
+    def create_customer(self, user_id: UUID, *, replaces: str | None = None) -> str:
+        # Stripe replays a response for 24 hours per idempotency key, a deleted customer's included: a replacement
+        # needs a key of its own, and a repeat of the same replacement gets the customer it made.
+        key = f"customer-create-{user_id}" if replaces is None else f"customer-create-{user_id}-replaces-{replaces}"
         customer = self._call(
             self._client.v1.customers.create,
             params={"metadata": {_METADATA_USER_KEY: str(user_id)}},
-            options={"idempotency_key": f"customer-create-{user_id}"},
+            options={"idempotency_key": key},
             server_built=True,
         )
         return str(customer.id)
+
+    def customer_exists(self, customer_id: str) -> bool:
+        try:
+            customer = self._call(self._client.v1.customers.retrieve, customer_id)
+        except InvalidRequestError as exc:
+            cause = exc.__cause__
+            if isinstance(cause, stripe.InvalidRequestError) and cause.code == "resource_missing":
+                return False
+            raise
+        return not _get(customer, "deleted")
 
     def create_checkout_session(
         self,
