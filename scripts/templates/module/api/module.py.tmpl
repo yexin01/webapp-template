@@ -23,5 +23,7 @@ def build___module__(kernel: Kernel, auth: AuthDeps) -> __Module__Module:
     # kernel.handlers.subscribe(
     #     __Entity__Created, "__module__.notify", handler
     # )
-    contribution = Contribution(routers=[build_router(service, auth, kernel.request_transaction)])
+    contribution = Contribution(
+        routers=[build_router(service, auth, kernel.request_transaction, kernel.limit_writes(auth))]
+    )
     return __Module__Module(service, contribution)

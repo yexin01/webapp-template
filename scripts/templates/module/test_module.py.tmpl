@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import replace
 from typing import Any
@@ -191,6 +191,19 @@ def test_the_list_follows_a_change_to_the_permissions(
     can = harness.client.get(path, headers=people[who]).json()["can"]
     assert can == granted
     assert trying(harness, people[who], path, people["admin"]) == can
+
+
+def test_writes_are_counted_per_user(make_harness: Callable[..., Harness]) -> None:
+    """SEC-09: past WRITES_PER_USER_PER_MINUTE a user's writes get 429 with Retry-After, in every context."""
+    h = make_harness({"writes_per_user_per_minute": 3})
+    h.directory.set("user_admin", [ExternalMembership(ORG, Role.ADMIN)])
+    headers = h.login("user_admin")
+    paths = (PERSONAL, IN_ORG, PERSONAL)
+    assert [h.client.post(path, json={"name": "n"}, headers=headers).status_code for path in paths] == [201, 201, 201]
+    refused = h.client.post(IN_ORG, json={"name": "n"}, headers=headers)
+    assert refused.status_code == 429
+    assert int(refused.headers["retry-after"]) >= 1
+    assert h.client.get(PERSONAL, headers=headers).status_code == 200  # reads are not limited
 
 
 def test_create_records_an_event(harness: Harness, people: dict[str, Any]) -> None:
