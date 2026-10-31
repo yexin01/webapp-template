@@ -213,6 +213,24 @@ try {
     broken.length === 0,
     `links do not resolve in the initialized copy: ${broken.map((b) => `${b.file} -> ${b.target}`).join(", ")}`,
   );
+  // Nothing else may send the adopter to a file the first run removed: a comment in a workflow, a docstring, a
+  // command in the guide. These files name such paths on purpose: the removal itself, its link fixtures, and
+  // the perf harness test, which skips when proofs/ is gone.
+  const REMOVAL_AWARE = [
+    ...EXEMPT,
+    /^scripts\/tests\/doc-links\.test\.mjs$/,
+    /^apps\/api\/tests\/integration\/test_perf_harness\.py$/,
+  ];
+  for (const rel of walk(dir)) {
+    if (REMOVAL_AWARE.some((re) => re.test(rel))) continue;
+    for (const [pointer] of readFileSync(path.join(dir, rel), "utf8").matchAll(/\b(?:docs-notes|proofs)\/[\w.-]+/g)) {
+      failures.push(`${rel} points at ${pointer}, which init-template removed`);
+    }
+  }
+  check(
+    /Next: run `pnpm bootstrap`/.test(first.stdout) && !/integrations\.md/.test(first.stdout.split("Next:")[1] ?? ""),
+    "init-template's next step is not the guide's (pnpm bootstrap)",
+  );
 
   // 1b. bootstrap.py is written first and package.json last (they mark a run in
   // progress and a finished one); timestamps cannot be out of order.

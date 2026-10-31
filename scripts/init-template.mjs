@@ -277,7 +277,7 @@ if (!dryRun) {
 const changes = new Set(pending.keys());
 console.log(JSON.stringify({ dryRun, updated: [...changes].sort(), removed: removals.sort(), envCreated }, null, 2));
 if (envCreated) {
-  console.log("Next: fill in .env with your own sandbox keys (see docs/integrations.md).");
+  console.log("Next: run `pnpm bootstrap`, then continue with docs/setup.md from step 4 (the database). The provider keys for .env come later, in Part 2.");
 } else if (dbPort && changes.has(".env.example")) {
   console.log(`Your existing .env was not changed: update the port in DATABASE_URL to ${dbPort} yourself.`);
 }

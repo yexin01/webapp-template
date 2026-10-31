@@ -1,7 +1,7 @@
 # Applies pending migrations to a hosted database (MIG-05). Manual only: it never
 # runs on push or pull request, so merging changes no database by itself.
 #
-# Owner setup (docs-notes/deploy.md): create the GitHub Environments `preview` and
+# Owner setup (docs/deployment.md#set-up-github): create the GitHub Environments `preview` and
 # `production`, make yourself a required reviewer on `production` (it can hold the
 # run until you approve), allow deployments from the default branch only, and store
 # each environment's own MIGRATION_DATABASE_URL secret: the migration role's

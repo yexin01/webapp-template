@@ -129,7 +129,7 @@ jobs:
   deploy-config:
     # Spec 16.1 "Deployment configuration": builds the root vercel.json with the pinned Vercel
     # CLI and checks the output. No Vercel account, token, or deployment; local packaging
-    # evidence only (docs-notes/deploy.md says what a preview deployment must still show).
+    # evidence only (docs/deployment.md#verify-the-first-preview says what a preview deployment must still show).
     name: Deployment configuration — vercel build, no deployment
     runs-on: ubuntu-24.04
     timeout-minutes: 30

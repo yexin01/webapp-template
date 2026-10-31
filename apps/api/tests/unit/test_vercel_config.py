@@ -65,7 +65,7 @@ def test_only_the_root_file_configures_vercel(config: dict[str, Any]) -> None:
 
 
 def test_the_api_function_runs_in_exactly_one_known_region(config: dict[str, Any]) -> None:
-    """One region: the free plan allows one. It must match the database region (docs-notes/deploy.md)."""
+    """One region: the free plan allows one. It must match the database region (docs/deployment.md#set-up-vercel)."""
     function = config["services"]["api"]["functions"]["index.py"]
     assert len(function["regions"]) == 1
     assert set(function["regions"]) <= VERCEL_REGIONS
