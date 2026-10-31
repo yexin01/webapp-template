@@ -123,7 +123,7 @@ Found while writing these documents or listed in the package notes, and not done
 - A test that the docs list exactly `SYNC_EVENT_TYPES`, and a `stripe-events` command to feed `stripe listen --events`; a webhook-endpoint check and a "last verified webhook" line on `/integrations`.
 - A second, worker-only login role and pool; detection of `supabase_migrations.schema_migrations` in the runner; a no-transaction migration mode for `CREATE INDEX CONCURRENTLY`.
 - Naming unmatched transactions `unmatched` and dropping `request.url` for them (OBS-07).
-- An `ErrorCode` enum with exhaustive web typing; coverage tooling (TEST-03); the "migrate twice" check as a pytest test.
+- An `ErrorCode` enum with exhaustive web typing; coverage tooling (TEST-03).
 - A web-side `CLERK_JWT_KEY` wired into the proxy (it needs a path through `next.config.ts`, because `proxy.ts` may not read `CLERK_*` variables).
 
 ## What the template deliberately does not do
