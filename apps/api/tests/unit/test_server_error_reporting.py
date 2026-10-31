@@ -23,7 +23,13 @@ from sentry_sdk.integrations.asgi import SentryAsgiMiddleware
 from sentry_sdk.integrations.logging import LoggingIntegration
 from sentry_sdk.transport import Transport
 
-from app.kernel.errors import ConflictError, DependencyUnavailableError, DomainError, NotConfiguredError
+from app.kernel.errors import (
+    ConflictError,
+    DependencyUnavailableError,
+    DomainError,
+    NotConfiguredError,
+    ProviderRejectedError,
+)
 from app.kernel.http.app import build_fastapi
 from app.kernel.infrastructure import observability
 from app.kernel.infrastructure.observability import ErrorThrottle, sentry_options
@@ -95,6 +101,10 @@ def build_client(provider: StripeBillingProvider | None = None) -> TestClient:
     def not_configured() -> None:
         raise NotConfiguredError()
 
+    @router.get("/provider-rejected")
+    def provider_rejected() -> None:
+        raise ProviderRejectedError("Billing is not configured correctly for this Stripe account.")
+
     @router.get("/conflict")
     def conflict() -> None:
         raise ConflictError()
@@ -133,7 +143,7 @@ def test_a_rejected_stripe_key_reaches_sentry_as_one_scrubbed_event_with_the_req
     assert response.status_code == 503
     assert response.json()["code"] == "NOT_CONFIGURED"
     [event] = reports.events
-    assert event["level"] == "warning"
+    assert event["level"] == "error"  # Stripe refuses the key: an operator has to act (an unset secret is a warning)
     assert event["tags"]["error_code"] == "NOT_CONFIGURED"
     assert event["tags"]["request_id"] == response.headers["x-request-id"]
     chain = [(v["module"], v["type"]) for v in event["exception"]["values"]]
@@ -161,6 +171,15 @@ def test_not_configured_is_a_warning(reports: Reports) -> None:
     assert build_client().get("/api/v1/not-configured").status_code == 503
     [event] = reports.events
     assert event["level"] == "warning"
+    assert event["tags"]["error_code"] == "NOT_CONFIGURED"
+
+
+def test_a_provider_that_rejects_what_is_configured_is_the_same_answer_reported_as_an_error(reports: Reports) -> None:
+    """A secret that is unset waits to be set (a warning); a key the provider refuses needs an operator (an error)."""
+    response = build_client().get("/api/v1/provider-rejected")
+    assert (response.status_code, response.json()["code"]) == (503, "NOT_CONFIGURED")
+    [event] = reports.events
+    assert event["level"] == "error"
     assert event["tags"]["error_code"] == "NOT_CONFIGURED"
 
 

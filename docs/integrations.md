@@ -188,7 +188,7 @@ The template creates customers, Checkout sessions and portal sessions. It never 
 | Symptom | Cause | Fix |
 |---|---|---|
 | Upgrade succeeded but the plan is still Free | Webhooks do not reach the API: no Stripe CLI locally, a wrong secret, a Thin payload, or Deployment Protection blocking a preview | Check the destination's Event deliveries in Workbench. The billing page re-reads once; `pnpm billing:reconcile` repairs the rest |
-| Checkout or portal answers `503 NOT_CONFIGURED` | Stripe rejected the key, or a session URL had an unexpected host (Sentry: `stripe_configuration_error`, `stripe_session_host_unexpected`) | Check `STRIPE_SECRET_KEY`, the mode, and `STRIPE_CUSTOM_DOMAIN` |
+| Checkout or portal answers `503 NOT_CONFIGURED` | Stripe rejected the key, or a session URL had an unexpected host (Sentry: an error tagged `error_code=NOT_CONFIGURED`; logs: `stripe_configuration_error`, `stripe_session_host_unexpected`) | Check `STRIPE_SECRET_KEY`, the mode, and `STRIPE_CUSTOM_DOMAIN` |
 | The Stripe check fails with `portal_mismatch` | The default portal configuration lacks something above | Fix it in the Dashboard (step S5 in [setup.md](setup.md#stripe)) |
 | Checkout answers `409` | The user has a subscription that is not over | Use Manage billing |
 | `STRIPE_PRODUCT_PRO is required and must be a Stripe product ID` | `BILLING_MODE` is not `mock` and the product is unset or not a `prod_` ID | Paste the `STRIPE_PRODUCT_PRO` line that `pnpm setup:stripe` prints, or the ID of the product both prices belong to |

@@ -16,6 +16,7 @@ from app.kernel.errors import (
     ForbiddenError,
     InvalidRequestError,
     NotConfiguredError,
+    ProviderRejectedError,
     WebhookSignatureError,
 )
 from app.modules.billing.domain import (
@@ -94,9 +95,9 @@ def to_snapshot(sub: Any, catalog: PriceCatalog) -> SubscriptionSnapshot:
     )
 
 
-def _configuration_error(exc: stripe.StripeError) -> NotConfiguredError:
-    # The NOT_CONFIGURED this returns is the error report (the kernel error handler sends it once, scrubbed).
-    # An ERROR record here would be a second event. Stripe's message text never leaves: it can quote request values.
+def _configuration_error(exc: stripe.StripeError) -> ProviderRejectedError:
+    # The error handler reports this once, scrubbed, at error level; an ERROR record here would be a second
+    # event. Stripe's message text never leaves: it can quote request values.
     logger.warning(
         "stripe_configuration_error",
         extra={
@@ -107,7 +108,7 @@ def _configuration_error(exc: stripe.StripeError) -> NotConfiguredError:
             "request_id": exc.request_id,
         },
     )
-    return NotConfiguredError("Billing is not configured correctly for this Stripe account.")
+    return ProviderRejectedError("Billing is not configured correctly for this Stripe account.")
 
 
 class StripeBillingProvider:

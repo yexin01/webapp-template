@@ -101,6 +101,14 @@ class NotConfiguredError(DomainError):
     default_message = "This feature is not configured in this environment."
 
 
+class ProviderRejectedError(NotConfiguredError):
+    """The feature is configured, but the provider refuses the key or a request the server built.
+
+    The answer is the same ``NOT_CONFIGURED``. It is reported as an error, not a warning, because an
+    operator has to act and nothing is waiting to be set: an unset secret is only a warning.
+    """
+
+
 class WebhookSignatureError(DomainError):
     code = "WEBHOOK_SIGNATURE_INVALID"
     status = 400

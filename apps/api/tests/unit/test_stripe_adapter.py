@@ -19,7 +19,13 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 from stripe.params.checkout import SessionCreateParams
 
-from app.kernel.errors import DependencyUnavailableError, ForbiddenError, InvalidRequestError, NotConfiguredError
+from app.kernel.errors import (
+    DependencyUnavailableError,
+    ForbiddenError,
+    InvalidRequestError,
+    NotConfiguredError,
+    ProviderRejectedError,
+)
 from app.modules.billing.adapters.stripe import StripeBillingProvider
 from app.modules.billing.domain import (
     PlanKey,
@@ -351,12 +357,12 @@ class TestConfigurationErrors:
         ],
         ids=lambda a: a[0],
     )
-    def test_each_is_a_503_not_configured_and_one_warning_without_stripes_message(
+    def test_each_is_a_503_not_configured_reported_as_an_error_with_one_warning_log_without_stripes_message(
         self, call: str, answer: tuple[str, tuple[int, str]], caplog: pytest.LogCaptureFixture
     ) -> None:
         status, error_type = answer[1]
         respond = lambda req: self.stripe_says(status, error_type, code="x_code", param="line_items")  # noqa: E731
-        with stub_server(respond) as stub, caplog.at_level(logging.WARNING), pytest.raises(NotConfiguredError):
+        with stub_server(respond) as stub, caplog.at_level(logging.WARNING), pytest.raises(ProviderRejectedError):
             self.CALLS[call](provider(stub.url))
         errors = [r for r in caplog.records if r.levelno >= logging.WARNING]
         assert [r.getMessage() for r in errors] == ["stripe_configuration_error"]
@@ -393,7 +399,7 @@ class TestConfigurationErrors:
         with (
             stub_server(lambda req: rejected) as stub,
             caplog.at_level(logging.WARNING),
-            pytest.raises(NotConfiguredError),
+            pytest.raises(ProviderRejectedError),
         ):
             READS[read](provider(stub.url))
         assert [r.getMessage() for r in caplog.records] == ["stripe_configuration_error"]
