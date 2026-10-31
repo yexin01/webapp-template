@@ -205,11 +205,6 @@ FOREIGN_KEYS = [
         id="subscription of a missing user",
     ),
     pytest.param(
-        f"{SUBSCRIPTION} VALUES ('sub_c2', '{USER}', 'cus_missing', 'active', 'pro_monthly')",
-        "subscriptions_stripe_customer_id_fkey",
-        id="subscription of a missing customer",
-    ),
-    pytest.param(
         session().replace(OTHER, GONE), "billing_checkout_sessions_user_id_fkey", id="checkout of a missing user"
     ),
     # ON DELETE RESTRICT: what other rows still point at is never deleted from under them.
@@ -217,11 +212,6 @@ FOREIGN_KEYS = [
         f"DELETE FROM app.organizations WHERE id = '{ORG}'",
         "projects_org_id_fkey",
         id="delete an organization with projects",
-    ),
-    pytest.param(
-        f"DELETE FROM app.billing_customers WHERE user_id = '{USER}'",
-        "subscriptions_stripe_customer_id_fkey",
-        id="delete a customer with subscriptions",
     ),
 ]
 
@@ -301,6 +291,26 @@ def test_a_unique_constraint_refuses_the_duplicate(database_url: str, statement:
 @pytest.mark.parametrize(("statement", "constraint"), FOREIGN_KEYS)
 def test_a_foreign_key_refuses_the_row_or_the_delete(database_url: str, statement: str, constraint: str) -> None:
     assert violation(database_url, statement, errors.ForeignKeyViolation).constraint_name == constraint
+
+
+# subscriptions.stripe_customer_id has no foreign key on purpose (ADR-0004 §21): when Stripe has deleted a customer, the
+# row of billing_customers is relinked to a new one, and a subscription that ended keeps the customer it was bought
+# under. Putting the key back must change this test and the ADR together.
+@pytest.mark.parametrize(
+    "statement",
+    [
+        pytest.param(
+            f"{SUBSCRIPTION} VALUES ('sub_c2', '{USER}', 'cus_missing', 'canceled', 'pro_monthly')",
+            id="a subscription of a customer with no row",
+        ),
+        pytest.param(
+            f"UPDATE app.billing_customers SET stripe_customer_id = 'cus_c9' WHERE user_id = '{USER}'",
+            id="relink a customer that has subscriptions",
+        ),
+    ],
+)
+def test_a_subscription_keeps_the_customer_it_was_bought_under(database_url: str, statement: str) -> None:
+    run(database_url, statement)
 
 
 @pytest.mark.parametrize("table", BASE_ROWS)
