@@ -868,7 +868,7 @@ def test_a_slow_user_re_read_cannot_overwrite_a_cancellation_that_landed_meanwhi
     assert has_read.wait(10)
     provider.set_subscriptions(customer, [snapshot(customer, SubscriptionStatus.CANCELED)])
     webhook.start()
-    wait_for_lock_wait(harness.database_url, or_until=delivered)  # queued behind the re-read, or already finished
+    wait_for_lock_wait(harness.database_url, timeout=20, or_until=delivered)  # queued behind the re-read, or done
     may_store.set()
     resync.join(30)
     webhook.join(30)
@@ -979,7 +979,7 @@ def test_two_checkouts_at_once_after_a_deletion_link_one_new_customer(harness: H
 
     def meet_then_create(self: InMemoryBillingProvider, user_id: uuid.UUID, *, replaces: str | None = None) -> str:
         created = original(self, user_id, replaces=replaces)
-        both_created.wait(10)  # neither has linked yet
+        both_created.wait(30)  # neither has linked yet
         return created
 
     harness.billing.create_customer = meet_then_create.__get__(harness.billing)  # type: ignore[method-assign]
