@@ -10,7 +10,7 @@ Reference material is elsewhere: what each provider does and how it fails is in 
 
 ## Manual-steps checklist
 
-Everything in this guide is a command, except the steps below. Only a person can do these: create an account, copy a key, change a dashboard-only setting, or authorize a change to a remote service. Nothing else needs a hand: the template renames itself, creates `.env`, migrates the database, creates the Stripe product and prices, starts the Stripe listener, and verifies each integration.
+Everything in this guide is a command, except the steps below. Only a person can do these: create an account, copy a key, change a dashboard-only setting, or authorize a change to a remote service. Everything else is automated: the template renames itself, creates `.env`, migrates the database, creates the Stripe product and prices, starts the Stripe listener, and verifies each integration. The commands that change a provider account or a hosted database also need the owner's authorization (A3).
 
 Each row has an ID. The step in the guide that does it carries a bold tag made of `YOU` and the same ID, so the checklist and the guide cannot drift. To check that they agree, run from the repository root (it prints nothing but the confirmation when every ID appears once in the checklist and once in the guide):
 
@@ -325,7 +325,7 @@ You are done with Part 3 when every check under [Verify the first preview](deplo
 | `Invalid configuration: ...` when the API starts | `pnpm check:setup` lists the variables by name. Edit `.env`, restart `pnpm dev` |
 | `pnpm dev` stops with "Clerk is not configured" | Paste your Clerk development keys (S3) |
 | `pnpm build` fails on the Clerk publishable key | Use `pnpm build:check` (account-free), or paste your keys |
-| API tests are skipped, or `pnpm test` stops "database required" | `pnpm db:up`; or set `TEST_DATABASE_URL` to a **local** server; `--no-db` is the explicit exception for `pnpm verify` |
+| `pnpm test` or `pnpm verify` stops with "The database tests are required here", or a bare `uv run pytest` skips them ("PostgreSQL is not available") | `pnpm db:up`; or set `TEST_DATABASE_URL` to a **local** server. `pnpm verify --no-db` is the explicit exception |
 | `/api/v1/*` returns 500 in the browser | The API is not running or stopped at start. Look for `Invalid configuration` in the `pnpm dev` output; run `pnpm check:setup`; fix `.env`; restart `pnpm dev` (the API does not reload `.env`) |
 | Every sign-in asks you to create an organization, or there is no "Personal workspace" | Membership required: set **Membership optional** (S2) |
 | Signed in, but a loop between `/sign-in` and a page, or `401` from the API | Open the app at the origin in `APP_BASE_URL` (`localhost` is not `127.0.0.1`), or add the origin to `CLERK_AUTHORIZED_PARTIES` and restart or redeploy. The API logs `clerk_azp_refused` with the origin |
