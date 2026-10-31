@@ -973,7 +973,7 @@ Clerk provides authentication. It does not replace application authorization.
   - Session recording is disabled by default; enabling it requires approval.
   - Users are identified by internal ID, never by email.
   - Consent behavior is an adopter decision (DEC-004, ADR-0002; `docs/data-inventory.md` checklist item 8).
-- **OBS-04** Backend logs are structured. They carry a request ID and pseudonymous internal user and tenant IDs (`user_id` and `org_id`, on every line of an authenticated request and as tags on error events; never an identity provider's IDs), and never secrets, tokens, request bodies, or prompts.
+- **OBS-04** Backend logs are structured. They carry a request ID and pseudonymous internal user and tenant IDs (`user_id` and `org_id`, on every line of an authenticated request and as tags on error events; never an identity provider's IDs, except the `actor_session` line that names an impersonating actor), and never secrets, tokens, request bodies, or prompts.
 - **OBS-05** A correlation ID is returned in responses and attached to error reports. The error state shows it to the user (`Reference: <request ID>`), and a browser report about a failed API call carries it as the `request_id` tag.
 - **OBS-06** Telemetry is non-blocking: bounded buffers, timeouts, and graceful degradation. Authentication, billing, and authorization never depend on analytics or monitoring availability, as proven by tests with telemetry endpoints unavailable.
 - **OBS-07** Telemetry volume is bounded through sampling, client-event rate limits, and error de-duplication.
