@@ -116,7 +116,7 @@ You get: dependencies installed, a migrated local database, a passing test suite
 
    Success: it prints a JSON report with `"envCreated": true`. It renamed the product, filled in `SECURITY.md` and `CODE_OF_CONDUCT.md`, named the Docker Compose project after the slug, created `.env` from `.env.example` (no credential is copied), and removed the template's own records (`proofs/`, `docs-notes/`, the template's evidence files). The specification and the ADRs stay as inherited reference. Pass `--keep-template-material` to keep the removed records.
 
-   Then run `git add -A` (commit if you like). The rename adds a file, `dev-docs/evidence/README.md`, and `pnpm verify` stops, naming the file, at any file git does not track yet, because its generator check works on a copy of the files git tracks.
+   The rename adds one file, `dev-docs/evidence/README.md`, and stages it (`git add`), because `pnpm verify` stops, naming the file, at any file git does not track yet: its generator check works on a copy of the files git tracks. Commit when you like.
 
    Otherwise: the error names the option and its rule (a name of up to 60 characters; a lowercase slug; both contacts while the placeholders remain). Re-running with the same values changes nothing; re-running with different values is refused. To try the template without renaming it, run `cp .env.example .env` instead of this step.
 
@@ -346,4 +346,4 @@ You are done with Part 3 when checks 1 to 8 under [Verify the first preview](dep
 | The migration cannot connect to Supabase | The direct host is IPv6-only: use the Session pooler string |
 | `Migration ... was modified after being applied` | A local database that applied an older first migration: `pnpm db:reset --yes` (deletes local data; ask first if it is not yours) |
 | `Migration ...: line endings changed since it was applied` | A tool rewrote the file's line endings; the text is the same. Restore the ones the message names ([operations.md](operations.md#migrations)) |
-| `pnpm verify` or `pnpm test:new-module` stops with "1 file is not in git yet (...)" | The generator check copies the files git tracks, and a file is not tracked yet (`pnpm init-template` and `pnpm new:module` add some): `git add -A`, or delete or ignore the file |
+| `pnpm verify` or `pnpm test:new-module` stops with "1 file is not in git yet (...)" | The generator check copies the files git tracks, and a file is not tracked yet (`pnpm new:module` adds some; `pnpm init-template` stages its own): `git add -A`, or delete or ignore the file |
