@@ -425,4 +425,5 @@ Next steps:
      payloads of the module's requests in apps/api/tests/integration/test_contract_conformance.py to match.
   6. For a new action, declare its Permission in domain.py and evaluate it in the use case, then add a flag
      for it to Capabilities (domain.py), service.capabilities, ${Entity}Capabilities (routes.py) and the panel.
-     The panel shows actions from the list's "can", never from a role.`);
+     The panel shows actions from the list's "can", never from a role.
+  7. git add -A                  # before pnpm verify: its generator check copies the files git tracks and stops at new ones`);

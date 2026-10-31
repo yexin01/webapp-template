@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { devNull, tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { gitRepositoryProblem } from "../lib/tracked-copy.mjs";
+import { gitRepositoryProblem, untrackedFilesProblem } from "../lib/tracked-copy.mjs";
 
 const repo = path.resolve(import.meta.dirname, "../..");
 
@@ -50,4 +50,69 @@ test("test:init-template, test:new-module and test:vercel-build end with the ins
     assert.doesNotMatch(run.stderr, /\n\s+at |node:internal|fatal:/, `${script} printed a stack trace or git's message:\n${run.stderr}`);
     assert.ok(run.stderr.trim().split("\n").length <= 2, `${script} printed more than a line:\n${run.stderr}`);
   }
+});
+
+// `pnpm new:module` leaves the module untracked and edits tracked files to point at it: a copy of the tracked
+// files alone then fails far into the run with import errors, so the check names the files first.
+test("files git does not track yet are named with the command that adds them; ignored files are not", (t) => {
+  const { dir, git } = scratch(t);
+  // The caller's global ignore file would decide what counts as untracked.
+  const saved = { global: process.env.GIT_CONFIG_GLOBAL, system: process.env.GIT_CONFIG_NOSYSTEM };
+  Object.assign(process.env, { GIT_CONFIG_GLOBAL: devNull, GIT_CONFIG_NOSYSTEM: "1" });
+  t.after(() => {
+    for (const [name, value] of [["GIT_CONFIG_GLOBAL", saved.global], ["GIT_CONFIG_NOSYSTEM", saved.system]]) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+  git("init", "-q");
+  writeFileSync(path.join(dir, ".gitignore"), "ignored/\n");
+  mkdirSync(path.join(dir, "ignored"));
+  writeFileSync(path.join(dir, "ignored/scratch.py"), "x = 1\n");
+  writeFileSync(path.join(dir, "tracked.py"), "x = 1\n");
+  git("add", ".gitignore", "tracked.py");
+  assert.equal(untrackedFilesProblem(dir), null, "tracked and ignored files are not a problem");
+
+  const module = "apps/api/app/modules/gadgets/__init__.py";
+  mkdirSync(path.dirname(path.join(dir, module)), { recursive: true });
+  writeFileSync(path.join(dir, module), "");
+  assert.equal(
+    untrackedFilesProblem(dir),
+    `1 file is not in git yet (${module}): this check copies the files git tracks, so run \`git add -A\` (or delete or ignore it) and run the command again.`,
+  );
+  for (const name of ["b", "c", "d"]) writeFileSync(path.join(dir, `${name}.py`), "x = 1\n");
+  const many = untrackedFilesProblem(dir);
+  assert.equal(
+    many,
+    `4 files are not in git yet (${module}, b.py, c.py, ...): this check copies the files git tracks, so run \`git add -A\` (or delete or ignore them) and run the command again.`,
+  );
+  assert.ok(!many.includes("\n"));
+  git("add", "-A");
+  assert.equal(untrackedFilesProblem(dir), null, "staging them is enough");
+});
+
+test("test:new-module stops at once, in one line, before it copies anything, when a module is not added to git", (t) => {
+  const { dir, env, git } = scratch(t);
+  cpSync(path.join(repo, "scripts"), path.join(dir, "scripts"), { recursive: true });
+  cpSync(path.join(repo, "package.json"), path.join(dir, "package.json"));
+  git("init", "-q");
+  git("add", "package.json", "scripts");
+  const module = "apps/api/app/modules/gadgets/__init__.py";
+  mkdirSync(path.dirname(path.join(dir, module)), { recursive: true });
+  writeFileSync(path.join(dir, module), "");
+  // Any copy the script made would land here.
+  const temporary = path.join(dir, "tmp-for-copies");
+  mkdirSync(temporary);
+  const run = spawnSync(process.execPath, [path.join(dir, "scripts/test-new-module.mjs")], {
+    cwd: dir,
+    env: { ...env, TMPDIR: temporary, TMP: temporary, TEMP: temporary },
+    encoding: "utf8",
+  });
+  assert.equal(run.status, 1, `${run.stdout}${run.stderr}`);
+  assert.equal(
+    run.stderr.trim(),
+    `test:new-module: 1 file is not in git yet (${module}): this check copies the files git tracks, so run \`git add -A\` (or delete or ignore it) and run the command again.`,
+  );
+  assert.equal(run.stdout, "");
+  assert.deepEqual(readdirSync(temporary), [], "it copied the repository before stopping");
 });

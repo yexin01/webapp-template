@@ -96,6 +96,17 @@ export function summarizeOutput(kind, lines) {
   }
 }
 
+/**
+ * The counts in a pytest or vitest result line by outcome ({ passed: 1441, skipped: 5, failed: 2 }), or null when
+ * the output has none. A run that printed no outcome besides "passed" has an entry for no other.
+ */
+export function resultCounts(kind, lines) {
+  const summary = summarizeOutput(kind, lines);
+  if (summary === null) return null;
+  const outcome = /(\d+) (passed|failed|errors?|skipped|todo|deselected|xfailed|xpassed)\b/g;
+  return Object.fromEntries([...summary.matchAll(outcome)].map(([, count, word]) => [word, Number(count)]));
+}
+
 /** A table of rows of strings, left aligned, columns as wide as their widest cell. */
 export function renderTable(header, rows) {
   const widths = header.map((cell, index) => Math.max(cell.length, ...rows.map((row) => String(row[index] ?? "").length)));

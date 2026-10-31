@@ -16,6 +16,7 @@ import path from "node:path";
 import { parseArgs } from "node:util";
 
 import { FAIL, NOT_RUN, PASS, SKIPPED, formatDuration, renderTable, runCommand, runSteps, summarizeOutput } from "./steps.mjs";
+import { gitRepositoryProblem, untrackedFilesProblem } from "./tracked-copy.mjs";
 
 export const JOBS = ["api", "web", "secrets", "supabase"];
 /** The jobs a plain `pnpm verify` runs. The Supabase image job needs Docker and a large image: ask for it. */
@@ -97,7 +98,8 @@ function migrationFiles(root) {
 /**
  * The step list. `quick`: part of `--quick`. `db`: "tests" are the API tests, which skip their database tests
  * unless told to require them; "required" steps cannot run without a database. `network`: needs the network.
- * `needs`: the tools the step uses, which the preflight checks. `summary`: how to read the runner's result line.
+ * `needs`: the tools the step uses, which the preflight checks ("tracked": every file is in git, for a step that
+ * works on a copy of the tracked files). `summary`: how to read the runner's result line.
  */
 export function catalog({ root, migrations = migrationFiles(root) }) {
   // --locked: a uv.lock that pyproject.toml has moved past fails the step. A plain `uv run` would re-lock and go on.
@@ -127,7 +129,7 @@ export function catalog({ root, migrations = migrationFiles(root) }) {
     pnpm("init-template", "Template initialization (REPO-07)", ["test:init-template"]),
     pnpm("placeholders", "Community contacts are placeholders (DEC-012)", ["check:placeholders"]),
     pnpm("links", "Documentation links resolve", ["check:links"]),
-    pnpm("new-module", "Module generator (ADR-0003)", ["test:new-module"], { db: "required", needs: ["pnpm", "uv"] }),
+    pnpm("new-module", "Module generator (ADR-0003)", ["test:new-module"], { db: "required", needs: ["pnpm", "uv", "tracked"] }),
     pnpm("build", "Web: account-free build and bundle secret scan", ["build:check"]),
     node("audit-self-test", "web", "Web: audit scanner self-test", ["scripts/npm-audit-bulk.mjs", "--self-test"]),
     node("web-audit", "web", "Web: dependency audit (production)", ["scripts/npm-audit-bulk.mjs"], { network: true }),
@@ -234,6 +236,7 @@ export function systemProbe({ root, env }) {
       const result = ask(command, args);
       return result.error || result.status !== 0 ? null : result.stdout.trim().split("\n")[0];
     },
+    stagingProblem: () => gitRepositoryProblem(root, { env }) ?? untrackedFilesProblem(root),
     chromiumPath: () => {
       const result = ask("pnpm", ["--filter", "web", "exec", "node", "-e", "console.log(require('@playwright/test').chromium.executablePath())"], 60_000);
       return result.status === 0 ? result.stdout.trim().split("\n").pop() : null;
@@ -292,6 +295,10 @@ export async function preflight({ root, steps, env, noDb, probe }) {
         "pnpm db:up (needs Docker; verify never starts it), or set TEST_DATABASE_URL to a local server, or accept that the database tests (roughly half of the API tests) do not run: pnpm verify --no-db",
       );
     }
+  }
+  if (needs.has("tracked")) {
+    const problem = probe.stagingProblem();
+    add("git tracks every file the generator check copies", !problem, problem ?? undefined);
   }
   if (needs.has("chromium")) {
     const executable = probe.chromiumPath();

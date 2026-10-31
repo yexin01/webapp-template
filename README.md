@@ -100,7 +100,7 @@ Tests never use your `.env`. Database tests create and drop their own database, 
 |---|---|
 | `pnpm init-template` | Rename the template, fill in the community contacts, and create `.env` (see [docs/setup.md](docs/setup.md#steps)) |
 | `pnpm test:init-template` | Check that `init-template` leaves no original identifiers (runs on temporary copies of the tracked files; `git add` new files to include them) |
-| `pnpm test:new-module` | Check that freshly generated modules pass every gate (same copy rule) |
+| `pnpm test:new-module` | Check that freshly generated modules pass every gate, their own tests included (same copy rule, but it stops at any file git does not track yet: `git add -A` first, as after `pnpm new:module`) |
 | `pnpm check:placeholders` | Fail if `SECURITY.md` or `CODE_OF_CONDUCT.md` still has a contact placeholder after the project was renamed |
 
 ## Repository map
