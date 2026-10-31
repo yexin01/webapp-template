@@ -262,3 +262,45 @@ def test_a_run_started_during_another_waits_at_every_migration(
     assert not any(isinstance(result, BaseException) for result in outcome.values()), outcome
     assert outcome["first"][:1] == ["1_slow.sql"]  # it was inside that migration when the second run started
     assert outcome["first"] + outcome["second"] == ["1_slow.sql", "2_slow.sql"]
+
+
+LINE_ENDINGS = {"LF": b"\n", "CRLF": b"\r\n"}
+PROBE_SQL = b"CREATE TABLE public.probe (id int);\n-- a second line\n"
+
+
+@pytest.mark.parametrize(("applied", "now"), [("LF", "CRLF"), ("CRLF", "LF")])
+def test_a_migration_whose_line_endings_changed_is_not_reported_as_edited(
+    scratch_url: str, tmp_path: Path, applied: str, now: str
+) -> None:
+    """The ledger holds a checksum of the file's bytes, so a checkout that converts LF to CRLF (or back) changes it
+    for text that did not change. Telling the owner to create a new migration would be the wrong advice."""
+    path = tmp_path / "1_probe.sql"
+    path.write_bytes(PROBE_SQL.replace(b"\n", LINE_ENDINGS[applied]))
+    assert migrations.migrate(scratch_url, tmp_path) == ["1_probe.sql"]
+    path.write_bytes(PROBE_SQL.replace(b"\n", LINE_ENDINGS[now]))
+    current = migrations.discover(tmp_path)[0].checksum
+    with pytest.raises(migrations.MigrationError) as raised:
+        migrations.migrate(scratch_url, tmp_path)
+    message = str(raised.value)
+    assert f"line endings changed since it was applied with {applied}" in message
+    assert "1_probe.sql" in message
+    assert current in message  # what to set the ledger to, to keep the new ones
+    assert "modified after being applied" not in message
+    assert "Create a new migration" not in message
+    path.write_bytes(PROBE_SQL.replace(b"\n", LINE_ENDINGS[applied]))
+    assert migrations.migrate(scratch_url, tmp_path) == []  # restoring them is the fix
+
+
+@pytest.mark.parametrize("ending", ["LF", "CRLF"])
+def test_a_migration_whose_text_changed_is_still_reported_as_edited(
+    scratch_url: str, tmp_path: Path, ending: str
+) -> None:
+    """Changed line endings are not an excuse: the text changed too, so a new migration is the advice."""
+    path = tmp_path / "1_probe.sql"
+    path.write_bytes(PROBE_SQL)
+    migrations.migrate(scratch_url, tmp_path)
+    path.write_bytes(PROBE_SQL.replace(b"id int", b"id bigint").replace(b"\n", LINE_ENDINGS[ending]))
+    with pytest.raises(migrations.MigrationError, match="modified after being applied") as raised:
+        migrations.migrate(scratch_url, tmp_path)
+    assert "line endings" not in str(raised.value)
+    assert "Create a new migration" in str(raised.value)
