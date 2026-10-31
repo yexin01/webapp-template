@@ -1,154 +1,134 @@
 # SaaS Template
 
-An open-source SaaS starter: a **Next.js** (TypeScript, strict) web app and a **Python (FastAPI)** API, with **Clerk** authentication and organizations, **Stripe** Free/Pro billing (monthly and yearly), **Supabase/PostgreSQL** with row-level security, **PostHog** analytics, **Sentry** error monitoring, and a provider-agnostic **LLM** connectivity check.
+An open-source SaaS starter: a **Next.js** (TypeScript, strict) web app and a **Python (FastAPI)** API, with **Clerk** authentication and organizations, **Stripe** Free/Pro billing (monthly and yearly), **Supabase/PostgreSQL** with forced row-level security, **PostHog** analytics, **Sentry** error monitoring, and a provider-agnostic **LLM** connectivity check, meant to deploy on **Vercel**.
 
-It is secure by default: every API operation is authorized on the server, tenants are isolated by the database as well as the application, and Pro access is granted only from verified Stripe data.
-
-**Billing model.** Subscriptions belong to individuals. A user's Pro plan covers their own actions in their personal workspace and in every organization they belong to. It is never shared with other members, and organization roles neither grant nor remove it ([ADR-0002](dev-docs/adr/0002-organization-entitlements-contacts-adopter-decisions.md)).
-
-A minimal UI exercises every integration:
-
-- sign-in and organizations;
-- a per-tenant project list;
-- Free/Pro billing and a Pro-only page;
-- an **Integrations** page (`/integrations`) that shows each service's mode and runs a live check against it.
-
-> **Status:** pre-release. Local development and the automated test suites work. Deployment to Vercel has **not** been verified yet (DEC-001): a local proof packages and runs the API with Vercel's tooling, but nothing has been deployed. External integrations have been exercised only with mocks. See [Verification status](#verification-status).
-
-## Architecture
-
-```
-Browser ──► Next.js (apps/web) ──/api/v1/* rewrite──► FastAPI (apps/api) ──► PostgreSQL (schema "app", RLS)
-              │ Clerk UI                                  │ verifies Clerk session tokens
-              │ PostHog / Sentry (browser)                ├─► Clerk Backend API (memberships)
-                                                          ├─► Stripe (checkout, portal, webhooks)
-                                                          ├─► LLM provider (connectivity check)
-                                                          └─► PostHog / Sentry (server)
-```
-
-- **Web app:** presentation only, organized by feature (`src/features/*`). It never talks to the database or to Stripe with secret keys, and it calls the API through a client generated from the OpenAPI contract.
-- **API:** a modular monolith. A shared kernel (`app/kernel`) provides tenancy, permissions, transactions, the outbox, jobs, and the HTTP platform. Feature modules (`app/modules/{identity,billing,projects,llm,diagnostics}`) all share the same layers: domain, ports, service, adapters, routes, and wiring. Boundaries are enforced in CI by import contracts and architecture tests.
-- **Data:** every transaction runs as a non-privileged role (`app_api` or `app_worker`) with forced row-level security. Database-only requests run in one request-scoped transaction. Side effects go through a transactional outbox, and maintenance runs as scheduled jobs.
-- **Details:** [docs/architecture.md](docs/architecture.md), with C4 diagrams, module anatomy, request lifecycle, data access, events, jobs, scaling, and fitness functions.
-
-**Add a feature:** `pnpm new:module invoices` generates a tenant-scoped module end to end: API layers, a migration with RLS, tests, a web feature, typed client methods, and wiring.
+It is secure by default: every API operation is authorized on the server, tenants are isolated by the database as well as the application, and Pro access is granted only from verified Stripe data. Subscriptions belong to individuals: a user's Pro plan covers their own actions in every workspace they belong to and is never shared ([ADR-0002](dev-docs/adr/0002-organization-entitlements-contacts-adopter-decisions.md)). A minimal UI exercises every integration, including an **Integrations** page (`/integrations`) that shows each service's mode and runs a live check against it.
 
 The authoritative engineering specification is [`dev-docs/engineering-implementation-plan.md`](dev-docs/engineering-implementation-plan.md). Decisions are recorded in [`dev-docs/adr/`](dev-docs/adr/).
 
-## Prerequisites
-
-| Tool | Version |
-|---|---|
-| Node.js | 22.12+ (24 LTS recommended; see `.nvmrc`) |
-| pnpm | 9.15 (`corepack enable`) |
-| Python | 3.12 (installed automatically by uv) |
-| [uv](https://docs.astral.sh/uv/) | 0.11+ |
-| Docker | Recent, for the local PostgreSQL container |
-
-You also need your **own** accounts for the services you enable. The automated tests need none of them.
+<!-- template-only:start -->
+> **Status:** pre-release. Local development and the automated test suites work. Nothing has been deployed (DEC-001), and no external integration has been run against a real provider: see [docs/limitations.md](docs/limitations.md).
+<!-- template-only:end -->
 
 ## Quick start
 
+Prerequisites: Node.js 24 LTS (22.12 or newer works), pnpm 9.15, [uv](https://docs.astral.sh/uv/) 0.11 or newer, and Docker. Versions, install notes and what to do on Node 25: [docs/setup.md](docs/setup.md#prerequisites).
+
 ```bash
-pnpm bootstrap             # install JS and Python dependencies from lockfiles
+git clone <repository-url> your-product && cd your-product
 pnpm init-template --name "Your Product" --slug your-product \
   --security-contact security@your-product.example \
-  --conduct-contact conduct@your-product.example   # rename, fill in contacts, create .env
+  --conduct-contact conduct@your-product.example   # renames the template and creates .env
                            # add --db-port 54330 to run several projects side by side
-cp -n .env.example .env    # if you are only trying the template out
-pnpm db:up                 # start local PostgreSQL (127.0.0.1:54329)
-pnpm db:migrate            # apply migrations
-pnpm hooks:install         # optional: scan staged changes for secrets before each commit
-```
-
-`pnpm hooks:install` points git at `scripts/git-hooks`, whose pre-commit hook runs [gitleaks](https://github.com/gitleaks/gitleaks) (install it first, for example `brew install gitleaks`) on the staged changes with the same rules as CI (`.gitleaks.toml`). It refuses the commit when it finds a possible secret. Undo with `git config --unset core.hooksPath`.
-
-Edit `.env`. At minimum, set your Clerk **development** instance keys (`NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`); everything else can stay in `mock` or `disabled` mode. [docs/integrations.md](docs/integrations.md) explains each service, its callback URLs, and how to switch it to `sandbox`.
-
-```bash
+pnpm bootstrap             # install JavaScript and Python dependencies from the lockfiles
+pnpm db:up && pnpm db:migrate   # local PostgreSQL in Docker (127.0.0.1:54329), then the schema
+pnpm check:setup           # validate the configuration; no account needed
 pnpm dev                   # API on :8000, web on :3000
 ```
 
-Open http://localhost:3000. The API refuses to start if configuration is missing or inconsistent, and the error names the variables involved without printing their values.
+Everything up to `pnpm check:setup` needs no account and no key. `pnpm dev` needs the two keys of a free Clerk development instance, with Organizations enabled and **Membership optional**: until you paste them it stops with a message, because the web app cannot show a page without a Clerk instance. Then open http://localhost:3000 and http://localhost:3000/integrations.
 
-Then open **http://localhost:3000/integrations** and select **Run all server checks**. Each service reports one of:
-
-- **Passed**: the provider confirmed the request.
-- **Sent (unconfirmed)**: handed to the SDK, but the provider does not confirm delivery.
-- **Failed**: with a reason.
-- **Skipped**: mock or disabled; nothing was contacted.
-
-Diagnostics are open to any signed-in user only when `APP_ENV=local` and `DIAGNOSTICS_OPERATOR_IDS` is empty. Everywhere else, list operator Clerk user IDs in `DIAGNOSTICS_OPERATOR_IDS`. In production they are off unless `DIAGNOSTICS_ENABLED=true`.
+The full guide is [docs/setup.md](docs/setup.md). It starts with one checklist of the steps only a person can do (accounts, keys, dashboard-only settings, authorizations); everything else is a command.
 
 ## Commands
 
+Tests never use your `.env`. Database tests create and drop their own database, and refuse non-local servers.
+
+**Develop**
+
 | Command | Purpose |
 |---|---|
-| `pnpm dev` | Run the API and web app with reload. macOS and Linux only: on Windows, use WSL, or run `pnpm dev:api` and `pnpm dev:web` in separate terminals |
-| `pnpm test` | API tests (needs `pnpm db:up`) and web unit tests |
-| `pnpm test:e2e` | Playwright tests. Account-free checks run by default; set `E2E_SANDBOX=1` for browser and signed-in flows |
-| `pnpm lint` / `pnpm typecheck` | ESLint + Ruff + import contracts / tsc + mypy (strict) |
+| `pnpm bootstrap` | Install JavaScript and Python dependencies from the lockfiles |
+| `pnpm dev` | Check the configuration, then run the API and web app with reload (starts the Stripe CLI listener when billing is in sandbox mode). macOS and Linux only: on Windows use WSL, or run `pnpm dev:api` and `pnpm dev:web` in separate terminals |
+| `pnpm build` | Production build of the web app; needs your Clerk publishable key |
+| `pnpm build:check` | Account-free production build plus the bundle secret scan, reading no `.env`: what CI runs |
 | `pnpm format` | Format the web app (Prettier) and the API and perf code (Ruff) |
-| `pnpm build` | Production build of the web app |
-| `pnpm contracts` | Regenerate the OpenAPI document and TypeScript API types |
-| `pnpm contracts:check` | Fail if generated contracts are stale |
-| `pnpm check:bundle-secrets` | Fail if server-only values appear in the browser bundle (after `pnpm build`) |
-| `pnpm security:audit` | Dependency vulnerability audit (pnpm + pip-audit) |
-| `pnpm security:licenses` | Fail if a production dependency's license is not on the allowlist in `scripts/check-licenses.mjs` |
-| `pnpm db:migrate` | Apply pending migrations (local databases only unless `--allow-remote`) |
-| `pnpm db:seed --yes` | Load deterministic synthetic data into the **local** database. Refuses to run without `--yes` |
-| `pnpm db:reset --yes` | Drop, migrate, and seed the **local** database. Refuses to run without `--yes` (pass it after the script name, not after `--`). Both commands also need `APP_ENV=local` or `test` set explicitly (`.env` from `.env.example` sets it), and a local host or a Unix socket in a standard local directory |
-| `pnpm db:restore-drill` | Dump the local database, restore it into a fresh throwaway PostgreSQL container (roles created first, owners kept), verify it, and remove the container ([details](docs/operations.md#backup-and-restore)) |
-| `pnpm test:init-template` | Check that `init-template` leaves no original identifiers (runs on temporary copies of the tracked files; `git add` new files to include them) |
+| `pnpm contracts` | Regenerate the OpenAPI document and the TypeScript API types |
 | `pnpm new:module <name>` | Scaffold a tenant-scoped feature module end to end ([docs/architecture.md](docs/architecture.md#adding-a-feature)) |
-| `pnpm test:new-module` | Check that freshly generated modules pass every gate (runs on a temporary copy of the tracked files; `git add` new files to include them) |
-| `pnpm check:placeholders` | Fail if `SECURITY.md` or `CODE_OF_CONDUCT.md` still has a contact placeholder after the project was renamed |
+| `pnpm hooks:install` | Scan staged changes for secrets before each commit ([gitleaks](https://github.com/gitleaks/gitleaks), or its pinned container image when Docker runs). Undo with `git config --unset core.hooksPath` |
 | `pnpm perf:server` / `pnpm perf:run` | Local performance server and k6 scenarios ([perf/README.md](perf/README.md)) |
+
+**Check**
+
+| Command | Purpose |
+|---|---|
+| `pnpm check:setup [--send-test-events]` | Validate the configuration and run the checks of the Integrations page without signing in |
+| `pnpm verify` | Everything CI runs, in CI's order, ending with a PASS/FAIL table (`--help` lists the options) |
+| `pnpm verify:quick` | Lint, format, types, and the API and web tests |
+| `pnpm verify:sandbox` | The checks that need provider accounts, each when its keys are in `.env`; ends with an evidence record |
+| `pnpm test` | API tests (needs `pnpm db:up`) and web unit tests |
+| `pnpm test:e2e` | Playwright tests. Account-free pages, axe and keyboard checks run by default; `E2E_SANDBOX=1` adds the signed-in flows |
+| `pnpm test:stripe-sandbox` | The Stripe lifecycle suite against your sandbox (needs keys; changes the sandbox) |
+| `pnpm lint` / `pnpm typecheck` | ESLint, Ruff, import contracts and migration lint / `tsc` and mypy (strict) |
+| `pnpm contracts:check` | Fail if the generated contracts are stale |
+| `pnpm check:bundle-secrets` | Fail if server-only values appear in the browser bundle (after `pnpm build`) |
+| `pnpm check:links` | Fail if a relative Markdown link does not resolve |
+| `pnpm test:scripts` | The tests of the scripts in `scripts/` |
+
+**Database**
+
+| Command | Purpose |
+|---|---|
+| `pnpm db:up` / `pnpm db:down` | Start or stop the local PostgreSQL 17 container |
+| `pnpm db:migrate` | Apply pending migrations (local databases only unless `--allow-remote`) |
+| `pnpm db:api-login` | Give the runtime role `app_login` a password for a hosted database (`--allow-remote`; [docs/setup.md](docs/setup.md#supabase-optional-hosted-database)) |
+| `pnpm db:seed --yes` | Load deterministic synthetic fixtures into the **local** database. They are not Clerk accounts, so they never appear when you sign in. Refuses without `--yes` |
+| `pnpm db:reset --yes` | Drop schema `app` and the migration ledger, re-apply the migrations and seed (**local** only). Objects a migration creates outside `app` survive it; for an empty start use `docker compose down -v && pnpm db:up && pnpm db:migrate`. Pass `--yes` after the script name, not after `--`. Both seed and reset need `APP_ENV=local` or `test` set explicitly (`.env` from `.env.example` does), and a local host or a Unix socket in a standard local directory |
+| `pnpm db:restore-drill` | Dump the local database, restore it into a throwaway PostgreSQL container, verify it, and remove the container ([details](docs/operations.md#backup-and-restore)) |
+
+**Billing**
+
+| Command | Purpose |
+|---|---|
+| `pnpm setup:stripe --currency usd --monthly 900 --yearly 9000` | Create the Pro product and its two prices in a Stripe **sandbox** and print the `.env` lines (amounts in minor units) |
 | `pnpm billing:reconcile` | Compare billing records with Stripe (dry run; add `--apply`) |
 | `cd apps/api && uv run python -m app.cli job [name]` | List or run scheduled jobs (`drain-outbox`, `prune-expired`, `reconcile-billing`, `reconcile-memberships`) |
 
-## Testing
+**Deploy and CI**
 
-- **API (`apps/api/tests`)**:
-  - unit tests (entitlement matrix, authorization policy, configuration safety, token verification, adapters, redaction);
-  - integration tests against a throwaway PostgreSQL database (row-level security, negative security tests NT-01 to NT-12, webhooks, concurrency, resilience, telemetry leakage, migration safety, query counts, integration diagnostics).
-- **Web (`apps/web`)**: Vitest component and library tests; Playwright end-to-end tests with axe accessibility checks.
-
-Tests never use your `.env`. Database tests create and drop their own database, and refuse non-local servers.
-
-## Verification status
-
-| Area | Status |
+| Command | Purpose |
 |---|---|
-| Unit, integration, and security tests | Run locally (see the latest evidence in `dev-docs/evidence/`) |
-| Clerk, Stripe, Supabase, PostHog, Sentry, LLM | **Mocked only.** Sandbox verification is pending (DEC-006); the `/integrations` page is the tool for it |
-| Vercel deployment (Python runtime) | **Not verified on Vercel** (DEC-001). Local proof only: packaging, Vercel's runtime shim, Services routing, transaction pooling, and database faults pass ([evidence](dev-docs/evidence/dec-001-vercel-python.md)) |
-| Performance | PERF-01 to PERF-07 recorded locally, for relative comparison only. Targets are **yours to set** ([perf/run-plan-template.md](perf/run-plan-template.md)) |
-| Backup and restore | Local restore drill only. Objectives and the hosted restore test are **yours to set** ([checklist](docs/operations.md#backup-and-restore)) |
-| Data retention, deletion, export | No deletion or export feature. Policy is **yours to set** ([checklist](docs/data-inventory.md#adopter-decision-checklist)) |
+| `pnpm test:vercel-build` | Build the root `vercel.json` with the pinned Vercel CLI and assert the output; deploys nothing |
+| `pnpm test:supabase` | Run the API tests on Supabase's PostgreSQL image (needs Docker) |
+| `pnpm security:audit` | Dependency vulnerability audit: the web production tree and the API lockfile fail on any advisory; the web development tree is report only |
+| `pnpm security:licenses` | Fail if a production dependency's license is not on the allowlist in `scripts/check-licenses.mjs` |
 
-## Before you launch
+**Template**
 
-The template leaves these decisions to each adopter ([ADR-0002](dev-docs/adr/0002-organization-entitlements-contacts-adopter-decisions.md)):
-
-1. Security and conduct contacts: `init-template` asks for them, and CI fails while placeholders remain.
-2. Data retention, deletion, export, and analytics consent: [docs/data-inventory.md](docs/data-inventory.md#adopter-decision-checklist).
-3. Backup objectives, plus a timed hosted restore test: [docs/operations.md](docs/operations.md#backup-and-restore).
-4. Performance targets, from your own preview baseline: [perf/run-plan-template.md](perf/run-plan-template.md).
-5. Sandbox verification of every integration: [docs/integrations.md](docs/integrations.md), plus the `/integrations` page.
-
-## Troubleshooting
-
-| Symptom | Fix |
+| Command | Purpose |
 |---|---|
-| `Invalid configuration: ...` on API start | Set the named variables in `.env`; see `.env.example` comments |
-| Database tests are skipped | `pnpm db:up`, or set `TEST_DATABASE_URL` to a **local** server |
-| `/api/v1/*` returns 500 in the browser | The API is not running on `API_ORIGIN`; run `pnpm dev` |
-| Signed in but API returns 401 | Add your web origin to `CLERK_AUTHORIZED_PARTIES` |
-| Organization pages return 404 | You are not a member in Clerk, or the API cannot reach Clerk; check `CLERK_SECRET_KEY` |
-| Upgrade succeeded but plan still Free | Webhooks are not reaching the API; see the Stripe CLI section in docs/integrations.md |
-| Integrations page says diagnostics are not available | Add your Clerk user ID to `DIAGNOSTICS_OPERATOR_IDS`, or use `APP_ENV=local` |
-| A check is "Skipped" | That integration is in `mock` or `disabled` mode; set it to `sandbox` in `.env` |
+| `pnpm init-template` | Rename the template, fill in the community contacts, and create `.env` (see [docs/setup.md](docs/setup.md#steps)) |
+| `pnpm test:init-template` | Check that `init-template` leaves no original identifiers (runs on temporary copies of the tracked files; `git add` new files to include them) |
+| `pnpm test:new-module` | Check that freshly generated modules pass every gate (same copy rule) |
+| `pnpm check:placeholders` | Fail if `SECURITY.md` or `CODE_OF_CONDUCT.md` still has a contact placeholder after the project was renamed |
+
+## Repository map
+
+- `apps/web/`: the Next.js app. Routes in `src/app`, feature UI in `src/features/*`, presentational components in `src/ui`, infrastructure in `src/lib`.
+- `apps/api/`: the FastAPI app. A shared kernel (`app/kernel`) and feature modules (`app/modules/{identity,billing,projects,llm,diagnostics}`), each with domain, ports, service, adapters, routes and wiring. Tests in `tests/`.
+- `packages/contracts/`: the generated OpenAPI document, and the fixtures both apps' configuration tests share.
+- `supabase/`: the migrations (applied by `pnpm db:migrate`, not by the Supabase CLI), `seed.sql`, and `restore/`.
+- `scripts/`: the commands behind the `pnpm` scripts.
+- `docs/`: the documentation below. `dev-docs/`: the specification, the ADRs and the evidence records.
+- `perf/`: k6 scenarios and the local performance server.
+<!-- template-only:start -->
+- `proofs/`, `docs-notes/`: the template maintainers' records; `pnpm init-template` removes them from your copy.
+<!-- template-only:end -->
+- `.github/`: CI, CodeQL, the **Database migrate** workflow, and the issue and pull request templates.
+- `vercel.json`: one Vercel project with Services (web and API together, and the crons). `docker-compose.yml`: the local database. `.env.example`: every setting, in tiers.
+
+## Documentation
+
+| Read | For |
+|---|---|
+| [docs/setup.md](docs/setup.md) | Clone to a running app, a configured sandbox, and a first preview. Starts with the checklist of manual steps |
+| [docs/integrations.md](docs/integrations.md) | Each provider: variables, checks, failure modes, and what is verified |
+| [docs/deployment.md](docs/deployment.md) | Vercel, GitHub and production: the variable map, previews, rollback, and what to decide before launch |
+| [docs/operations.md](docs/operations.md) | Key rotation, migrations, jobs, incidents, backups, outages |
+| [docs/limitations.md](docs/limitations.md) | What is not verified, what was deferred, and what the template deliberately does not do |
+| [docs/architecture.md](docs/architecture.md) | Architecture, module anatomy, how to add a feature |
+| [docs/data-inventory.md](docs/data-inventory.md) | The personal data the template handles, and the retention and deletion checklist |
+| [AGENTS.md](AGENTS.md), [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md) | Rules for agents and contributors, and how to report a vulnerability |
 
 ## Contributing and security
 
