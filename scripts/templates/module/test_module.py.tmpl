@@ -48,13 +48,26 @@ def people(harness: Harness) -> dict[str, Any]:
     harness.directory.set("user_admin", [ExternalMembership(ORG, Role.ADMIN)])
     harness.directory.set("user_member", [ExternalMembership(ORG, Role.MEMBER)])
     harness.directory.set("user_rival", [ExternalMembership(OTHER_ORG, Role.ADMIN)])
-    return {name: harness.login(f"user_{name}") for name in ("admin", "member", "outsider", "rival")}
+    harness.directory.set(
+        "user_both", [ExternalMembership(ORG, Role.ADMIN), ExternalMembership(OTHER_ORG, Role.ADMIN)]
+    )
+    return {name: harness.login(f"user_{name}") for name in ("admin", "member", "outsider", "rival", "both")}
 
 
 @contextmanager
 def api_role(url: str, **context: str) -> Iterator[psycopg.Connection[Any]]:
     """The request role with the given app.* context, bypassing the application's own filters."""
     with psycopg.connect(url) as conn, conn.transaction():
+        conn.execute("SET LOCAL ROLE app_api")
+        for key, value in context.items():
+            conn.execute("SELECT set_config(%s, %s, true)", (f"app.{key}", value))
+        yield conn
+
+
+@contextmanager
+def api_role_rolled_back(url: str, **context: str) -> Iterator[psycopg.Connection[Any]]:
+    """``api_role`` with everything rolled back, for statements that change rows."""
+    with psycopg.connect(url) as conn, conn.transaction(force_rollback=True):
         conn.execute("SET LOCAL ROLE app_api")
         for key, value in context.items():
             conn.execute("SELECT set_config(%s, %s, true)", (f"app.{key}", value))
@@ -252,6 +265,41 @@ def test_database_requires_membership_of_the_context_organization(harness: Harne
     # Without an organization context, organization rows stay out of reach too.
     with pytest.raises(psycopg.errors.InsufficientPrivilege), api_role(url, user_id=rival) as conn:
         conn.execute("INSERT INTO app.__module__ (org_id, created_by, name) VALUES (%s, %s, 'x')", (org, rival))
+
+
+def test_database_refuses_a_row_for_another_organization_of_the_same_user(
+    harness: Harness, people: dict[str, Any]
+) -> None:
+    """DB-07: a member of two organizations, with one organization's context, may not write a row for the other."""
+    for path in (IN_ORG, f"/api/v1/orgs/{OTHER_ORG}/__path__"):
+        assert harness.client.get(path, headers=people["both"]).status_code == 200  # mirrors the memberships
+    url = harness.database_url
+    org = one_id(url, "SELECT id FROM app.organizations WHERE clerk_org_id = %s", ORG)
+    other = one_id(url, "SELECT id FROM app.organizations WHERE clerk_org_id = %s", OTHER_ORG)
+    both = one_id(url, "SELECT id FROM app.users WHERE clerk_user_id = %s", "user_both")
+    with pytest.raises(psycopg.errors.InsufficientPrivilege), api_role(url, user_id=both, org_id=org) as conn:
+        conn.execute("INSERT INTO app.__module__ (org_id, created_by, name) VALUES (%s, %s, 'x')", (other, both))
+
+
+def test_database_applies_update_and_delete_to_the_context_organization_only(
+    harness: Harness, people: dict[str, Any]
+) -> None:
+    """DB-07: with no WHERE clause only the UPDATE or DELETE policy applies; a WHERE on a column brings the SELECT
+    policy in as well, which makes the same checks and would hide one missing here. A member of two organizations
+    reaches the context organization's row only, and a member of another organization who names this one, none."""
+    in_other_org = f"/api/v1/orgs/{OTHER_ORG}/__path__"
+    assert harness.client.post(IN_ORG, json={"name": "first"}, headers=people["both"]).status_code == 201
+    assert harness.client.post(in_other_org, json={"name": "second"}, headers=people["both"]).status_code == 201
+    assert harness.client.get(in_other_org, headers=people["rival"]).status_code == 200
+    url = harness.database_url
+    org = one_id(url, "SELECT id FROM app.organizations WHERE clerk_org_id = %s", ORG)
+    both = one_id(url, "SELECT id FROM app.users WHERE clerk_user_id = %s", "user_both")
+    rival = one_id(url, "SELECT id FROM app.users WHERE clerk_user_id = %s", "user_rival")
+    for context, reached in (({"user_id": both, "org_id": org}, 1), ({"user_id": rival, "org_id": org}, 0)):
+        with api_role_rolled_back(url, **context) as conn:
+            assert conn.execute("DELETE FROM app.__module__").rowcount == reached, context
+        with api_role_with_edit_grant(url, **context) as conn:
+            assert conn.execute("UPDATE app.__module__ SET name = 'renamed'").rowcount == reached, context
 
 
 def test_database_keeps_personal_items_to_their_owner(harness: Harness, people: dict[str, Any]) -> None:
