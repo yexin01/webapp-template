@@ -429,8 +429,17 @@ export function sourceMapUploadProblems(env: Source): string[] {
  * The build options for withSentryConfig. The plugin reads SENTRY_ORG and SENTRY_PROJECT itself.
  * It is silent only when no upload is configured: otherwise its warnings (a skipped upload) and
  * its upload errors and success line belong in the build log.
+ *
+ * With a token the plugin also creates and finalizes the release and, on Vercel, records its deploy.
+ * Its default would also run `sentry release set-commits` (the repository and commit IDs of the
+ * build); that is opt-in here: `release: { setCommits: { auto: true } }` turns it on (ADR-0004 §25).
  */
 export function sentryBuildOptions(env: Source) {
   const upload = Boolean(env.SENTRY_AUTH_TOKEN?.trim());
-  return { silent: !upload, telemetry: false, sourcemaps: { disable: !upload } } as const;
+  return {
+    silent: !upload,
+    telemetry: false,
+    sourcemaps: { disable: !upload },
+    release: { setCommits: false },
+  } as const;
 }

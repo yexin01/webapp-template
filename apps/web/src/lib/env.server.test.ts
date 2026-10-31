@@ -519,6 +519,7 @@ describe("source-map upload to Sentry", () => {
       silent: false,
       telemetry: false,
       sourcemaps: { disable: false },
+      release: { setCommits: false },
     });
     for (const env of [
       {},
@@ -530,6 +531,7 @@ describe("source-map upload to Sentry", () => {
         silent: true,
         telemetry: false,
         sourcemaps: { disable: true },
+        release: { setCommits: false },
       });
     }
   });
