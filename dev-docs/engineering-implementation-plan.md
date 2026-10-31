@@ -900,8 +900,8 @@ Clerk provides authentication. It does not replace application authorization.
 
 - **BILL-19** A reconciliation command compares billing records with Stripe for one user, or for all flagged or recently changed records.
   - It is idempotent.
-  - It defaults to dry-run and reports divergences.
-  - Applying corrections is explicit.
+  - The command defaults to dry-run and reports divergences. Applying corrections is explicit (`--apply`).
+  - The scheduled job (`reconcile-billing`, a daily cron) applies Stripe's state when `BILLING_MODE` is `sandbox` or `live`, and only reports in `mock`; `BILLING_RECONCILE_APPLY` forces either. A lost `customer.subscription.deleted` would otherwise leave Pro in place until someone ran the command (adopted by delegation, reversible: [ADR-0004 §20](adr/0004-cycle-1-adopted-decisions.md)). It is tested through `/api/v1/jobs/reconcile-billing` with the setting on and off.
   - Scheduling it (for example with a platform cron) is part of DEC-001 verification and requires approval.
 
 ### 9.8 Presentation

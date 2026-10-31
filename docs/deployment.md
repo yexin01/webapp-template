@@ -75,7 +75,7 @@ Legend: **web** = the Next.js service, **api** = the Python service. *Baked* = f
 | `STRIPE_PRICE_PRO_MONTHLY`, `STRIPE_PRICE_PRO_YEARLY` | api | config | Sandbox price IDs | Live price IDs |
 | `STRIPE_PRODUCT_PRO` | api | config | Sandbox product ID | Live product ID |
 | `STRIPE_CUSTOM_DOMAIN` | web, api; baked | config | Unset | Optional, live mode only |
-| `BILLING_RECONCILE_APPLY` | api | config | Unset | Your choice (default: report only) |
+| `BILLING_RECONCILE_APPLY` | api | config | Leave unset (the job applies Stripe's state) | Leave unset; `false` makes the job only report |
 
 **LLM, analytics, errors**
 

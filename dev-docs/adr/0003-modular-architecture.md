@@ -71,7 +71,7 @@ TanStack Query was offered and not selected.
 
 ### 4. Scheduled jobs
 
-- `JobRegistry` holds four jobs: `drain-outbox`, `prune-expired` (rate-limit windows and processed outbox events), `reconcile-billing` (reports only, unless `BILLING_RECONCILE_APPLY=true`), and `reconcile-memberships`.
+- `JobRegistry` holds four jobs: `drain-outbox`, `prune-expired` (rate-limit windows and processed outbox events), `reconcile-billing` (applies Stripe's state unless `BILLING_MODE=mock` or `BILLING_RECONCILE_APPLY=false`, in which case it only reports; [ADR-0004 §20](0004-cycle-1-adopted-decisions.md)), and `reconcile-memberships`.
 - **Triggers:**
   - the CLI (`app.cli job [name]`);
   - `GET /api/v1/jobs/<name>` with `Authorization: Bearer <CRON_SECRET>`, compared in constant time. The endpoint returns 404 when `CRON_SECRET` is unset, and is excluded from OpenAPI.

@@ -1323,6 +1323,36 @@ def test_reconcile_job_skips_customers_stripe_rejects(harness: Harness) -> None:
     assert (summary["customers"], summary["rejected"]) == (1, 1)
 
 
+RECONCILE_CRON_SECRET = "cron-secret-test_only-billing-reconcile-0123456789"  # test-only value
+SANDBOX_MODE = {"billing_mode": "sandbox", "stripe_secret_key": "sk_test_" + "o" * 24}
+
+
+@pytest.mark.parametrize(
+    ("settings", "applies"),
+    [
+        ({}, False),  # mock mode: nothing to compare with, so the job reports only
+        (SANDBOX_MODE, True),  # outside mock mode the default is to apply
+        ({**SANDBOX_MODE, "billing_reconcile_apply": False}, False),
+        ({"billing_reconcile_apply": True}, True),
+    ],
+    ids=["mock", "sandbox", "sandbox-report-only", "mock-apply"],
+)
+def test_the_scheduled_job_repairs_a_lost_cancellation_unless_it_is_set_to_only_report(
+    make_harness: Any, settings: dict[str, Any], applies: bool
+) -> None:
+    """BILL-19: the daily job is what ends Pro after a `customer.subscription.deleted` that never arrived."""
+    h = make_harness({"cron_secret": RECONCILE_CRON_SECRET, **settings})
+    customer = make_pro(h, "user_a")
+    h.billing.set_subscriptions(customer, [snapshot(customer, SubscriptionStatus.CANCELED)])  # the webhook was lost
+
+    r = h.client.get("/api/v1/jobs/reconcile-billing", headers={"Authorization": f"Bearer {RECONCILE_CRON_SECRET}"})
+
+    assert r.status_code == 200
+    assert r.json()["summary"] == {"customers": 1, "divergences": 1, "unlinked": 0, "rejected": 0, "applied": applies}
+    plan = h.client.get("/api/v1/billing/status", headers=h.login("user_a")).json()["plan"]
+    assert plan == ("free" if applies else "pro")
+
+
 def test_cli_reconcile_prints_divergences(
     harness: Harness, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

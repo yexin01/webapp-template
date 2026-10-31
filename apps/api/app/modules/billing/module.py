@@ -19,7 +19,7 @@ from app.modules.billing.ports import BillingProvider, BillingWebhookVerifier
 from app.modules.billing.probe import BillingProbe
 from app.modules.billing.routes import build_action_router, build_read_router, build_webhook_router
 from app.modules.billing.service import BillingService, BillingUrls
-from app.modules.billing.settings import BillingSettings
+from app.modules.billing.settings import BillingSettings, reconcile_applies
 
 
 @dataclass
@@ -77,9 +77,10 @@ def build_billing(
     kernel.jobs.register(
         Job(
             "reconcile-billing",
-            "Compare billing records with Stripe; apply fixes only if BILLING_RECONCILE_APPLY=true.",
+            "Compare billing records with Stripe and apply Stripe's state "
+            "(report only in mock mode or with BILLING_RECONCILE_APPLY=false).",
             "0 4 * * *",
-            lambda: service.reconcile_job(settings.billing_reconcile_apply, settings.billing_reconcile_batch_size),
+            lambda: service.reconcile_job(reconcile_applies(settings), settings.billing_reconcile_batch_size),
         )
     )
     contribution.routers += [

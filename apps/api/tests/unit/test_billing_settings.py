@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from app.kernel.infrastructure.config import ConfigError
+from app.kernel.infrastructure.config import ConfigError, Mode
 from app.modules.billing.module import describe
+from app.modules.billing.settings import BillingSettings, reconcile_applies
 from tests.conftest import PRODUCT_PRO, make_settings
 
 SANDBOX = {"billing_mode": "sandbox", "stripe_secret_key": "sk_test_" + "o" * 24}
@@ -76,3 +77,28 @@ def test_user_syncs_per_hour_are_bounded(value: int) -> None:
     with pytest.raises(ConfigError, match="BILLING_SYNCS_PER_USER_PER_HOUR"):
         make_settings(billing_syncs_per_user_per_hour=value)
     assert make_settings().billing_syncs_per_user_per_hour == 30
+
+
+@pytest.mark.parametrize(
+    ("mode", "setting", "applies"),
+    [
+        (Mode.MOCK, None, False),  # there is no Stripe to compare with
+        (Mode.SANDBOX, None, True),
+        (Mode.LIVE, None, True),
+        (Mode.MOCK, True, True),
+        (Mode.SANDBOX, False, False),
+        (Mode.LIVE, False, False),
+    ],
+)
+def test_the_scheduled_job_applies_stripes_state_unless_billing_is_mocked_or_told_to_only_report(
+    mode: Mode, setting: bool | None, applies: bool
+) -> None:
+    assert reconcile_applies(BillingSettings(billing_mode=mode, billing_reconcile_apply=setting)) is applies
+
+
+@pytest.mark.parametrize(("value", "expected"), [("", None), ("true", True), ("false", False)])
+def test_the_apply_setting_reads_true_false_and_empty_as_unset(
+    monkeypatch: pytest.MonkeyPatch, value: str, expected: bool | None
+) -> None:
+    monkeypatch.setenv("BILLING_RECONCILE_APPLY", value)
+    assert make_settings().billing_reconcile_apply is expected

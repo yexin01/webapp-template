@@ -30,10 +30,22 @@ class BillingSettings(BaseModel):
     # Checkout and portal requests in Stripe calls at once per instance. Each holds a server
     # thread (40 by default, shared by every synchronous route) until Stripe answers.
     billing_max_concurrent_stripe_calls: int = Field(default=4, ge=1, le=16)
-    # The scheduled reconcile-billing job reports divergences; it applies them only when true.
-    billing_reconcile_apply: bool = False
+    # Whether the scheduled reconcile-billing job applies Stripe's state or only reports divergences.
+    # Unset: it applies, except in mock mode (``reconcile_applies``).
+    billing_reconcile_apply: bool | None = None
     # Customers the scheduled job checks per run (one Stripe call each), least recently checked first.
     billing_reconcile_batch_size: int = Field(default=200, ge=1, le=2_000)
+
+
+def reconcile_applies(s: BillingSettings) -> bool:
+    """Whether the scheduled job applies what it finds (BILL-19).
+
+    A webhook that never arrives would otherwise leave Pro in place after a cancellation, with only a log line
+    to say so. Mock mode has no Stripe to compare with.
+    """
+    if s.billing_reconcile_apply is not None:
+        return s.billing_reconcile_apply
+    return s.billing_mode is not Mode.MOCK
 
 
 def billing_problems(s: BillingSettings, core: CoreSettings) -> list[str]:
