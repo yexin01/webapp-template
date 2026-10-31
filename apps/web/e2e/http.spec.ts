@@ -43,12 +43,22 @@ for (const path of ["/", "/sign-in", "/sign-up"]) {
   });
 }
 
+// SEC-02, on the production build this suite serves. The policy's exact content is csp.test.ts and the header set
+// is next-config.test.ts; this proves they reach a response.
 test("security headers are set", async ({ request }) => {
   const response = await request.get("/", { headers: { Accept: "application/json" } });
   const headers = response.headers();
-  expect(headers["content-security-policy"]).toContain("frame-ancestors 'none'");
+  const policy = headers["content-security-policy"] ?? "";
+  expect(policy).toContain("frame-ancestors 'none'");
+  expect(policy).toContain("default-src 'self'");
+  expect(policy).toContain("upgrade-insecure-requests");
+  expect(policy).not.toContain("'unsafe-eval'");
   expect(headers["x-frame-options"]).toBe("DENY");
   expect(headers["x-content-type-options"]).toBe("nosniff");
+  expect(headers["referrer-policy"]).toBe("strict-origin-when-cross-origin");
+  expect(headers["permissions-policy"]).toBe("camera=(), microphone=(), geolocation=()");
+  // For this host only: includeSubDomains would pin plain-HTTP sibling subdomains to HTTPS (ADR-0004 §24).
+  expect(headers["strict-transport-security"]).toBe("max-age=63072000");
   expect(headers["x-powered-by"]).toBeUndefined();
 });
 
