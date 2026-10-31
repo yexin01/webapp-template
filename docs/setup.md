@@ -32,6 +32,7 @@ diff <(grep -ohE '\*\*\[YOU [A-Z][0-9]+\]\*\*' docs/setup.md docs/deployment.md 
 | S1 | Create a Clerk account and an application; use its Development instance | A Clerk instance | [Clerk](#clerk) |
 | S2 | Enable Organizations with **Membership optional** | The personal workspace appears | [Clerk](#clerk) |
 | S3 | Copy the publishable and secret key into `.env` | `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`; `pnpm dev` starts | [Clerk](#clerk) |
+| S12 | Decide whether users may delete their own account (Clerk: User & authentication > User model) | A deleted user's subscription ends at the period's end either way | [Clerk](#clerk) |
 | S4 | Create a Stripe sandbox and put its `sk_test_` key in `.env` | `STRIPE_SECRET_KEY` | [Stripe](#stripe) |
 | S5 | Save the Customer Portal settings and turn off bank debits in the Stripe Dashboard (test mode) | The portal check passes; Pro is not granted before funds arrive | [Stripe](#stripe) |
 | S6 | Set Billing > Revenue recovery > Retries to cancel or mark unpaid | Pro does not last forever on `past_due` | [Stripe](#stripe) |
@@ -46,10 +47,10 @@ diff <(grep -ohE '\*\*\[YOU [A-Z][0-9]+\]\*\*' docs/setup.md docs/deployment.md 
 | ID | Step | Guide |
 |---|---|---|
 | D1 | Create the Vercel project from the Git repository | [Set up Vercel](deployment.md#set-up-vercel) |
-| D2 | Set the Framework Preset to Services; keep system environment variables exposed | [Set up Vercel](deployment.md#set-up-vercel) |
+| D2 | Select the Services Framework Preset; keep access to system environment variables enabled | [Set up Vercel](deployment.md#set-up-vercel) |
 | D3 | Set the function region to your database's region | [Set up Vercel](deployment.md#set-up-vercel) |
 | D4 | Add the environment variables for Preview and Production | [Variables](deployment.md#variables-which-service-reads-what) |
-| D5 | Decide Deployment Protection; create the bypass secret for webhooks | [Set up Vercel](deployment.md#set-up-vercel) |
+| D5 | Decide Deployment Protection; create two bypass secrets, one for webhook URLs and one for tools | [Set up Vercel](deployment.md#set-up-vercel) |
 | D6 | Choose the Vercel plan (Hobby is non-commercial) | [Set up Vercel](deployment.md#set-up-vercel) |
 | D7 | Add the platform rate-limit rule | [Set up Vercel](deployment.md#set-up-vercel) |
 | D8 | Create the GitHub Environments and their `MIGRATION_DATABASE_URL` secret | [Set up GitHub](deployment.md#set-up-github) |
@@ -181,7 +182,7 @@ You get: dependencies installed, a migrated local database, a passing test suite
 
 ### You are done with Part 1 when
 
-`pnpm check:setup` exits 0 and `pnpm verify:quick` ends without a failed step. For everything CI runs (add the account-free end-to-end tests in a browser, the production build and the audits), install Chromium once and run `pnpm verify`; it takes several minutes. `pnpm verify --help` lists its options.
+`pnpm check:setup` exits 0 and `pnpm verify:quick` ends without a failed step. For the checks of CI's api, web and secrets jobs (add the account-free end-to-end tests in a browser, the production build, the audits and the secret scan), install Chromium once and run `pnpm verify`; it takes several minutes, and a step that cannot run (gitleaks not installed) is reported as skipped. CI's other jobs have their own commands: `pnpm test:vercel-build` (the deployment configuration) and `pnpm test:supabase` (Supabase's PostgreSQL image, needs Docker); the CodeQL scan runs only on GitHub. `pnpm verify --help` lists its options.
 
 ---
 
@@ -207,7 +208,8 @@ Sign-in, sessions and organizations. Use a **development** instance for everythi
    ```
 
    Do not use Clerk's keyless mode: the API verifies tokens against the issuer in the publishable key and reads memberships with the secret key, so both keys are required.
-4. Start the apps.
+4. **[YOU S12]** Decide whether users may delete their own account. In the Dashboard open **User & authentication**, find the **User model** section, and set **Allow users to delete their accounts** as you want it ([Clerk: sign-up and sign-in options](https://clerk.com/docs/guides/configure/auth-strategies/sign-up-sign-in-options)). The template's header shows Clerk's `<UserButton />`, whose profile offers deletion when this is on; Clerk does not state the setting's default (NOT VERIFIED), and you can delete a user in the Dashboard whatever it says. The template handles a deletion either way: when Clerk reports `user.deleted`, the API revokes the user's memberships and records `identity.user_deleted`, and billing asks Stripe to end each of the user's subscriptions at the end of the period they paid for (`BILLING_ON_USER_DELETED`, default `cancel_at_period_end`; `log` only reports it). That needs the Clerk webhook endpoint (D12): the API learns of a deletion nowhere else. A restricted Stripe key needs write access to Subscriptions for it, or set `BILLING_ON_USER_DELETED=log`. Refunds, deleting data and exports are your deletion policy (DEC-004), not the template's ([operations.md](operations.md#a-user-deleted-in-clerk), [data-inventory.md](data-inventory.md#adopter-decision-checklist)).
+5. Start the apps.
 
    ```bash
    pnpm dev
@@ -216,7 +218,7 @@ Sign-in, sessions and organizations. Use a **development** instance for everythi
    Success: the API on `:8000` and the web app on `:3000`, with the line "dev: the API is up. Web: http://localhost:3000". Open http://localhost:3000, sign up, then open `/dashboard`: the heading is "Personal workspace" with an empty project list. `/billing` shows the Free plan. `/integrations` shows each service's mode.
 
    Otherwise: the preflight lists the problem by variable name and nothing starts. A sign-in loop or `401` after signing in: open the app at the origin in `APP_BASE_URL`; see [Troubleshooting](#troubleshooting).
-5. Check: `pnpm check:setup` shows Clerk with the secret key accepted ("no session token was verified"). With the app running, select **Run all server checks** on `/integrations`: with a session, the Clerk check shows the session token verified. With `APP_ENV=local` and no operators listed, any signed-in user may use the page.
+6. Check: `pnpm check:setup` shows Clerk with the secret key accepted ("no session token was verified"). With the app running, select **Run all server checks** on `/integrations`: with a session, the Clerk check shows the session token verified. With `APP_ENV=local` and no operators listed, any signed-in user may use the page.
 
 The membership webhook (instant removal of a member's access) needs a public URL, so it belongs to a deployed environment ([D12](deployment.md#preview-deployments)). Locally, memberships are re-verified every 300 s.
 
@@ -233,7 +235,7 @@ Billing with Free and Pro. Use a Stripe **sandbox** (test mode).
 
    Amounts are in minor units (900 is 9.00 in USD): pick your own; all three flags are required. Success: it prints `Product prod_pro: created` or `already exists`, one line per price (`Price pro_monthly: price_... (created)`), then the lines to set. It is safe to re-run: it finds the prices by lookup key and creates only what is missing. It stops with nothing created if a price it finds differs in amount, currency, interval or state (Stripe prices cannot be edited), or if the two prices belong to different products. It never writes `.env` and never prints your key.
 3. Paste the printed lines into `.env`: `BILLING_MODE=sandbox` and the three IDs, `STRIPE_PRICE_PRO_MONTHLY=price_...`, `STRIPE_PRICE_PRO_YEARLY=price_...` and `STRIPE_PRODUCT_PRO=prod_...`. The product is the one both prices belong to: any monthly or yearly price of it grants Pro. If you made the prices in the Dashboard instead, use the ID of their product.
-4. **[YOU S5]** Save the Customer Portal in the Stripe Dashboard, in test mode: **Settings > Billing > Customer portal**. Turn on: updating payment methods, viewing invoices, cancellation at the end of the billing period, and switching between exactly the two Pro prices. The template reads the portal and never changes it; `pnpm setup:stripe` and the `/integrations` Stripe check list what is missing. Then open **Settings > Payment methods** and turn off the bank debits and bank transfers (SEPA, ACH, BECS, Bacs and the like): Pro follows a subscription's status, and a bank debit reads `active` before the funds arrive ([limitations](limitations.md#known-limits-by-area)). Checkout already offers cards only; which methods the portal's payment-method update offers is NOT VERIFIED, so do not leave a delayed method on.
+4. **[YOU S5]** Save the Customer Portal in the Stripe Dashboard, in test mode: **Settings > Billing > Customer portal**. Turn on: updating payment methods, viewing invoices, cancellation at the end of the billing period, and switching between exactly the two Pro prices. The template reads the portal and never changes it; `pnpm setup:stripe` and the `/integrations` Stripe check list what is missing. Then open **Settings > Payment methods** (the Dashboard's payment methods page: "Only payment methods that you enabled can be shown to your customers", [Stripe: dynamic payment methods](https://docs.stripe.com/payments/payment-methods/dynamic-payment-methods)) and turn off the bank debits and bank transfers (SEPA, ACH, BECS, Bacs and the like): Pro follows a subscription's status, and a bank debit reads `active` before the funds arrive ([limitations](limitations.md#known-limits-by-area)). Checkout already offers cards only; which methods the portal's payment-method update offers is NOT VERIFIED, so do not leave a delayed method on.
 5. **[YOU S6]** In the Dashboard open **Billing > Revenue recovery > Retries** and set what happens when all retries fail to cancel the subscription or mark it unpaid. Leaving it past due would keep Pro indefinitely (DEC-010).
 6. **[YOU S7]** Install the [Stripe CLI](https://docs.stripe.com/stripe-cli). `pnpm dev` then runs `stripe listen --forward-to http://127.0.0.1:8000/api/v1/webhooks/stripe` for you, and gives the API the signing secret for that run only (it is never written to `.env`), when `BILLING_MODE=sandbox`, the key is an `sk_test_` key and the CLI is installed. You need no `stripe login`. Without the CLI, sandbox billing needs a `STRIPE_WEBHOOK_SECRET` in `.env` (the next step): with it `pnpm dev` prints one line and goes on without a listener, and a test checkout stays Free until `pnpm billing:reconcile`; without it `pnpm dev` stops and lists `STRIPE_WEBHOOK_SECRET is required and must start with whsec_`.
 7. Commands that load the full API configuration without `pnpm dev` (`pnpm billing:reconcile`, `cd apps/api && uv run python -m app.cli job <name>`) read `STRIPE_WEBHOOK_SECRET` from `.env`, and refuse to start without a `whsec_...` value once `BILLING_MODE` is `sandbox`. Set it once: run `stripe login`, then `stripe listen --print-secret`, and put the `whsec_...` it prints in `.env`.
@@ -307,12 +309,15 @@ ends with no `FAIL` and no `BLOCKED` and shows `PASS` for each part you configur
 
 Summary; every step, setting and check is in [deployment.md](deployment.md). The shipped topology is one Vercel project with Vercel Services (web and API together), which has **not** been verified on the platform: the first preview is where that is checked.
 
+The first deployment needs `APP_BASE_URL`, and the Clerk and Stripe webhook endpoints need the URL of a deployment, which does not exist until the first one. So there are two passes: the first deploys with billing mocked and creates no endpoint, the second adds the endpoints at the real URL ([why, and the details](deployment.md#the-first-preview-in-order)).
+
 1. Put the repository on a Git host and push it (A1).
-2. Create the Vercel project and its settings: root directory, Framework Preset **Services**, function region, plan (D1 to D3, D6).
+2. Create the Vercel project and its settings: root directory, Framework Preset **Services**, function region, Deployment Protection, plan (D1 to D3, D5, D6).
 3. Create the preview database and run the **Database migrate** workflow for `preview`, then `pnpm db:api-login` (D8, A3; [Hosted database and migrations](deployment.md#hosted-database-and-migrations)).
-4. Add the Preview variables, including `APP_BASE_URL` and `DATABASE_URL` with the `app_login` role (D4; [the map](deployment.md#variables-which-service-reads-what)). Add the Clerk and Stripe webhook endpoints (D12), and your user ID in `DIAGNOSTICS_OPERATOR_IDS` (D16).
-5. Authorize the first preview deployment (A2).
-6. Run the checks in [Verify the first preview](deployment.md#verify-the-first-preview). The first takes two minutes: `curl -sI https://<preview-host>/dashboard` signed out. A `307` (to `/sign-in`, or to Clerk's handshake URL on a development instance) means the Next.js proxy ran inside the service. A `200` means only the page gate in the browser protects pages; the API authorizes every operation either way. Whether the proxy runs under Services is **NOT VERIFIED** until you do this.
+4. Work out the branch URL, `https://<project-name>-git-<branch-name>-<scope-slug>.vercel.app` ([how, and its limits](deployment.md#the-first-preview-in-order)), and add the Preview variables of the first pass (D4, D16; [the map](deployment.md#variables-which-service-reads-what)): `APP_BASE_URL` set to that URL, `DATABASE_URL` with the `app_login` role, the Clerk development keys, `BILLING_MODE=mock` with `LLM_MODE`, `ANALYTICS_MODE` and `ERROR_REPORTING_MODE` set to `disabled`, and your Clerk user ID in `DIAGNOSTICS_OPERATOR_IDS`.
+5. Authorize the first preview deployment (A2). Read the deployment's URLs on the project's Overview or Deployments tab: if its branch URL differs from `APP_BASE_URL`, correct `APP_BASE_URL` and redeploy.
+6. Run checks 1 to 4, 7 and 8 of [Verify the first preview](deployment.md#verify-the-first-preview). The first takes two minutes: `curl -sI https://<preview-host>/dashboard` signed out (add `-H "x-vercel-protection-bypass: <secret>"` if the preview is protected). A `307` (to `/sign-in`, or to Clerk's handshake URL on a development instance) means the Next.js proxy ran inside the service. A `200` means only the page gate in the browser protects pages; the API authorizes every operation either way. Whether the proxy runs under Services is **NOT VERIFIED** until you do this. Then sign in: the dashboard must show "No projects yet", which also shows that a protected preview lets the app's own API calls through.
+7. Second pass: create the Clerk and Stripe webhook endpoints at the real URL (D12). Add `BILLING_MODE=sandbox`, the Stripe variables, the two signing secrets, and the PostHog and Sentry variables you use. Redeploy, and run checks 4 to 6 again.
 
 You are done with Part 3 when every check under [Verify the first preview](deployment.md#verify-the-first-preview) passes and you have recorded the results as `sandbox` evidence. Production is a separate sequence ([deployment.md](deployment.md#production)).
 
@@ -329,6 +334,7 @@ You are done with Part 3 when every check under [Verify the first preview](deplo
 | `/api/v1/*` returns 500 in the browser | The API is not running or stopped at start. Look for `Invalid configuration` in the `pnpm dev` output; run `pnpm check:setup`; fix `.env`; restart `pnpm dev` (the API does not reload `.env`) |
 | Every sign-in asks you to create an organization, or there is no "Personal workspace" | Membership required: set **Membership optional** (S2) |
 | Signed in, but a loop between `/sign-in` and a page, or `401` from the API | Open the app at the origin in `APP_BASE_URL` (`localhost` is not `127.0.0.1`), or add the origin to `CLERK_AUTHORIZED_PARTIES` and restart or redeploy. The API logs `clerk_azp_refused` with the origin |
+| On a protected preview, signing in works but every panel says "Something went wrong" | Vercel answered the app's `/api/v1` calls with `401`: the cookie that proves your Vercel session did not travel with them. The client sends same-origin cookies, which should carry it (NOT VERIFIED on a deployment). To test in a browser meanwhile, open the preview once with `?x-vercel-protection-bypass=<the tools secret>&x-vercel-set-bypass-cookie=true`, or change the protection ([Deployment Protection](deployment.md#preview-details)) |
 | Organization pages return `404` | You are not a member, or `CLERK_SECRET_KEY` belongs to another Clerk instance than the publishable key. A `503` "Organization directory is unavailable" means Clerk is unreachable or rejected the key |
 | Upgrade succeeded but the plan is still Free | Webhooks are not reaching the API: install the Stripe CLI (S7), or fix the deployed endpoint (payload format **Snapshot**). The billing page re-reads once; `pnpm billing:reconcile` repairs the rest |
 | "Integrations page: diagnostics are not available" | Add your Clerk user ID to `DIAGNOSTICS_OPERATOR_IDS`, or use `APP_ENV=local`. In production also set `DIAGNOSTICS_ENABLED=true` |
