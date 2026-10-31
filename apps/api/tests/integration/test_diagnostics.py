@@ -401,6 +401,20 @@ def test_billing_check_reads_subscriptions_and_says_so(sandbox: Callable[..., Ha
     assert "check_subscriptions_readable" in h.billing.calls
 
 
+def test_billing_check_says_it_does_not_test_write_access_to_subscriptions(sandbox: Callable[..., Harness]) -> None:
+    """A key that reads subscriptions passes, and ending a deleted user's subscription needs more: a PASS that said
+    nothing would let the first deletion be where a missing permission is found (BILL-16)."""
+    h = sandbox()
+    body = check(h, "billing")
+    assert body["outcome"] == "passed", body
+    assert (
+        "Write access to Subscriptions, which BILLING_ON_USER_DELETED needs to end a deleted user's subscription, "
+        "is not checked." in body["summary"]
+    )
+    written = [call for call in h.billing.calls if call.startswith(("cancel_", "expire_"))]
+    assert written == [], "the check wrote to Stripe"
+
+
 def test_billing_check_fails_when_the_key_cannot_read_subscriptions(sandbox: Callable[..., Harness]) -> None:
     """A restricted key can retrieve prices and still fail every synchronization (503): found here, not by a user."""
     h = sandbox()
