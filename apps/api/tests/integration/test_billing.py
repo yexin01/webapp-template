@@ -18,10 +18,18 @@ from typing import Any
 
 import pytest
 
-from app.kernel.errors import DependencyUnavailableError, InvalidRequestError
+from app.kernel.errors import DependencyUnavailableError, EntitlementRequiredError, InvalidRequestError
+from app.kernel.tenancy import ContextKind, TenantContext
 from app.modules.billing.adapters.fakes import InMemoryBillingProvider
 from app.modules.billing.adapters.stripe import to_snapshot
-from app.modules.billing.domain import Plan, PlanKey, SubscriptionSnapshot, SubscriptionStatus, decide
+from app.modules.billing.domain import (
+    PRO_INSIGHT,
+    Plan,
+    PlanKey,
+    SubscriptionSnapshot,
+    SubscriptionStatus,
+    decide,
+)
 from tests.conftest import PRICE_MONTHLY, PRICE_YEARLY, TEST_STRIPE_WEBHOOK_SECRET, Harness, superuser_query
 from tests.lock_waits import wait_for_lock_wait
 
@@ -833,6 +841,16 @@ def test_webhook_sync_grants_pro_and_status_reflects_it(harness: Harness) -> Non
     assert status["plan_key"] == "pro_monthly"
     assert status["available_plans"] == ["pro_monthly", "pro_yearly"]
     assert harness.client.get("/api/v1/pro/insight", headers=headers).status_code == 200
+
+
+def test_a_feature_the_plan_does_not_list_is_refused_even_to_a_pro_user(harness: Harness) -> None:
+    """Gating asks for a feature, not for the plan: a name no plan lists fails closed (a typo is never a free pass)."""
+    make_pro(harness, "user_a")
+    ctx = TenantContext(user_id_of(harness, harness.login("user_a")), "user_a", ContextKind.PERSONAL)
+    service = harness.container.billing.service
+    service.require_feature(ctx, PRO_INSIGHT)
+    with pytest.raises(EntitlementRequiredError):
+        service.require_feature(ctx, "no_such_feature")
 
 
 @pytest.mark.parametrize(

@@ -79,6 +79,7 @@ class EntitlementDecision:
     plan: Plan
     reason: str
     subscription: SubscriptionSnapshot | None = None
+    features: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +91,10 @@ class BillingSummary:
     cancels_at: datetime | None
     checkout_block: CheckoutBlock | None = None
 
+
+# What the Pro plan unlocks. A feature that no plan lists is refused to everyone, so a misspelled name fails closed.
+PRO_INSIGHT = "pro_insight"
+PRO_FEATURES = frozenset({PRO_INSIGHT})
 
 # Subscriptions that are over: they never block a new checkout and are never read again.
 FINAL_STATUSES = frozenset({SubscriptionStatus.CANCELED, SubscriptionStatus.INCOMPLETE_EXPIRED})
@@ -141,7 +146,7 @@ def decide(
     entitling = entitling_subscriptions(subscriptions, now)
     if entitling:
         sub = _latest(entitling)
-        return EntitlementDecision(Plan.PRO, f"subscription_{sub.status.value}", sub)
+        return EntitlementDecision(Plan.PRO, f"subscription_{sub.status.value}", sub, PRO_FEATURES)
 
     if any(s.status is SubscriptionStatus.TRIALING for s in subscriptions):
         # Trials are out of scope (DEC-010); never grant access implicitly.

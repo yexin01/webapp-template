@@ -42,7 +42,6 @@ from app.modules.billing.domain import (
     CheckoutBlock,
     EntitlementChanged,
     EntitlementDecision,
-    Plan,
     PlanKey,
     PriceCatalog,
     SubscriptionSnapshot,
@@ -192,9 +191,9 @@ class BillingService:
             subs = t.repo.list_subscriptions(ctx.user_id)
         return decide(subs, self._clock.now())
 
-    def require_pro(self, ctx: TenantContext) -> None:
+    def require_feature(self, ctx: TenantContext, feature: str) -> None:
         authorize(ctx, PRO_FEATURE_USE)
-        if self.entitlement(ctx).plan is not Plan.PRO:
+        if feature not in self.entitlement(ctx).features:
             raise EntitlementRequiredError()
 
     # -- Checkout and portal -------------------------------------------------
