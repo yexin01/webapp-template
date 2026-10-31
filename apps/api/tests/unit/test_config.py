@@ -306,6 +306,38 @@ def test_automated_tests_need_no_clerk_secret_key() -> None:
     assert make_settings(clerk_secret_key="hello").clerk_secret_key is not None
 
 
+def test_the_cron_secret_must_be_at_least_32_characters() -> None:
+    """The jobs route has no failed-attempt limit, so the secret's length is the control against guessing it."""
+    with pytest.raises(ConfigError) as excinfo:
+        make_settings(cron_secret="x" * 31)
+    assert "CRON_SECRET must be at least 32 characters" in str(excinfo.value)
+    assert "x" * 31 not in str(excinfo.value)
+    assert make_settings(cron_secret="x" * 32).cron_secret is not None
+
+
+def test_the_migrate_command_refuses_a_remote_database_unless_told(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ENV-05: a shell that holds a production connection string must not migrate it by accident; the flag is the only
+    difference between the refusal and the run."""
+    from app import cli
+    from app.kernel.infrastructure import migrations
+    from app.kernel.infrastructure.config import DatabaseSettings
+
+    url = "postgresql://owner:hunter2@db.example.com:5432/postgres"
+    applied: list[str] = []
+    monkeypatch.setitem(DatabaseSettings.model_config, "env_file", None)  # never the developer's .env
+    monkeypatch.setenv("MIGRATION_DATABASE_URL", url)
+    monkeypatch.setattr(migrations, "migrate", lambda target, *args, **kwargs: applied.append(target) or [])
+    assert cli.main(["migrate"]) == 1
+    output = capsys.readouterr()
+    assert "not local" in output.err
+    assert "hunter2" not in output.out + output.err
+    assert applied == []
+    assert cli.main(["migrate", "--allow-remote"]) == 0
+    assert applied == [url]
+
+
 @pytest.mark.parametrize(
     "dsn", ["not-a-dsn", "https://o1.ingest.sentry.io/2", "ftp://key@host/1", "https://key@host/abc"]
 )
