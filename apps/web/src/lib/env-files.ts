@@ -14,9 +14,12 @@ const MODE_FILES = [".env.development", ".env.production", ".env.test"].flatMap(
  *
  * Only the root .env is read, like the API (config.py ENV_FILE) and
  * scripts/check-bundle-secrets.mjs, so both apps and the bundle scan see one
- * configuration. The web server loads only the variables it reads, so API
- * secrets (STRIPE_SECRET_KEY, DATABASE_URL, LLM_API_KEY, CRON_SECRET, ...)
- * never enter its process. Server-only: next.config.ts is the one caller.
+ * configuration. The loader copies only the variables the web app reads, so
+ * this file gives a local web process none of the API's secrets
+ * (STRIPE_SECRET_KEY, DATABASE_URL, LLM_API_KEY, CRON_SECRET, ...). On Vercel
+ * the platform sets the process environment, and one project gives every
+ * service every variable (docs/deployment.md). Server-only: next.config.ts is
+ * the one caller.
  *
  * @returns the names of the variables it set
  */
