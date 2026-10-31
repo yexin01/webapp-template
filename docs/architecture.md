@@ -329,10 +329,11 @@ How a configuration is validated (ENV-09):
    - a web feature with a component test;
    - typed client methods;
    - the wiring in `app/bootstrap.py`;
+   - the module's requests in the contract sweep (`apps/api/tests/integration/test_contract_conformance.py`, above its `new:module:sweep` marker), which fails for an operation of the OpenAPI document that it never saw succeed;
    - the `can` flags for create and delete;
    - the per-user write limit (`kernel.limit_writes(auth)` in the router's dependencies), so a user's writes count against `WRITES_PER_USER_PER_MINUTE`.
 2. Run `pnpm db:migrate`, `pnpm contracts`, and `pnpm test`.
-3. Model your real fields: edit `domain.py`, the migration (before it is applied anywhere shared), `adapters.py`, and `routes.py`.
+3. Model your real fields: edit `domain.py`, the migration (before it is applied anywhere shared), `adapters.py`, `routes.py`, and the payloads of the module's requests in the contract sweep.
    - Keep every new database object in schema `app`. `pnpm db:reset` drops schema `app` and the migration ledger only, so an extension or a function created elsewhere survives a reset; create such objects with `IF NOT EXISTS` or `OR REPLACE`.
    - To allow editing, uncomment the column-level `UPDATE` grant in the generated migration for the editable columns only (never `id`, `org_id`, `owner_user_id`, `created_by`, or `created_at`), declare an update permission in `domain.py`, treat a row count of 0 as a 404 as delete does, and re-check the role inside the transaction when editing is limited by role (TEN-07).
 4. Declare permissions in `domain.py`. They are denied unless a context or role is listed. Each route declares its permission with `dependencies=[requires(PERMISSION)]` and its errors with `responses=errors(...)` (a write also declares 429), and the use case calls `authorize()`.
@@ -342,7 +343,7 @@ How a configuration is validated (ENV-09):
 6. Mount the panel in a page (`<XPanel />` takes no props), and add an e2e check for the main flow. A page requires sign-in by default; make one public only by listing it in `PUBLIC_PAGES` (`apps/web/src/lib/page-access.ts`) and in `EXPECTED_PUBLIC_ROUTES` (`apps/web/src/lib/app-routes.testing.ts`).
 7. Test it. The generated module test covers tenancy, authorization, audit, events, RLS, list query plans, and the `can` table, with the shared helpers in `apps/api/tests` (`Harness` and `make_harness` in `conftest.py`, `membership_races.py`, `query_plans.py`, and `RecordingAnalytics`). Every response of a test session is checked against the OpenAPI document, so declare a route's errors on its router. The API tests need a database: run `pnpm db:up` first, because `pnpm test` fails without one. There is no separate test kit for adopters yet (a reviewed finding, deferred).
 
-`pnpm test:new-module` (also run in CI) proves that a freshly generated module passes every gate.
+`pnpm test:new-module` (also run in CI) generates modules in a copy of the repository and runs the whole API test suite, the API lint, types and import checks, and the web lint, types, formatting and tests on it, so a generated module cannot leave `pnpm test` or `pnpm lint` red. It takes about as long as the API tests.
 
 ### Adding an error
 

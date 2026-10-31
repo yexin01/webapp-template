@@ -3,12 +3,17 @@
  * Generator check (ADR-0003): copies the repository's tracked files
  * (scripts/lib/tracked-copy.mjs) to a temporary git checkout, runs
  * `new:module` there, and proves the generated modules pass the same gates as
- * hand-written code:
+ * hand-written code, so that `pnpm test` and `pnpm lint` stay green after
+ * `pnpm new:module`:
  * - API: lint, format, strict types, import contracts, migration lint (squawk),
- *   architecture tests, and the generated integration tests (including the
- *   DB-07 row-level security tests) against local PostgreSQL;
- * - contracts: regeneration;
- * - web: types, lint, and the generated component tests.
+ *   and the whole test suite against local PostgreSQL, as `pnpm test:api` runs
+ *   it (not a list of files: a test that enumerates routes or operations, such
+ *   as the contract sweep and the write-limit manifest, breaks on a module
+ *   that is missing from it), including each module's generated tests and the
+ *   DB-07 row-level security tests;
+ * - contracts: regeneration, before the tests, which compare every response
+ *   with the document;
+ * - web: types, lint, formatting, and the whole test suite.
  * Three modules are generated: a typical one, a one-letter name (the shortest
  * allowed), and the longest name and entity allowed.
  *
@@ -76,8 +81,14 @@ const gitEnv = (dir) => ({
   XDG_CONFIG_HOME: path.join(dir, ".git", "no-global-config"),
 });
 
-function run(dir, cwd, cmd, args, label) {
-  const result = spawnSync(cmd, args, { cwd: path.join(dir, cwd), encoding: "utf8", env: env(dir) });
+function run(dir, cwd, cmd, args, label, extraEnv = {}) {
+  // A failing suite prints far more than spawnSync's default 1 MiB buffer.
+  const result = spawnSync(cmd, args, {
+    cwd: path.join(dir, cwd),
+    encoding: "utf8",
+    env: { ...env(dir), ...extraEnv },
+    maxBuffer: 256 * 1024 * 1024,
+  });
   if (result.status !== 0) {
     const output = `${result.stdout ?? ""}${result.stderr ?? ""}${result.error?.message ?? ""}`;
     failures.push(`${label} failed:\n${output.slice(-3000)}`);
@@ -96,13 +107,16 @@ try {
   const generator = path.join(dir, "scripts/new-module.mjs");
   const gen = (args) => spawnSync(process.execPath, [generator, ...args], { cwd: dir, encoding: "utf8", env: gitEnv(dir) });
   const inCopy = (rel) => readFileSync(path.join(dir, rel), "utf8");
+  // The files the generator edits at a marker.
+  const sweepFile = "apps/api/tests/integration/test_contract_conformance.py";
+  const marked = ["apps/api/app/bootstrap.py", "apps/web/src/lib/api/client.ts", sweepFile];
   // Everything the generator writes or edits.
   const snapshot = () =>
     JSON.stringify([
       ...["apps/api/app/modules", "apps/api/tests/integration", "apps/web/src/features", "supabase/migrations"].map(
         (rel) => readdirSync(path.join(dir, rel), { recursive: true }).sort(),
       ),
-      ...["apps/api/app/bootstrap.py", "apps/web/src/lib/api/client.ts"].map(inCopy),
+      ...marked.map(inCopy),
     ]);
 
   // -- What the copy already has --------------------------------------------------
@@ -205,6 +219,25 @@ try {
     );
   }
   check(snapshot() === untouched, "refused input wrote files");
+
+  // A marker or a file that was removed is refused up front, whichever file holds it, and nothing is written.
+  const swept = inCopy(sweepFile);
+  const markerLine = "    # new:module:sweep\n";
+  check(swept.includes(markerLine), `${sweepFile} has no new:module:sweep marker`);
+  writeFileSync(path.join(dir, sweepFile), swept.replace(markerLine, ""));
+  const unmarked = gen([fresh("sweep_markers")]);
+  rmSync(path.join(dir, sweepFile));
+  const missing = gen([fresh("sweep_files")]);
+  writeFileSync(path.join(dir, sweepFile), swept);
+  check(
+    unmarked.status === 2 && unmarked.stderr.includes(`Marker "# new:module:sweep" not found in ${sweepFile}`),
+    `a removed marker was not refused (exit ${unmarked.status}):\n${unmarked.stderr}`,
+  );
+  check(
+    missing.status === 2 && missing.stderr.includes(`${sweepFile} does not exist`),
+    `a removed marker file was not refused (exit ${missing.status}):\n${missing.stderr}`,
+  );
+  check(snapshot() === untouched, "a refused marker wrote files");
 
   // Names that broad ignore rules used to hide are not hidden by the template's
   // anchored rules. Any other refusal (an existing test file, feature, table, or
@@ -321,34 +354,38 @@ try {
   }
   check(/is an existing module/.test(gen([MAIN]).stderr), "generating the same module twice was accepted");
 
-  const uv = (args, label) => run(dir, "apps/api", "uv", ["run", "--frozen", ...args], label);
+  const uv = (args, label, extraEnv) => run(dir, "apps/api", "uv", ["run", "--frozen", ...args], label, extraEnv);
   uv(["ruff", "check", "."], "ruff check");
   uv(["ruff", "format", "--check", "."], "ruff format");
   uv(["mypy"], "mypy");
   uv(["lint-imports"], "import contracts");
   uv(["squawk", "--config", "../../.squawk.toml", "../../supabase/migrations/*.sql"], "migration lint");
-  const apiTests = modules.map(([name]) => `tests/integration/test_${name}.py`);
-  const pytest = uv(["pytest", "-q", "-p", "no:cacheprovider", "-rs", "tests/architecture", ...apiTests], "API tests");
-  // Database tests skip when PostgreSQL is down; a skip must not count as a pass.
+
+  // The document first, as the next steps tell an adopter: the tests compare every response with it, and the
+  // contract sweep looks up each generated operation in it.
+  uv(["python", "-m", "app.cli", "openapi", "--output", "../../packages/contracts/openapi.json"], "OpenAPI export");
+  run(dir, "apps/web", "node_modules/.bin/openapi-typescript", ["../../packages/contracts/openapi.json", "-o", "src/lib/api/schema.d.ts"], "web contract types");
+
+  // `pnpm test:api`: --require-db makes a database that is down a failure, not a skip, and the Stripe sandbox
+  // suite (which would call Stripe) stays off whatever the shell exports.
+  const pytest = uv(["pytest", "-q", "-p", "no:cacheprovider", "-rfEs", "--require-db"], "API tests", { STRIPE_SANDBOX_TESTS: "" });
   const perModule = (inCopy("scripts/templates/module/test_module.py.tmpl").match(/^def test_/gm) ?? []).length;
   const passed = Number(/(\d+) passed/.exec(pytest.stdout)?.[1] ?? 0);
   check(
-    passed >= modules.length * perModule && !/\b\d+ (skipped|failed|errors?)\b/.test(pytest.stdout),
+    passed >= modules.length * perModule && !/\b\d+ (failed|errors?)\b/.test(pytest.stdout),
     `API tests did not all run:\n${pytest.stdout.slice(-800)}`,
   );
 
-  uv(["python", "-m", "app.cli", "openapi", "--output", "../../packages/contracts/openapi.json"], "OpenAPI export");
-  run(dir, "apps/web", "node_modules/.bin/openapi-typescript", ["../../packages/contracts/openapi.json", "-o", "src/lib/api/schema.d.ts"], "web contract types");
   run(dir, "apps/web", "node_modules/.bin/tsc", ["--noEmit"], "web typecheck");
-  const features = modules.map(([name]) => `src/features/${name.replaceAll("_", "-")}`);
-  run(dir, "apps/web", "node_modules/.bin/eslint", [...features, "src/lib/api/client.ts", "--max-warnings=0"], "web lint");
+  run(dir, "apps/web", "node_modules/.bin/eslint", [".", "--max-warnings=0"], "web lint");
+  run(dir, "apps/web", "node_modules/.bin/prettier", ["--check", "."], "web format");
   // Caches off: they would be written into the working tree's node_modules through the symlink.
-  const vitest = run(dir, "apps/web", "node_modules/.bin/vitest", ["run", "--no-cache", "--no-fsModuleCache", ...features], "web component test");
+  const vitest = run(dir, "apps/web", "node_modules/.bin/vitest", ["run", "--no-cache", "--no-fsModuleCache"], "web tests");
   const webPerModule = (inCopy("scripts/templates/module/web/panel.test.tsx.tmpl").match(/^\s*(it|test)\(/gm) ?? []).length;
   const webPassed = Number(/Tests\s+(\d+) passed/.exec(vitest.stdout)?.[1] ?? 0);
   check(
     webPassed >= modules.length * Math.max(1, webPerModule) && !/\b\d+ failed\b/.test(vitest.stdout),
-    `web component tests did not all run:\n${vitest.stdout.slice(-800)}`,
+    `web tests did not all run:\n${vitest.stdout.slice(-800)}`,
   );
 } finally {
   rmSync(dir, { recursive: true, force: true });
@@ -359,5 +396,5 @@ if (failures.length) {
   process.exit(1);
 }
 console.log(
-  "new:module check passed: bad, colliding, and ignored names refused; entities derived only from clear plurals; dry run and failed writes leave nothing behind; typical, one-letter, and longest modules pass lint, types, contracts, architecture, API (including RLS) and web tests.",
+  "new:module check passed: bad, colliding, and ignored names and removed markers refused; entities derived only from clear plurals; dry run and failed writes leave nothing behind; typical, one-letter, and longest modules pass lint, types, contracts, the whole API suite (including RLS and the contract sweep) and the web lint, types, format and test suite.",
 );

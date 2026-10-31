@@ -1,0 +1,6 @@
+    created = sweep("POST", f"{api}/__path__", 201, json={"name": "one"}, headers=a)
+    sweep("GET", f"{api}/__path__", 200, headers=a)
+    sweep("DELETE", f"{api}/__path__/{created.json()['id']}", 204, headers=a)
+    created = sweep("POST", f"{api}/orgs/{ORG}/__path__", 201, json={"name": "one"}, headers=a)
+    sweep("GET", f"{api}/orgs/{ORG}/__path__", 200, headers=a)
+    sweep("DELETE", f"{api}/orgs/{ORG}/__path__/{created.json()['id']}", 204, headers=a)

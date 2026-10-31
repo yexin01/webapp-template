@@ -34,7 +34,8 @@ CONTRACT = Contract()
 ORG = "org_acme"
 OTHER_ORG = "org_other"
 UNKNOWN = "00000000-0000-4000-8000-000000000000"
-OPERATORS = {"diagnostics_operator_ids": "user_a"}
+# One user writes through every module: each module `pnpm new:module` generated adds four counted writes.
+SETTINGS = {"diagnostics_operator_ids": "user_a", "writes_per_user_per_minute": 600}
 
 
 class Sweep:
@@ -64,7 +65,7 @@ class Sweep:
 
 @pytest.fixture
 def sweep(make_harness: Any) -> Sweep:
-    h: Harness = make_harness(OPERATORS, identity_webhook_verifier=ClerkWebhookVerifier(SVIX_SECRET))
+    h: Harness = make_harness(SETTINGS, identity_webhook_verifier=ClerkWebhookVerifier(SVIX_SECRET))
     h.directory.set("user_a", [ExternalMembership(ORG, Role.ADMIN)])
     h.directory.set("user_b", [ExternalMembership(OTHER_ORG, Role.MEMBER)])
     return Sweep(h)
@@ -110,6 +111,9 @@ def test_every_operation_answers_as_the_document_says_when_signed_in(sweep: Swee
     sweep("GET", f"{api}/diagnostics/access", 200, headers=a)
     sweep("GET", f"{api}/diagnostics/integrations", 200, headers=a)
     sweep("POST", f"{api}/diagnostics/integrations/database/check", 200, headers=a)
+
+    # `pnpm new:module` adds the requests of each module it generates above the marker below.
+    # new:module:sweep
 
     event = event_payload(customer)
     sweep(
