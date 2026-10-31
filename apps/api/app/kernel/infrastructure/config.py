@@ -172,6 +172,9 @@ class CoreSettings(BaseSettings):
     app_base_url: str = "http://localhost:3000"
     log_level: str = "INFO"
     max_request_body_bytes: int = Field(default=1_000_000, ge=1_024, le=4_000_000)
+    # POST, PUT, PATCH and DELETE requests one signed-in user may send per minute to routes without a limit of
+    # their own (SEC-09).
+    writes_per_user_per_minute: int = Field(default=60, ge=1, le=600)
 
     # Database (DEC-008). Two pools: request work (app_api) and system work (app_worker).
     database_url: SecretStr | None = None

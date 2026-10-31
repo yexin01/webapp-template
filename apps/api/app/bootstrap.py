@@ -147,6 +147,7 @@ def build_container(settings: Settings, **adapters: Any) -> Container:
         outbox=outbox,
         on_record=note_recorded_event,
         request_transaction=request_transaction(database),
+        writes_per_user_per_minute=settings.writes_per_user_per_minute,
     )
     # Daily schedules work on every Vercel plan; tighten drain-outbox where the plan allows.
     jobs.register(Job("drain-outbox", "Dispatch outbox events left after requests.", "15 2 * * *", _drain(outbox)))

@@ -24,6 +24,9 @@ Cursor = Annotated[str | None, Query(max_length=200)]
 ERRORS = errors(401, 403, 404, 503)
 # A cursor or a name the domain refuses is a 400 (the request body and query are validated first, as 422).
 REFUSABLE_ERRORS = errors(400, 401, 403, 404, 503)
+# A write is also refused when its user sent too many (SEC-09).
+WRITE_ERRORS = errors(401, 403, 404, 429, 503)
+REFUSABLE_WRITE_ERRORS = errors(400, 401, 403, 404, 429, 503)
 
 
 class Project(BaseModel):
@@ -58,11 +61,12 @@ class ProjectCreate(StrictInput):
     name: str = Field(min_length=1, max_length=MAX_NAME_LENGTH)
 
 
-def build_router(projects: ProjectService, auth: AuthDeps, request_transaction: Any) -> APIRouter:
-    # Database-only: each request is one request-scoped transaction.
+def build_router(projects: ProjectService, auth: AuthDeps, request_transaction: Any, write_limit: Any) -> APIRouter:
+    # Database-only: each request is one request-scoped transaction. The token is verified, and a write counted,
+    # before the request takes an admission place.
     router = APIRouter(
         tags=["projects"],
-        dependencies=[Depends(auth.authenticate), Depends(request_transaction, scope="function")],
+        dependencies=[Depends(auth.authenticate), write_limit, Depends(request_transaction, scope="function")],
     )
     Personal = Annotated[TenantContext, Depends(auth.personal)]
     Organization = Annotated[TenantContext, Depends(auth.organization)]
@@ -87,13 +91,15 @@ def build_router(projects: ProjectService, auth: AuthDeps, request_transaction: 
         "/projects",
         response_model=Project,
         status_code=201,
-        responses=REFUSABLE_ERRORS,
+        responses=REFUSABLE_WRITE_ERRORS,
         dependencies=[requires(PROJECT_CREATE)],
     )
     def create_personal(body: ProjectCreate, ctx: Personal) -> Project:
         return Project.from_record(projects.create(ctx, body.name))
 
-    @router.delete("/projects/{project_id}", status_code=204, responses=ERRORS, dependencies=[requires(PROJECT_DELETE)])
+    @router.delete(
+        "/projects/{project_id}", status_code=204, responses=WRITE_ERRORS, dependencies=[requires(PROJECT_DELETE)]
+    )
     def delete_personal(project_id: UUID, ctx: Personal) -> Response:
         projects.delete(ctx, project_id, request_id_var.get())
         return Response(status_code=204)
@@ -111,7 +117,7 @@ def build_router(projects: ProjectService, auth: AuthDeps, request_transaction: 
         "/orgs/{org_id}/projects",
         response_model=Project,
         status_code=201,
-        responses=REFUSABLE_ERRORS,
+        responses=REFUSABLE_WRITE_ERRORS,
         dependencies=[requires(PROJECT_CREATE)],
     )
     def create_org(body: ProjectCreate, ctx: Organization) -> Project:
@@ -120,7 +126,7 @@ def build_router(projects: ProjectService, auth: AuthDeps, request_transaction: 
     @router.delete(
         "/orgs/{org_id}/projects/{project_id}",
         status_code=204,
-        responses=ERRORS,
+        responses=WRITE_ERRORS,
         dependencies=[requires(PROJECT_DELETE)],
     )
     def delete_org(project_id: UUID, ctx: Organization) -> Response:

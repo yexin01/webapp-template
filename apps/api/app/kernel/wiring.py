@@ -18,6 +18,7 @@ from app.kernel.application.rate_limit import RateLimiter
 from app.kernel.diagnostics import IntegrationProbe
 from app.kernel.events import EventHandlers
 from app.kernel.http.auth import AuthDeps
+from app.kernel.http.write_limit import limit_writes
 from app.kernel.infrastructure.db import Database, PgTransactions
 from app.kernel.infrastructure.observability import AnalyticsEvents
 from app.kernel.jobs import JobRegistry
@@ -44,6 +45,13 @@ class Kernel:
     on_record: Callable[[Any], None]
     # FastAPI dependency for routers that opt in to a request-scoped transaction.
     request_transaction: Any
+    # POST, PUT, PATCH and DELETE requests per user per minute (WRITES_PER_USER_PER_MINUTE).
+    writes_per_user_per_minute: int
+
+    def limit_writes(self, auth: AuthDeps) -> Any:
+        """The router dependency that counts a user's writes (SEC-09): list it after ``auth.authenticate``
+        and before ``request_transaction``. A route with a limit of its own does not use it."""
+        return limit_writes(auth.authenticate, self.rate_limiter, self.writes_per_user_per_minute)
 
     def transactions(self, factory: Callable[[psycopg.Connection], R]) -> PgTransactions[R]:
         """Transactions whose blocks build the given module repository."""
