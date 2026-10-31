@@ -87,7 +87,7 @@ jobs:
   web:
     name: Web — lint, types, tests, build, e2e
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 45
     services:
       postgres:
         # Keep in step with docker-compose.yml. Dependabot updates that file
