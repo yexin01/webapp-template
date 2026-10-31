@@ -22,7 +22,7 @@ Read it before making changes. Do not restate its requirements in other files; l
 - Vercel deployment proof (DEC-001, local only): [`proofs/dec-001/`](proofs/dec-001/README.md)
 - Quality gates and evidence statuses: §19, §20
 - Requirements traceability matrix: §21
-- Evidence records: [`dev-docs/evidence/`](dev-docs/evidence/2026-10-30-cycle-1-fix-round.md) (latest: the cycle 1 fix round)
+- Evidence records: [`dev-docs/evidence/`](dev-docs/evidence/2026-10-31-round-1b-cycle-2-fix-round-2.md) (latest: round 1b, the cycle 2 review and fix round 2; before it, [the cycle 1 fix round](dev-docs/evidence/2026-10-30-cycle-1-fix-round.md))
 
 ## Verify before claiming anything works
 

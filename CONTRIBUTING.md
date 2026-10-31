@@ -14,7 +14,7 @@ Follow the [README quick start](README.md#quick-start). The full automated test 
 pnpm bootstrap
 pnpm hooks:install   # optional, once per clone: scans staged changes for secrets before each commit
 pnpm db:up           # local PostgreSQL; the API tests fail without it
-pnpm verify          # everything CI requires; `pnpm verify:quick` while iterating
+pnpm verify          # the checks of CI's api, web and secrets jobs; `pnpm verify:quick` while iterating
 ```
 
 `pnpm verify` ends in a table of what ran. A step that could not run (gitleaks not installed, `--offline`, `--no-db`) shows as SKIPPED with the reason. `pnpm verify:sandbox` runs the provider checks and needs your own sandbox keys.
@@ -39,7 +39,7 @@ pnpm verify          # everything CI requires; `pnpm verify:quick` while iterati
 
 ## Checks
 
-Your pull request must pass the CI jobs. `pnpm verify` runs the first three on your machine; the other two have their own commands.
+Your pull request must pass the CI jobs. `pnpm verify` runs the first three on your machine; the other two have their own commands. The CodeQL workflow (`.github/workflows/codeql.yml`) runs on GitHub only.
 
 - **API:** lint and format, import boundaries, migration lint, strict type checking, the tests with a database, and the dependency audit.
 - **Web:** lint and format, strict type checking, unit tests, contract drift, script tests, template initialization, placeholders, documentation links, the module generator check, the account-free build with its bundle secret scan, the dependency audit, the license check, and the account-free browser tests.
