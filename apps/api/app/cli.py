@@ -22,13 +22,19 @@ import sys
 from pathlib import Path
 from uuid import UUID
 
+import psycopg
+from psycopg.conninfo import conninfo_to_dict
+
+from app.kernel.errors import DependencyUnavailableError
 from app.kernel.infrastructure import migrations
 from app.kernel.infrastructure.config import (
     ConfigError,
+    load_database_url,
     load_migration_database_url,
     require_development_environment,
     secret,
 )
+from app.kernel.infrastructure.db import DATABASE_UNAVAILABLE
 from app.settings import load_settings
 
 
@@ -196,6 +202,22 @@ def cmd_openapi(args: argparse.Namespace) -> int:
     return 0
 
 
+def _database_down(command: str) -> str:
+    """One line for a database that cannot be reached: where, and what to do. Never the credentials."""
+    runtime = command in ("reconcile", "job")  # these connect as the API does, the others as the schema owner
+    try:
+        params = conninfo_to_dict(load_database_url() if runtime else load_migration_database_url())
+        port = params.get("port")
+        where = f" at {params.get('host') or 'localhost'}{f':{port}' if port else ''}"
+    except (ConfigError, psycopg.Error):
+        where = ""
+    variables = "DATABASE_URL" if runtime else "MIGRATION_DATABASE_URL or DATABASE_URL"
+    return (
+        f"Cannot connect to the database{where}. Start the local one with `pnpm db:up`; "
+        f"otherwise check {variables} in .env."
+    )
+
+
 def _currency(value: str) -> str:
     if not re.fullmatch(r"[A-Za-z]{3}", value):
         raise argparse.ArgumentTypeError("must be a three-letter ISO 4217 code such as usd")
@@ -277,6 +299,16 @@ def main(argv: list[str] | None = None) -> int:
         return int(args.func(args))
     except (ConfigError, migrations.UnsafeTargetError, migrations.MigrationError) as exc:
         print(str(exc), file=sys.stderr)
+        return 1
+    except psycopg.OperationalError as exc:
+        if exc.sqlstate is not None:  # the server answered (a lock timeout, a deadlock): not a missing connection
+            raise
+        print(_database_down(args.command), file=sys.stderr)
+        return 1
+    except DependencyUnavailableError as exc:
+        if exc.public_message != DATABASE_UNAVAILABLE:  # a provider outage keeps its traceback
+            raise
+        print(_database_down(args.command), file=sys.stderr)
         return 1
 
 
