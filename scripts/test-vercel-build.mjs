@@ -14,9 +14,10 @@
  *    empty global configuration, a local project file (framework "services"),
  *    telemetry off, and no token, organization, or project in the environment.
  * 3. Builds the web service with generated canary values for the server-only
- *    variables, then requires check-bundle-secrets to compare them against the
- *    browser bundle (under Services every project variable reaches the web
- *    build, so this is the environment the scan is meant for).
+ *    variables (a throwaway public key for CLERK_JWT_KEY included), then
+ *    requires check-bundle-secrets to compare them against the browser bundle
+ *    (under Services every project variable reaches the web build, so this is
+ *    the environment the scan is meant for).
  * 4. Runs scripts/check_vercel_build.py on the output: both services, routing
  *    order, crons against the job registry, the function region, a Python 3.12
  *    x86-64 Linux bundle without tests, and the size limit.
@@ -29,7 +30,7 @@
  * (CI uses the production-only environment). Default: `uv run python` in apps/api.
  */
 import { spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -83,14 +84,16 @@ function canaries() {
     API_DB_PASSWORD: hex(12),
     LLM_API_KEY: hex(16),
     CRON_SECRET: hex(20),
+    // A public key nobody holds the private half of. The web build inlines it into the proxy; the scan compares its lines.
+    CLERK_JWT_KEY: generateKeyPairSync("rsa", { modulusLength: 2048 }).publicKey.export({ type: "spki", format: "pem" }),
   };
 }
 
 function buildEnvironment() {
   const env = { ...process.env };
   // The CLI reads the first three from the environment whatever -Q says. A real SENTRY_AUTH_TOKEN would upload
-  // source maps, and CLERK_JWT_KEY must be a PEM public key: neither is set, so a developer's shell cannot reach out.
-  for (const name of ["VERCEL_TOKEN", "VERCEL_ORG_ID", "VERCEL_PROJECT_ID", "SENTRY_AUTH_TOKEN", "CLERK_JWT_KEY"]) {
+  // source maps: none is set, so a developer's shell cannot reach out.
+  for (const name of ["VERCEL_TOKEN", "VERCEL_ORG_ID", "VERCEL_PROJECT_ID", "SENTRY_AUTH_TOKEN"]) {
     delete env[name];
   }
   return {
