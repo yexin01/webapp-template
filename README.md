@@ -58,8 +58,9 @@ Tests never use your `.env`. Database tests create and drop their own database, 
 | `pnpm verify:sandbox` | The checks that need provider accounts, each when its keys are in `.env`; ends with an evidence record |
 | `pnpm test` | API tests (needs `pnpm db:up`) and web unit tests |
 | `pnpm test:e2e` | Playwright tests. Account-free pages, axe and keyboard checks run by default; `E2E_SANDBOX=1` adds the signed-in flows |
+| `pnpm test:coverage` | Coverage of the API (`pytest-cov`, with branches) and the web app (`@vitest/coverage-v8`), printed in the terminal; needs `pnpm db:up`. It reports only: no threshold fails it ([limitations](docs/limitations.md#what-the-template-deliberately-does-not-do)) |
 | `pnpm test:stripe-sandbox` | The Stripe lifecycle suite against your sandbox (needs keys; changes the sandbox) |
-| `pnpm lint` / `pnpm typecheck` | ESLint, Ruff, import contracts and migration lint / `tsc` and mypy (strict) |
+| `pnpm lint` / `pnpm typecheck` | ESLint, the Prettier check, Ruff (lint and format check), import contracts and migration lint / `tsc` and mypy (strict) |
 | `pnpm contracts:check` | Fail if the generated contracts are stale |
 | `pnpm check:bundle-secrets` | Fail if server-only values appear in the browser bundle (after `pnpm build`) |
 | `pnpm check:links` | Fail if a relative Markdown link does not resolve |

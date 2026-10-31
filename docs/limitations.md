@@ -14,7 +14,7 @@ What is verified, what is only assumed, what was deferred, and what the template
 | Performance | Recorded locally for relative comparison only. Targets are yours to set ([perf/run-plan-template.md](../perf/run-plan-template.md)) |
 | Backup and restore | The local restore drill only. Objectives and the hosted restore test are yours ([operations.md](operations.md#backup-and-restore)) |
 | Data retention, deletion, export | No deletion or export feature. The policy is yours ([data-inventory.md](data-inventory.md#adopter-decision-checklist)) |
-| Test coverage measurement | NOT VERIFIED: no coverage tool is installed (TEST-03) |
+| Test coverage | Reported by `pnpm test:coverage`, with no threshold (TEST-03 is PARTIAL: the threshold is yours). No coverage figure is recorded as evidence |
 
 ## Assumptions not verified
 
@@ -107,7 +107,7 @@ Ten findings from the architecture review were deferred, with the reason. What t
 
 - `scripts/npm-audit-bulk.mjs` audits the production tree installed on the machine it runs on, so native packages for other platforms are not checked (CI audits linux x64, which is what Vercel builds). `pnpm audit --dev` still uses the legacy endpoint.
 - Dependabot does not read the gitleaks version pins (in `ci.yml` and in the pre-commit hook), nor the Supabase image tag in `scripts/test-supabase-image.mjs`. Bump them by hand; a test keeps the two gitleaks versions equal.
-- The ESLint guards in `apps/web/eslint.guards.mjs` (including the ban on importing `posthog-js` outside `src/lib/analytics.ts`) are tested but not loaded by `eslint.config.mjs`: an owner-applied step (spec §23, step 4). Until it lands, `src/no-client-roles.test.ts`, `src/lib/page-access.test.ts` and `src/app/layout.test.tsx` carry the web fitness checks.
+- The ESLint guards in `apps/web/eslint.guards.mjs` (including the ban on importing `posthog-js` outside `src/lib/analytics.ts`) are tested but not loaded by `eslint.config.mjs`: an owner-applied step (spec §23, step 4). Until it lands, `src/no-client-roles.test.ts`, `src/lib/page-access.test.ts`, `src/app/layout.test.tsx` and `src/rendering-baseline.test.ts` carry the web fitness checks.
 - No `CODEOWNERS` file ships (SEC-12 relies on one for `supabase/migrations/` and `.github/workflows/`). Add yours.
 
 ## Follow-ups in the code
@@ -117,14 +117,13 @@ Found while writing these documents or listed in the package notes, and not done
 - Run `check-bundle-secrets.mjs --require-values` inside every Vercel build (chain it into the web `build` script), so the web service is checked with the real values. Today it runs in `pnpm test:vercel-build` with canary values.
 - A per-user limit on ordinary writes (creating and deleting projects, and every generated module), and a guard against concurrent or repeated runs of a job through `GET /api/v1/jobs/{name}`: a leaked `CRON_SECRET` can start `reconcile-billing` repeatedly, at up to `BILLING_RECONCILE_BATCH_SIZE` Stripe calls a run. Until then: the WAF rule (step D7) and rotating `CRON_SECRET`.
 - Wire `apps/web/eslint.guards.mjs` into `eslint.config.mjs` (a lint-config edit that an owner applies).
-- A `supabase/seed.sql` header that says the seed is "for performance tests": the performance server seeds its own data; the seed serves the restore drill and the hosted restore test.
 - A validator message for driver-only URL parameters that names the parameter instead of blaming percent-encoding.
 - `scripts/init-template.mjs` and the messages of `apps/api/app/doctor.py` and `scripts/lib/preflight.mjs` still say "see docs/integrations.md"; the setup guide is [setup.md](setup.md) (the `#clerk` anchor they use is kept).
 - A Clerk key-pair check in `IdentityProbe` (compare `GET /v1/jwks` with `<issuer>/.well-known/jwks.json`); a doctor check for stray env files; an optional pass-through proxy so `pnpm dev` runs without Clerk keys; refusing the placeholder pair when `APP_ENV=preview`.
 - A test that the docs list exactly `SYNC_EVENT_TYPES`, and a `stripe-events` command to feed `stripe listen --events`; a webhook-endpoint check and a "last verified webhook" line on `/integrations`.
 - A second, worker-only login role and pool; detection of `supabase_migrations.schema_migrations` in the runner; a no-transaction migration mode for `CREATE INDEX CONCURRENTLY`.
 - Naming unmatched transactions `unmatched` and dropping `request.url` for them (OBS-07).
-- An `ErrorCode` enum with exhaustive web typing; coverage tooling (TEST-03); the "migrate twice" check as a pytest test.
+- An `ErrorCode` enum with exhaustive web typing.
 - A web-side `CLERK_JWT_KEY` wired into the proxy (it needs a path through `next.config.ts`, because `proxy.ts` may not read `CLERK_*` variables).
 
 ## What the template deliberately does not do
@@ -140,3 +139,4 @@ These choices were adopted by delegation of the owner and are reversible; [ADR-0
 - **No organization plan.** Subscriptions belong to individuals (ADR-0002); a Team tier is a scope change.
 - **No account deletion or export, no recovery objectives, no performance targets, no analytics consent banner.** These are adopter decisions ([deployment.md](deployment.md#before-you-launch)).
 - **No application built on the LLM.** The integration is a connectivity check; `LLM_MODE=disabled` is a supported mode.
+- **No coverage threshold.** `pnpm test:coverage` prints the coverage of the API and the web app and fails on nothing. A number to hold is your decision (TEST-03): add `--cov-fail-under=<n>` to `test:coverage:api` in `package.json`, and `coverage.thresholds` to `apps/web/vitest.config.ts`. Keep the reports on the terminal: files written to `apps/web/coverage/` are picked up by ESLint and Prettier, whose ignore lists are `eslint.config.mjs` and `.prettierignore`.

@@ -9,6 +9,8 @@ Performance targets are an **adopter decision** (DEC-003, [ADR-0002](../dev-docs
 | Environment | Isolated **preview** deployment URL. Production is prohibited without a separate safety plan. |
 | Commit SHA | |
 | Database | Non-production project with synthetic data only |
+| Function region | The API service's region at that commit: `services.api.functions["index.py"].regions` in `vercel.json`. Also record the region the deployment reports ([deployment.md](../docs/deployment.md#verify-the-first-preview), step 8) |
+| Database region | The region of the database project, read from the pooled `DATABASE_URL` host (`aws-<n>-<region>.pooler.supabase.com`). A run is comparable with another only when both regions match: every database statement of a request pays one round trip between the two |
 | Dataset | `perf/server.py`-equivalent sizes: users, organizations, projects per tenant, Pro share |
 | Authentication for load | How the synthetic users' session tokens in `PERF_USERS_FILE` were issued, and their lifetime (see [Credentials](#credentials-for-a-deployed-run); ENV-08: no test-only path in the deployed app) |
 | Scenarios | PERF-01 to PERF-07; `SCENARIO=` values and parameters |
@@ -80,7 +82,7 @@ For each scenario, record:
 - cold-start count and latency;
 - function duration and memory;
 - database connections and query time;
-- duration, dataset, request mix, commit, deviations, and limitations.
+- duration, dataset, request mix, commit, function and database regions, deviations, and limitations.
 
 ## 3. Targets worksheet
 

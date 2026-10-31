@@ -276,7 +276,7 @@ Both SDKs collect no user info, cookies, headers, request bodies, query paramete
 
 **Source maps** upload only when `SENTRY_AUTH_TOKEN` is in the build environment of the web project, set in Vercel (a CI build is never deployed, so its maps would not match). With the token set, `next build` fails unless `SENTRY_PROJECT` is set, and `SENTRY_ORG` too unless the token is an organization token (`sntrys_...`). Sentry's Vercel integration sets `SENTRY_ORG`, `SENTRY_PROJECT`, `SENTRY_AUTH_TOKEN` and `NEXT_PUBLIC_SENTRY_DSN` ([Sentry: Vercel integration](https://docs.sentry.io/organization/integrations/deployment/vercel/)). Under one Vercel project the API function also receives `SENTRY_AUTH_TOKEN` ([deployment.md](deployment.md#variables-which-service-reads-what)).
 
-**No relay.** Browser events go straight to Sentry. Do not add the optional `tunnelRoute` that Sentry's wizard offers: it is a rewrite that forwards all headers, cookies included.
+**No relay.** Browser events go straight to Sentry. Do not add the optional `tunnelRoute` that Sentry's wizard offers: it is a rewrite that forwards all headers, cookies included. `apps/web/src/next-config.test.ts` fails if `next.config.ts` sets it.
 
 Enable "Prevent storing of IP addresses" in both projects ([data-inventory.md](data-inventory.md#external-services)).
 

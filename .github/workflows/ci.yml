@@ -52,18 +52,13 @@ jobs:
           node-version-file: .nvmrc
       - run: uv sync --frozen
       # The same command runs on a laptop (pnpm verify): lint, formatting, import boundaries, migration
-      # lint (MIG-03), strict types, the tests with the database required, and the locked-version audit.
+      # lint (MIG-03), strict types, the tests with the database required (one of them runs the migrate
+      # command twice against an empty database, MIG-03), and the locked-version audit.
       - name: Lint, types, tests and audit (scripts/verify.mjs)
         working-directory: .
         env:
           TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/app
         run: node scripts/verify.mjs --job api
-      - name: Migrations apply cleanly to an empty database
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/app
-        run: |
-          uv run python -m app.cli migrate
-          uv run python -m app.cli migrate
 
   api-supabase:
     # Supabase's Postgres image: `postgres` is not a superuser there, supautils guards role changes, and the

@@ -3,6 +3,10 @@ migration runner that is safe to point at a pooled, busy database (MIG-01)."""
 
 from __future__ import annotations
 
+import json
+import os
+import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -21,6 +25,7 @@ from tests.conftest import superuser_query
 
 pytestmark = pytest.mark.db
 
+API_DIR = Path(__file__).resolve().parents[2]
 UNREACHABLE_LOCAL_URL = "postgresql://u:p@127.0.0.1:1/none"  # local, so only APP_ENV or --yes can stop a reset
 
 
@@ -104,6 +109,39 @@ def scratch_url(db: str) -> Iterator[str]:
         (name,),
     )
     superuser_query(db, f'DROP DATABASE IF EXISTS "{name}"')
+
+
+def run_migrate_command(url: str) -> subprocess.CompletedProcess[str]:
+    """``python -m app.cli migrate`` in a process of its own, configured by ``url`` alone (never the developer's .env)."""
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "DATABASE_URL": url,
+        "MIGRATION_DATABASE_URL": url,
+    }
+    return subprocess.run(
+        [sys.executable, "-m", "app.cli", "migrate"],
+        cwd=API_DIR,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+
+def test_the_migrate_command_applies_every_migration_to_an_empty_database_and_then_nothing(scratch_url: str) -> None:
+    """MIG-03: what CI used to run as a step, ``pnpm db:migrate`` twice against an empty database, so that
+    ``pnpm verify`` covers it too. The first run applies every migration; the second applies none and says so."""
+    expected = [migration.path.name for migration in migrations.discover()]
+    assert len(expected) >= 10
+    first = run_migrate_command(scratch_url)
+    assert first.returncode == 0, first.stderr[-2000:]
+    assert json.loads(first.stdout) == {"applied": expected}
+    second = run_migrate_command(scratch_url)
+    assert second.returncode == 0, second.stderr[-2000:]
+    assert json.loads(second.stdout) == {"applied": []}
+    assert superuser_query(scratch_url, "SELECT count(*) FROM public.app_schema_migrations") == [(len(expected),)]
 
 
 def test_the_runner_works_through_a_transaction_mode_pooler(db: str, monkeypatch: pytest.MonkeyPatch) -> None:

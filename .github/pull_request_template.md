@@ -4,8 +4,8 @@
 
 ## Verification
 
-- [ ] Tests added or updated, and run locally (`pnpm test`, `pnpm test:e2e`)
-- [ ] `pnpm lint` and `pnpm typecheck` pass
+- [ ] Tests added or updated
+- [ ] `pnpm verify` passes (it runs what CI requires; use `pnpm verify:quick` while iterating). First-time setup: `docs/setup.md`
 - [ ] Evidence is labeled **mocked**, **sandbox**, or **live**; nothing unverified is claimed as verified
 
 ## Safety checklist
