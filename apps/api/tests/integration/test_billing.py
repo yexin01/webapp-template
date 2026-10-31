@@ -802,6 +802,50 @@ def test_a_sync_and_a_webhook_for_the_same_customer_converge_and_record_the_plan
     assert plan_changes(harness) == ["pro"]  # whichever came second found nothing to change
 
 
+def test_a_slow_user_re_read_cannot_overwrite_a_cancellation_that_landed_meanwhile(harness: Harness) -> None:
+    """BILL-10, BILL-22: the user's own re-read takes the customer lock, like a webhook does.
+
+    The re-read has read ``active`` from Stripe and is slow to store it. Stripe cancels, and the webhook for that
+    arrives. With the lock the webhook queues behind the re-read and then reads the cancellation. Without it the
+    webhook finishes first and the older read is stored over it: Pro would come back after a cancellation.
+    """
+    customer = make_pro(harness, "user_a")
+    headers = harness.login("user_a")
+    provider = harness.billing
+    original = InMemoryBillingProvider.list_customer_subscriptions
+    has_read, may_store = threading.Event(), threading.Event()
+
+    def slow_first_read(self: InMemoryBillingProvider, customer_id: str) -> list[SubscriptionSnapshot]:
+        seen = original(self, customer_id)  # Stripe still says active
+        if not has_read.is_set():
+            has_read.set()
+            assert may_store.wait(30)
+        return seen
+
+    provider.list_customer_subscriptions = slow_first_read.__get__(provider)  # type: ignore[method-assign]
+    answers: dict[str, Any] = {}
+    delivered = threading.Event()
+
+    def deliver() -> None:
+        answers["webhook"] = send_webhook(harness, event_payload(customer, "customer.subscription.deleted"))
+        delivered.set()
+
+    resync = threading.Thread(target=lambda: answers.__setitem__("sync", sync(harness, headers)))
+    webhook = threading.Thread(target=deliver)
+    resync.start()
+    assert has_read.wait(10)
+    provider.set_subscriptions(customer, [snapshot(customer, SubscriptionStatus.CANCELED)])
+    webhook.start()
+    wait_for_lock_wait(harness.database_url, or_until=delivered)  # queued behind the re-read, or already finished
+    may_store.set()
+    resync.join(30)
+    webhook.join(30)
+
+    assert (answers["sync"].status_code, answers["webhook"].status_code) == (200, 200)
+    plan = harness.client.get("/api/v1/billing/status", headers=headers).json()["plan"]
+    assert plan == "free", "a re-read that Stripe's cancellation overtook was stored over it"
+
+
 def test_a_sync_stripe_rejects_keeps_the_stored_state(harness: Harness, caplog: pytest.LogCaptureFixture) -> None:
     """Reconciliation owns a customer Stripe no longer lets us read; the user's click changes nothing."""
     customer = make_pro(harness, "user_a")
