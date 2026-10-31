@@ -6,6 +6,9 @@ verifier is the production ``ClerkTokenVerifier`` configured with that key.
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
 import logging
 import threading
@@ -84,6 +87,37 @@ def test_valid_token(verifier: ClerkTokenVerifier, keys: tuple[Any, str]) -> Non
 def test_rejected_claims(verifier: ClerkTokenVerifier, keys: tuple[Any, str], overrides: dict[str, Any]) -> None:
     with pytest.raises(AuthenticationError):
         verifier.verify(token(keys[0], **overrides))
+
+
+@pytest.mark.parametrize("claim", ["exp", "iat", "iss"])
+def test_a_token_without_a_required_claim_is_refused(
+    verifier: ClerkTokenVerifier, keys: tuple[Any, str], claim: str
+) -> None:
+    """AUTH-01: a token says when it expires, when it was issued and by whom. One without an expiry would never end."""
+    with pytest.raises(AuthenticationError):
+        verifier.verify(token(keys[0], **{claim: None}))
+
+
+@pytest.mark.parametrize(
+    "timing",
+    [
+        pytest.param(lambda now: {"exp": now - 30}, id="expired 30 s ago"),
+        pytest.param(lambda now: {"nbf": now + 30}, id="valid from 30 s ahead"),
+        pytest.param(lambda now: {"iat": now + 30, "nbf": None}, id="issued 30 s ahead"),
+    ],
+)
+def test_a_token_outside_the_clock_skew_is_refused(
+    verifier: ClerkTokenVerifier, keys: tuple[Any, str], timing: Callable[[int], dict[str, Any]]
+) -> None:
+    """AUTH-01: the skew is a few seconds (5), not the half minute a wider tolerance would accept."""
+    with pytest.raises(AuthenticationError):
+        verifier.verify(token(keys[0], **timing(int(time.time()))))
+
+
+def test_a_token_a_second_off_is_within_the_clock_skew(verifier: ClerkTokenVerifier, keys: tuple[Any, str]) -> None:
+    """Instances' clocks differ by a little: an expiry a second ago, or a start a second ahead, still verifies."""
+    now = int(time.time())
+    assert verifier.verify(token(keys[0], exp=now - 1, nbf=now + 1, iat=now + 1)).external_user_id == "user_123"
 
 
 def azp_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
@@ -174,6 +208,31 @@ def test_hmac_confusion_rejected(verifier: ClerkTokenVerifier, keys: tuple[Any, 
     )
     with pytest.raises(AuthenticationError):
         verifier.verify(forged)
+
+
+def hmac_signed_with(public_pem: str, algorithm: str, kid: str | None = None) -> str:
+    """The token of an algorithm-confusion attack: valid claims, and a MAC keyed with the public key's PEM text, which
+    anyone can read. Built by hand, because PyJWT refuses to sign with a PEM as a secret."""
+
+    def part(data: bytes) -> str:
+        return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+    now = int(time.time())
+    header = {"alg": algorithm, "typ": "JWT", **({"kid": kid} if kid else {})}
+    claims = {"sub": "user_123", "iss": ISSUER, "azp": ORIGIN, "iat": now, "nbf": now - 5, "exp": now + 60}
+    signing_input = f"{part(json.dumps(header).encode())}.{part(json.dumps(claims).encode())}"
+    digest = {"HS256": hashlib.sha256, "HS384": hashlib.sha384, "HS512": hashlib.sha512}[algorithm]
+    mac = hmac.new(public_pem.encode(), signing_input.encode(), digest).digest()
+    return f"{signing_input}.{part(mac)}"
+
+
+@pytest.mark.parametrize("algorithm", ["HS256", "HS384", "HS512"])
+def test_a_token_macd_with_the_configured_public_key_is_refused(
+    verifier: ClerkTokenVerifier, keys: tuple[Any, str], algorithm: str
+) -> None:
+    """AUTH-02: the classic algorithm confusion, against the verifier that holds the key as a PEM."""
+    with pytest.raises(AuthenticationError):
+        verifier.verify(hmac_signed_with(keys[1], algorithm))
 
 
 @pytest.mark.parametrize("raw", ["", "not.a.jwt", "x" * 9000])
@@ -753,6 +812,40 @@ def test_a_key_that_cannot_verify_rs256_is_ignored(keys: tuple[Any, str]) -> Non
     with pytest.raises(AuthenticationError):
         verifier.verify(token(keys[0], kid="ec1"))
     assert verifier.verify(token(keys[0], kid="kid1")).external_user_id == "user_123"
+
+
+@pytest.mark.parametrize("algorithm", ["HS256", "HS384", "HS512"])
+def test_a_token_macd_with_a_published_key_is_refused_before_any_key_is_looked_up(
+    keys: tuple[Any, str], algorithm: str
+) -> None:
+    """AUTH-02: the pinned algorithm decides, not the JWT library's own guards. With a key set, an HMAC algorithm
+    that got past the pin would reach the library with the key as an object: a TypeError, so a 500."""
+    published = Published(jwk(keys[0], "kid1"))
+    verifier = jwks_verifier(published, FakeMonotonic())
+    with pytest.raises(AuthenticationError):
+        verifier.verify(hmac_signed_with(keys[1], algorithm, kid="kid1"))
+    assert published.fetches == 0  # no fetch for a token no key can verify
+
+
+@pytest.mark.parametrize(("age", "verifies"), [(3_599, True), (3_600, False)])
+def test_a_cached_key_set_is_trusted_for_an_hour_and_not_a_second_longer(
+    keys: tuple[Any, str], age: int, verifies: bool
+) -> None:
+    """AUTH-04: the documented bound (docs/operations.md: "up to an hour"). The seconds are written out here, not
+    read from the code, so lengthening the lifetime fails this test instead of passing every other one."""
+    published = Published(jwk(keys[0], "kid1"))
+    clock = FakeMonotonic()
+    verifier = jwks_verifier(published, clock)
+    good = token(keys[0], kid="kid1")
+    verifier.verify(good)
+
+    published.error = httpx.ConnectError("down")  # only the cached key set can verify now
+    clock.now += age
+    if verifies:
+        assert verifier.verify(good).external_user_id == "user_123"
+    else:
+        with pytest.raises(DependencyUnavailableError):
+            verifier.verify(good)
 
 
 def test_an_expired_key_set_fails_closed_when_it_cannot_be_refreshed(keys: tuple[Any, str]) -> None:
