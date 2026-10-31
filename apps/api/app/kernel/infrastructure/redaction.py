@@ -10,14 +10,12 @@ whatever a caller passes (OBS-06).
 from __future__ import annotations
 
 import re
-import string
 from collections.abc import Callable, Mapping
 from typing import Any
 
 REDACTED = "[REDACTED]"
 TRUNCATED = "[truncated]"
 MAX_TEXT_LENGTH = 4096
-_TOKEN_CHARACTERS = string.ascii_letters + string.digits + "_.%+/=~@-"
 
 SENSITIVE_KEYS = frozenset(
     {
@@ -47,10 +45,17 @@ SENSITIVE_KEYS = frozenset(
 )
 
 
-_EMAIL_LOCAL = "[A-Za-z0-9._%+-]"
-_EMAIL_DOMAIN = r"@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"
+# Letters and digits of any script, and the combining accents of a decomposed letter (\w has none).
+_ACCENTS = "\u0300-\u036f"
+_EMAIL_LOCAL = rf"[\w.%+\-{_ACCENTS}]"
+# Domain labels: letters and digits, no underscore. The top-level domain: letters.
+_EMAIL_DOMAIN = rf"@(?:[^\W_]|[.\-{_ACCENTS}])+\.[^\W\d_]{{2,}}"
+# What of a local part cannot continue a top-level domain.
+_EMAIL_GLUE = rf"[\d_.%+\-{_ACCENTS}]"
 # An email address, tried only from the start of a local-part run, with any glued on: "a@b.cc+d@e.ff".
-_EMAIL = re.compile(rf"(?<!{_EMAIL_LOCAL}){_EMAIL_LOCAL}+{_EMAIL_DOMAIN}(?:[0-9._%+-]{_EMAIL_LOCAL}*{_EMAIL_DOMAIN})*")
+_EMAIL = re.compile(
+    rf"(?<!{_EMAIL_LOCAL}){_EMAIL_LOCAL}+{_EMAIL_DOMAIN}(?:{_EMAIL_GLUE}{_EMAIL_LOCAL}*{_EMAIL_DOMAIN})*"
+)
 # Query parameters holding credentials, one-time tokens, or session IDs: common token names, and every one
 # apps/web/src/lib/redact.ts lists (Clerk's tickets and handshakes, redirect targets that can embed them).
 _SENSITIVE_QUERY = re.compile(
@@ -112,7 +117,15 @@ def _without_a_cut_secret(head: str) -> str:
     last_word = head.rsplit(maxsplit=1)[-1] if head and not head[-1].isspace() else ""
     if _DSN_SCHEME.search(last_word):
         return head[: len(head) - len(last_word)]
-    return head.rstrip(_TOKEN_CHARACTERS)
+    end = len(head)
+    while end and _is_token_character(head[end - 1]):
+        end -= 1
+    return head[:end]
+
+
+def _is_token_character(character: str) -> bool:
+    """A character of the words secrets and addresses are made of, in any script."""
+    return character.isalnum() or character in "_.%+/=~@-" or "\u0300" <= character <= "\u036f"
 
 
 def redact_text(value: str, *, max_length: int = MAX_TEXT_LENGTH) -> str:

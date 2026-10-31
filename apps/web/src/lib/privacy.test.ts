@@ -6,6 +6,7 @@ import {
   scrubEvent,
   scrubSpan,
   SENSITIVE_QUERY_PARAMETERS,
+  stripPathIds,
   stripQuery,
 } from "./redact";
 
@@ -74,6 +75,51 @@ describe("redaction", () => {
     },
   );
 
+  const ADDRESSES_IN_ANY_SCRIPT = [
+    "josé@example.com",
+    "jose\u0301@example.com",
+    "josé+tag@example.co.uk",
+    "иван@example.ru",
+    "用户@example.cn",
+    "user@münchen.de",
+    "иван@пример.рф",
+    "用户@例子.中国",
+  ];
+
+  it.each(ADDRESSES_IN_ANY_SCRIPT)("removes the email address %s", (address) => {
+    expect(redactText(`failed for ${address} now`)).toBe("failed for [REDACTED] now");
+  });
+
+  it.each(["+", "-", "_", "%", "7"])(
+    "removes an email address in any script written right after another, joined by %s",
+    (joiner) => {
+      expect(redactText(`x to=josé@example.com${joiner}иван@пример.рф y`)).toBe("x to=[REDACTED] y");
+    },
+  );
+
+  it.each(["ça va@bien", "a@b", "5€ @ 3", "@пример.рф", "иван@", "иван@пример"])(
+    "keeps %s, which holds no email address",
+    (text) => {
+      expect(redactText(`x ${text} y`)).toBe(`x ${text} y`);
+    },
+  );
+
+  it.each(["josé@example.com", "jose\u0301@example.com", "иван@пример.рф", "用户@例子.中国"])(
+    "drops the email address %s however the length limit cuts it",
+    (address) => {
+      const kept = new Set<string>();
+      for (let cut = 0; cut <= address.length; cut++) {
+        const filler = " ".repeat(4096 - cut);
+        kept.add(
+          redactText(`${filler}${address} tail`)
+            .slice(filler.length)
+            .replace(/\[truncated\]$/, ""),
+        );
+      }
+      expect([...kept]).toEqual([""]);
+    },
+  );
+
   it("removes what the unbounded email pattern removed, on 20,000 generated strings", () => {
     const unbounded = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
     const fragments = [
@@ -109,6 +155,65 @@ describe("redaction", () => {
   });
 });
 
+// apps/api/tests/unit/test_sentry_tracing.py (TestProviderIds): the API replaces the same segments.
+describe("provider IDs in paths (OBS-04)", () => {
+  const USER = "user_" + "CANARYCLERKUSER1";
+  const ORG = "org_" + "CANARYCLERKORG1";
+  const SESSION = "cs_test_" + "CANARYSESSION1";
+
+  it.each([
+    ["an organization route", `/api/v1/orgs/${ORG}/projects`, "/api/v1/orgs/{id}/projects"],
+    [
+      "a Clerk user",
+      `https://api.clerk.com/v1/users/${USER}/organization_memberships`,
+      "https://api.clerk.com/v1/users/{id}/organization_memberships",
+    ],
+    ["a Checkout Session, at the end", `/v1/checkout/sessions/${SESSION}`, "/v1/checkout/sessions/{id}"],
+    ["two IDs of kinds nobody listed", `/a/${USER}/b/${ORG}`, "/a/{id}/b/{id}"],
+    [
+      "a route template",
+      "/api/v1/orgs/{org_id}/projects/{project_id}",
+      "/api/v1/orgs/{org_id}/projects/{project_id}",
+    ],
+    ["words and short segments", "/v1/users/me/user_short/a_b", "/v1/users/me/user_short/a_b"],
+  ])("are replaced in %s", (_label, url, expected) => {
+    expect(stripPathIds(url)).toBe(expected);
+    const fetched = scrubBreadcrumb({
+      category: "fetch",
+      type: "http",
+      data: { method: "GET", url: `${url}?x=1` },
+    });
+    expect(fetched?.data).toEqual({ method: "GET", url: expected });
+    const navigated = scrubBreadcrumb({ category: "navigation", data: { from: url, to: `${url}#top` } });
+    expect(navigated?.data).toEqual({ from: expected, to: expected });
+    expect(
+      scrubEvent({ type: undefined, request: { url: `https://app.example.com${url}` } }).request?.url,
+    ).toBe(`https://app.example.com${expected}`);
+  });
+
+  it("are replaced in a span's name and URL attributes", () => {
+    const span = {
+      trace_id: "0".repeat(32),
+      span_id: "0".repeat(16),
+      start_timestamp: 1,
+      end_timestamp: 2,
+      status: "ok" as const,
+      is_segment: false,
+      name: `GET /api/v1/orgs/${ORG}/projects`,
+      attributes: {
+        "http.target": `/api/v1/orgs/${ORG}/projects`,
+        "url.full": `https://h/api/v1/orgs/${ORG}/x?a=1`,
+      },
+    };
+    const scrubbed = scrubSpan(span);
+    expect(scrubbed.name).toBe("GET /api/v1/orgs/{id}/projects");
+    expect(scrubbed.attributes).toEqual({
+      "http.target": "/api/v1/orgs/{id}/projects",
+      "url.full": "https://h/api/v1/orgs/{id}/x",
+    });
+  });
+});
+
 describe("redaction cost on long strings (OBS-06)", () => {
   const MB = 1_000_000;
   const SECRET = "sk_" + "live_CANARY1234567890";
@@ -140,6 +245,11 @@ describe("redaction cost on long strings (OBS-06)", () => {
     ["dotted labels after an @", ...unchanged(`a@${"b.".repeat(RUN / 2)}`)],
     ["addresses written one after another", `a@b.cc${".d@e.ff".repeat(RUN / 7)}`, "[REDACTED]"],
     ["near-addresses after one", `a@b.cc${".d@e".repeat(RUN / 4)}`, `[REDACTED]${".d@e".repeat(RUN / 4)}`],
+    ["accented local-part characters", ...unchanged("é.%+-_".repeat(RUN / 6))],
+    ["accented local-part characters before an @", ...unchanged(`${"é".repeat(RUN)}@`)],
+    ["accented local-part characters before an address", `${"é".repeat(RUN)}@example.com`, "[REDACTED]"],
+    ["dotted Cyrillic labels after an @", ...unchanged(`a@${"д.".repeat(RUN / 2)}`)],
+    ["addresses in Cyrillic written one after another", `й@д.сс${".д@е.фф".repeat(RUN / 7)}`, "[REDACTED]"],
   ])(
     "redacts email addresses in linear time on a run of %s, even without the length cap",
     (_label, text, expected) => {

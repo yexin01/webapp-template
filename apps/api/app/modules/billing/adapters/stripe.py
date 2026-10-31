@@ -104,7 +104,7 @@ def _configuration_error(exc: stripe.StripeError) -> NotConfiguredError:
             "code": exc.code,
             "param": getattr(exc, "param", None),
             "http_status": exc.http_status,
-            "request_id": exc.request_id,
+            "stripe_request_id": exc.request_id,
         },
     )
     return NotConfiguredError("Billing is not configured correctly for this Stripe account.")

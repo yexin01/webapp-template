@@ -148,6 +148,12 @@ def test_sentry_scrubs_transactions_and_sends_every_span_inside_one() -> None:
     assert options["trace_lifecycle"] == "static"
 
 
+def test_sentry_adds_no_trace_header_to_an_outgoing_call() -> None:
+    """Without a list, sentry-sdk adds sentry-trace and baggage to every call (test_telemetry_wire.py sends some)."""
+    options = sentry_options(make_settings(error_reporting_mode="sandbox", sentry_dsn=DSN))
+    assert options["trace_propagation_targets"] == []
+
+
 class TestScrubTransaction:
     def test_no_token_or_personal_data_is_left(self) -> None:
         assert_clean(scrub_transaction(transaction_event(), {}))
@@ -217,6 +223,147 @@ class TestScrubTransaction:
         assert time.thread_time() - started < 0.1
         assert scrubbed["transaction"] == "GET /a/"
         assert scrubbed["spans"][0]["data"]["url"] == "https://h/"
+
+
+# The IDs of the identity provider and the payment provider, as they appear in the paths of calls the API makes.
+CLERK_USER, CLERK_ORG = "user_CANARYCLERKUSER1", "org_CANARYCLERKORG1"
+STRIPE_CUSTOMER, STRIPE_SESSION = "cus_CANARYCUSTOMER1", "cs_test_CANARYSESSION1"
+
+
+class TestProviderIds:
+    """A path holds the IDs of the provider it calls and of the organization it is about; Sentry gets ``{id}`` for each."""
+
+    ROUTE = "/api/v1/orgs/{org_id}/projects"
+
+    @staticmethod
+    def request_event(transaction: str, source: str, url: str, **extra: Any) -> dict[str, Any]:
+        trace = {"trace_id": TRACE_ID, "span_id": "bf25ad57950b5e81", "op": "http.server"}
+        return {
+            "transaction": transaction,
+            "transaction_info": {"source": source},
+            "request": {"method": "GET", "url": url},
+            "contexts": {"trace": trace},
+            **extra,
+        }
+
+    @pytest.mark.parametrize(
+        ("url", "scrubbed"),
+        [
+            pytest.param(
+                f"https://api.clerk.com/v1/users/{CLERK_USER}/organization_memberships",
+                "https://api.clerk.com/v1/users/{id}/organization_memberships",
+                id="a Clerk user",
+            ),
+            pytest.param(
+                f"https://api.stripe.com/v1/customers/{STRIPE_CUSTOMER}",
+                "https://api.stripe.com/v1/customers/{id}",
+                id="a Stripe customer, at the end",
+            ),
+            pytest.param(
+                f"https://api.stripe.com/v1/checkout/sessions/{STRIPE_SESSION}/expire",
+                "https://api.stripe.com/v1/checkout/sessions/{id}/expire",
+                id="a Checkout Session, which has two underscores",
+            ),
+            pytest.param(
+                f"https://api.stripe.com/v1/prices/price_{'1Abc' * 6}?expand[]=product",
+                "https://api.stripe.com/v1/prices/{id}",
+                id="a price, before a query string",
+            ),
+            pytest.param(
+                f"https://api.example.com/v1/{CLERK_USER}/a/{CLERK_ORG}/b",
+                "https://api.example.com/v1/{id}/a/{id}/b",
+                id="two IDs of a kind nobody listed",
+            ),
+            pytest.param(
+                "https://api.stripe.com/v1/billing_portal/configurations",
+                "https://api.stripe.com/v1/billing_portal/configurations",
+                id="a path without an ID",
+            ),
+            pytest.param(
+                "https://api.clerk.com/v1/users/me/organization_memberships",
+                "https://api.clerk.com/v1/users/me/organization_memberships",
+                id="a segment that is a word",
+            ),
+            pytest.param(
+                "https://api.example.com/v1/user_short/org_1234567/a_b",
+                "https://api.example.com/v1/user_short/org_1234567/a_b",
+                id="segments too short to be IDs",
+            ),
+            pytest.param(
+                "https://api.example.com/v1/orgs/{org_id}/projects/{project_id}",
+                "https://api.example.com/v1/orgs/{org_id}/projects/{project_id}",
+                id="a route template",
+            ),
+        ],
+    )
+    def test_a_path_segment_shaped_like_an_id_is_replaced(self, url: str, scrubbed: str) -> None:
+        crumb = {"type": "http", "category": "httplib", "data": {"url": url, "http.method": "GET"}}
+        assert scrub_breadcrumb(crumb, {})["data"]["url"] == scrubbed
+        span = {"op": "http.client", "description": f"GET {url}", "data": {"url": url}}
+        [scrubbed_span] = scrub_transaction({"type": "transaction", "spans": [span]}, {})["spans"]
+        assert scrubbed_span["description"] == f"GET {scrubbed}"
+        assert scrubbed_span["data"]["url"] == scrubbed
+
+    @pytest.mark.parametrize(
+        "origin",
+        [
+            pytest.param("https://api.example.com", id="a host"),
+            pytest.param("http://127.0.0.1:8000", id="a port"),
+            # The SDK builds the URL from the Host header, which a caller sets: it must not stop the report.
+            pytest.param("http://[::1", id="a malformed host, which urllib.parse refuses"),
+        ],
+    )
+    def test_the_url_of_a_matched_route_is_its_template(self, origin: str) -> None:
+        url = f"{origin}/api/v1/orgs/{CLERK_ORG}/projects?limit=5&cursor=abc"
+        for scrub, extra in ((scrub_transaction, {"type": "transaction"}), (scrub_event, {})):
+            event = self.request_event(self.ROUTE, "route", url, **extra)
+            scrubbed = scrub(event, {})
+            assert_clean(scrubbed)
+            assert scrubbed["request"]["url"] == f"{origin}/api/v1/orgs/{{org_id}}/projects"
+            assert scrubbed["transaction"] == self.ROUTE
+
+    @pytest.mark.parametrize(
+        ("transaction", "source", "url", "kept"),
+        [
+            pytest.param(
+                f"/api/v1/orgs/{CLERK_ORG}/nothing",
+                "url",
+                f"https://api.example.com/api/v1/orgs/{CLERK_ORG}/nothing",
+                "https://api.example.com/api/v1/orgs/{id}/nothing",
+                id="no route matched: the path stays, without its IDs",
+            ),
+            pytest.param(
+                "GET /api/v1/other",
+                "route",
+                "https://api.example.com/api/v1/orgs/org_ABCDEFGHIJ/projects",
+                "https://api.example.com/api/v1/orgs/{id}/projects",
+                id="a transaction name that is not a path",
+            ),
+            pytest.param(
+                "/api/v1/other",
+                "url",
+                "https://api.example.com/api/v1/real",
+                "https://api.example.com/api/v1/real",
+                id="a name that is not a route's",
+            ),
+            pytest.param(
+                "/api/v1/x", "route", "/api/v1/real/user_ABCDEFGHIJ", "/api/v1/x", id="a URL without an origin"
+            ),
+        ],
+    )
+    def test_a_request_without_a_route_template_keeps_its_path_without_ids(
+        self, transaction: str, source: str, url: str, kept: str
+    ) -> None:
+        scrubbed = scrub_event(self.request_event(transaction, source, url), {})
+        assert scrubbed["request"]["url"] == kept
+        assert "user_ABCDEFGHIJ" not in json.dumps(scrubbed)
+
+    def test_ids_in_the_transaction_name_and_the_trace_context_are_replaced(self) -> None:
+        event = self.request_event(f"/api/v1/orgs/{CLERK_ORG}/nothing", "url", "https://h/x")
+        event["contexts"]["trace"]["dynamic_sampling_context"] = {"transaction": f"/api/v1/orgs/{CLERK_ORG}/nothing"}
+        scrubbed = scrub_event(event, {})
+        assert scrubbed["transaction"] == "/api/v1/orgs/{id}/nothing"
+        assert scrubbed["contexts"]["trace"]["dynamic_sampling_context"]["transaction"] == "/api/v1/orgs/{id}/nothing"
 
 
 class TestScrubbingCost:
@@ -414,8 +561,9 @@ def test_at_a_rate_of_0_no_caller_can_have_a_request_traced() -> None:
     """OBS-07: a rate of 0 alone would still trace each request whose caller sends a sampled trace.
 
     Each request still continues its caller's trace, so its error events link
-    to it, and its outgoing calls pass it on as not sampled. A request without
-    one starts a trace of its own.
+    to it, and the header it would pass on says not sampled (no call carries
+    one: ``trace_propagation_targets`` is empty). A request without one starts
+    a trace of its own.
     """
     sent, propagated = _send_requests(0.0, CALLER_SAMPLED, {}, {})
     assert "transaction" not in {kind for _, kind, _ in sent}

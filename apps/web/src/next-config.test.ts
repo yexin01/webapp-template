@@ -178,3 +178,30 @@ describe("the security headers (SEC-02)", () => {
     },
   );
 });
+
+/**
+ * ADR-0004 §25: with a source-map upload token the plugin also creates and finalizes the release, and by default
+ * runs `sentry release set-commits`, which sends the repository and commit IDs of the build (and, with a
+ * repository integration in Sentry, lets Sentry read the commits' authors). Commit association is opt-in.
+ */
+describe("the release the build creates in Sentry (ADR-0004 §25)", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it.each([
+    ["without a source-map upload token", undefined],
+    ["with a source-map upload token", "CANARYtoken0123456789"],
+  ])("does not associate commits with it %s", async (_case, token) => {
+    vi.stubEnv("SENTRY_AUTH_TOKEN", token ?? "");
+    vi.resetModules();
+    withSentryConfig.mockClear();
+    await configFor(serverEnv);
+
+    const options: { release?: { setCommits?: unknown } } | undefined = withSentryConfig.mock.calls[0]?.[1];
+    expect(
+      options?.release?.setCommits,
+      "the plugin's default is { auto: true }: set it to false, or say what is sent in docs/data-inventory.md",
+    ).toBe(false);
+  });
+});

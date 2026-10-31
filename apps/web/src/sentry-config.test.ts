@@ -39,6 +39,7 @@ const TICKET = "CANARYTICKET42";
 const CANARIES = [SECRET, EMAIL, TOKEN, TICKET, "CANARY"];
 
 type Options = {
+  tracePropagationTargets?: unknown[];
   beforeSend: (event: ErrorEvent, hint: EventHint) => ErrorEvent | null;
   beforeBreadcrumb: (breadcrumb: Breadcrumb, hint?: unknown) => Breadcrumb | null;
   beforeSendSpan?: (span: SpanJSON) => SpanJSON;
@@ -285,6 +286,12 @@ describe("browser tracing decision (OBS-02)", () => {
     expect(options).not.toHaveProperty("tracesSampleRate");
     expect(options).not.toHaveProperty("tracesSampler");
     expect(options).not.toHaveProperty("tracePropagationTargets");
+  });
+
+  it("adds no trace header to a request the web server makes, which @sentry/node does to every one by default", async () => {
+    // The browser needs no such option: its default targets are the page's own origin (the /api/v1 requests).
+    const options = await optionsOf("./sentry.server.config");
+    expect(options.tracePropagationTargets).toEqual([]);
   });
 
   it("tags a report about a failed API call with the API's request ID (OBS-05)", async () => {

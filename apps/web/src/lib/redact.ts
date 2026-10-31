@@ -41,12 +41,13 @@ const SENSITIVE_PARAMETER_NAMES = [...SENSITIVE_QUERY_PARAMETERS.map(escapeRegEx
   "|",
 );
 
-const EMAIL_LOCAL = "[A-Za-z0-9._%+-]";
-const EMAIL_DOMAIN = "@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}";
+// Letters, digits, and combining accents of any script; the top-level domain is letters.
+const EMAIL_LOCAL = "[\\p{L}\\p{N}\\p{M}._%+-]";
+const EMAIL_DOMAIN = "@[\\p{L}\\p{N}\\p{M}.-]+\\.\\p{L}{2,}";
 // Tried only from the start of a local-part run (linear, whole address), with any glued on: "a@b.cc+d@e.ff".
 const EMAIL = new RegExp(
-  `(?<!${EMAIL_LOCAL})${EMAIL_LOCAL}+${EMAIL_DOMAIN}(?:[0-9._%+-]${EMAIL_LOCAL}*${EMAIL_DOMAIN})*`,
-  "g",
+  `(?<!${EMAIL_LOCAL})${EMAIL_LOCAL}+${EMAIL_DOMAIN}(?:[\\p{N}\\p{M}._%+-]${EMAIL_LOCAL}*${EMAIL_DOMAIN})*`,
+  "gu",
 );
 
 // Each pattern runs in linear time: no long run of characters is rescanned from every position in it.
@@ -66,7 +67,7 @@ const PATTERNS: [RegExp, string][] = [
 /** The longest string the patterns scan, so the work per string is bounded. */
 const MAX_TEXT_LENGTH = 4096;
 // A token cut in half by the limit could escape its pattern, so it is dropped as well.
-const TOKEN_AT_END = /(?<![\w.%+/=~@-])[\w.%+/=~@-]+$/;
+const TOKEN_AT_END = /(?<![\p{L}\p{N}\p{M}_.%+/=~@-])[\p{L}\p{N}\p{M}_.%+/=~@-]+$/u;
 
 /** Redacts secret- and email-shaped text. Text past `maxLength` characters is dropped and marked. */
 export function redactText(value: string, maxLength = MAX_TEXT_LENGTH): string {
@@ -78,6 +79,16 @@ export function redactText(value: string, maxLength = MAX_TEXT_LENGTH): string {
 export function stripQuery(url: string): string {
   const end = url.search(/[?#]/);
   return end === -1 ? url : url.slice(0, end);
+}
+
+// A path segment shaped like a provider's ID: a short lower-case prefix, then 10 or more letters and digits
+// (user_2abc..., org_..., cus_..., and cs_test_... for a Checkout Session). Any such segment goes, so an ID of
+// a kind nobody listed does not get through. The API's Sentry scrubber does the same (observability.py).
+const ID_SEGMENT = /(?<=\/)[a-z]{2,6}_(?:(?:test|live)_)?[A-Za-z0-9]{10,}(?![A-Za-z0-9_])/g;
+
+/** `text` with each ID in a path replaced by `{id}`. */
+export function stripPathIds(text: string): string {
+  return text.replace(ID_SEGMENT, "{id}");
 }
 
 /** Limits per call, like Sentry's normalizeDepth and normalizeMaxBreadth, plus a total. */
@@ -181,8 +192,8 @@ function scrubElementPath(path: string): string {
 /**
  * `beforeBreadcrumb` for the browser and server SDKs: drops input breadcrumbs,
  * keeps no attribute values in other DOM (`ui.*`) breadcrumbs, strips query
- * strings and fragments from URLs, and redacts the message and every other
- * data value, including the raw arguments of console breadcrumbs.
+ * strings, fragments, and path IDs from URLs, and redacts the message and every
+ * other data value, including the raw arguments of console breadcrumbs.
  */
 export function scrubBreadcrumb(breadcrumb: Breadcrumb): Breadcrumb | null {
   if (breadcrumb.category === "ui.input") return null;
@@ -195,7 +206,7 @@ export function scrubBreadcrumb(breadcrumb: Breadcrumb): Breadcrumb | null {
     const data = redactRecord(scrubbed.data);
     for (const key of URL_FIELDS) {
       const url = data[key];
-      if (typeof url === "string") data[key] = stripQuery(url);
+      if (typeof url === "string") data[key] = stripPathIds(stripQuery(url));
     }
     scrubbed.data = data;
   }
@@ -215,7 +226,7 @@ export function scrubEvent(event: ErrorEvent): ErrorEvent {
     delete event.request.cookies;
     delete event.request.data;
     delete event.request.query_string;
-    if (event.request.url) event.request.url = stripQuery(event.request.url);
+    if (event.request.url) event.request.url = stripPathIds(stripQuery(event.request.url));
   }
   for (const exception of event.exception?.values ?? []) {
     if (exception.value) exception.value = redactText(exception.value);
@@ -238,7 +249,7 @@ const DROPPED_SPAN_ATTRIBUTE = /^(?:url\.query|url\.fragment|http\.query|http\.f
 const URL_QUERY = /(?<!\S)((?:\/|[a-z][a-z0-9+.-]*:\/\/)[^\s?#]*)[?#]\S*/gi;
 
 function scrubSpanText(value: string): string {
-  return redactText(value).replace(URL_QUERY, "$1");
+  return stripPathIds(redactText(value).replace(URL_QUERY, "$1"));
 }
 
 function scrubAttributeValue(value: unknown): unknown {

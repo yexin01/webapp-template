@@ -16,14 +16,15 @@ import httpx
 import pytest
 import sentry_sdk
 from sentry_sdk.envelope import Envelope
-from sentry_sdk.integrations.logging import LoggingIntegration
 from sentry_sdk.transport import Transport
 
 from app.kernel.infrastructure.observability import JsonFormatter, sentry_options
 from app.kernel.tenancy import Role
+from app.modules.identity.adapters.clerk import ClerkMembershipDirectory
 from app.modules.identity.domain import ExternalMembership
 from app.modules.projects.service import ProjectService
 from tests.conftest import Harness, make_settings, superuser_query
+from tests.stub_server import Recorded, stub_server
 
 pytestmark = pytest.mark.db
 
@@ -162,9 +163,11 @@ class _Capture(Transport):
     def __init__(self) -> None:
         super().__init__()
         self.events: list[dict[str, Any]] = []
+        self.transactions: list[dict[str, Any]] = []
 
     def capture_envelope(self, envelope: Envelope) -> None:
         self.events += [item.payload.json for item in envelope.items if item.type == "event"]
+        self.transactions += [item.payload.json for item in envelope.items if item.type == "transaction"]
 
 
 def test_an_error_report_carries_the_request_id_and_the_internal_ids_and_no_user(
@@ -178,7 +181,8 @@ def test_an_error_report_carries_the_request_id_and_the_internal_ids_and_no_user
     options = sentry_options(
         make_settings(error_reporting_mode="sandbox", sentry_dsn="https://public@o0.ingest.example/0")
     )
-    sentry_sdk.init(**options, transport=transport, default_integrations=False, integrations=[LoggingIntegration()])
+    # The integrations production enables (Starlette, FastAPI, httpx, logging) add the request URL and outgoing calls.
+    sentry_sdk.init(**options, transport=transport)
     try:
         response = world.client.get(
             f"/api/v1/orgs/{ACME}/projects", headers={**world.login(ALICE), "X-Request-ID": "request-error-1"}
@@ -193,3 +197,49 @@ def test_an_error_report_carries_the_request_id_and_the_internal_ids_and_no_user
     assert event["tags"] == {"request_id": "request-error-1", "user_id": user, "org_id": org}
     assert "user" not in event
     assert not [c for c in [*CLERK_IDS, EMAIL] if c in json.dumps(event)]
+
+
+# Realistic IDs: Clerk's are 30 or so characters, and a short made-up one is not shaped like one.
+CLERK_USER, CLERK_ORG = "user_" + "CANARYCLERKUSER1", "org_" + "CANARYCLERKORG1"
+
+
+def test_the_ids_of_an_identity_provider_call_and_of_the_organization_are_not_sent_to_sentry(
+    make_harness: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A user's first request reads their memberships from Clerk, in a call whose path holds their Clerk ID, and the
+    organization routes hold the Clerk ID of the organization. Sentry's integrations record both URLs."""
+
+    def clerk(request: Recorded) -> tuple[int, Any]:
+        return 200, {"data": [{"organization": {"id": CLERK_ORG}, "role": "org:admin"}]}
+
+    def failing(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("the database said no")
+
+    monkeypatch.setattr(ProjectService, "list", failing)
+    transport = _Capture()
+    settings = make_settings(
+        error_reporting_mode="sandbox", sentry_dsn="https://public@o0.ingest.example/0", sentry_traces_sample_rate=1.0
+    )
+    sentry_sdk.init(**sentry_options(settings), transport=transport)
+    with stub_server(clerk) as stub:
+        directory = ClerkMembershipDirectory(secret_key="sk_test_only_abcdefghijklmnop", api_url=stub.url)
+        try:
+            h = make_harness(directory=directory)
+            response = h.client.get(f"/api/v1/orgs/{CLERK_ORG}/projects", headers=h.login(CLERK_USER))
+            sentry_sdk.flush(timeout=2)
+        finally:
+            sentry_sdk.get_client().close()
+            sentry_sdk.get_global_scope().set_client(None)
+            directory.close()
+    assert response.status_code == 500
+    assert [r.path.split("?")[0] for r in stub.requests] == [f"/v1/users/{CLERK_USER}/organization_memberships"]
+    [event], [transaction] = transport.events, transport.transactions
+    assert not [c for c in (CLERK_USER, CLERK_ORG) if c in json.dumps([event, transaction])]
+    # Replaced, not dropped: the call and its route are still told apart.
+    assert event["request"]["url"] == "http://testserver/api/v1/orgs/{org_id}/projects"
+    assert transaction["request"]["url"] == "http://testserver/api/v1/orgs/{org_id}/projects"
+    [crumb] = [c for c in event["breadcrumbs"]["values"] if c["category"] == "httplib"]
+    assert crumb["data"]["url"] == f"{stub.url}/v1/users/{{id}}/organization_memberships"
+    [call] = [span for span in transaction["spans"] if span["op"] == "http.client"]
+    assert call["description"] == f"GET {stub.url}/v1/users/{{id}}/organization_memberships"
+    assert call["data"]["url"] == f"{stub.url}/v1/users/{{id}}/organization_memberships"

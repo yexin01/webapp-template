@@ -69,6 +69,9 @@ class JsonFormatter(logging.Formatter):
             if telemetry.org_id is not None:
                 payload["org_id"] = str(telemetry.org_id)
         extras = {k: v for k, v in vars(record).items() if k not in _STANDARD_RECORD_FIELDS}
+        if "request_id" in extras:
+            # An operator filters by the request's ID: a log call's own (a provider's, say) never replaces it.
+            extras["extra_request_id"] = extras.pop("request_id")
         if extras:
             payload.update(redact(extras))
         if record.exc_info and record.exc_info[0] is not None:
@@ -100,11 +103,17 @@ _SPAN_IDENTITY = frozenset({"trace_id", "span_id", "parent_span_id", "start_time
 _DROPPED_DATA = re.compile(r"(?:http|url)\.(?:query|fragment)|user\..+")
 # Span and breadcrumb data holding a URL or a request target.
 _URL_DATA = frozenset({"url", "http.url", "http.target", "url.full", "url.path"})
+# A path segment shaped like a provider's ID: a short lower-case prefix, then 10 or more letters and digits
+# (user_2abc..., org_..., cus_..., price_..., and cs_test_... for a Checkout Session). Any such segment goes, so
+# an ID of a kind nobody listed does not get through. The outgoing Clerk and Stripe calls carry their IDs in the path.
+_ID_SEGMENT = re.compile(r"(?<=/)[a-z]{2,6}_(?:(?:test|live)_)?[A-Za-z0-9]{10,}(?![A-Za-z0-9_])")
+# The scheme and host of an absolute URL.
+_ORIGIN = re.compile(r"[a-z][a-z0-9+.-]*://[^/]*", re.IGNORECASE)
 
 
 def _scrub_trace_text(value: str, max_length: int = MAX_TEXT_LENGTH) -> str:
-    """``value`` redacted, with each path or URL in it cut to its origin and path."""
-    return strip_url_queries(redact_text(value, max_length=max_length))
+    """``value`` redacted, with each path or URL in it cut to its origin and path, and each ID in a path replaced."""
+    return _ID_SEGMENT.sub("{id}", strip_url_queries(redact_text(value, max_length=max_length)))
 
 
 class _SpanText:
@@ -147,7 +156,16 @@ def _scrub_span(span: dict[str, Any], text: Callable[[str], str] = _scrub_trace_
             span[key] = _scrub_data(value, text) if key == "data" else redact(value, text=text)
 
 
-def _scrub_request(request: dict[str, Any]) -> None:
+def _matched_route(event: Any) -> str | None:
+    """The template of the route that handled the request (the SDK names the transaction after it), if one did."""
+    info, name = event.get("transaction_info"), event.get("transaction")
+    if isinstance(info, dict) and info.get("source") == "route" and isinstance(name, str) and name.startswith("/"):
+        return name
+    return None
+
+
+def _scrub_request(request: dict[str, Any], route: str | None) -> None:
+    """Scrubs a request in place. ``route`` is the template of the route that matched, if any."""
     headers = request.get("headers")
     if isinstance(headers, dict):
         request["headers"] = {
@@ -160,7 +178,12 @@ def _scrub_request(request: dict[str, Any]) -> None:
     for key in ("query_string", "fragment"):
         request.pop(key, None)
     if isinstance(request.get("url"), str):
-        request["url"] = redact_text(strip_query(request["url"]))
+        url = strip_query(request["url"])
+        if route is not None:
+            # The path of a matched route is its template: the IDs the caller put in the path stay out.
+            origin = _ORIGIN.match(url)
+            url = (origin[0] if origin else "") + route
+        request["url"] = _scrub_trace_text(url)
 
 
 def _scrub_common(event: Any, *, keep_trace_data: bool) -> None:
@@ -183,7 +206,7 @@ def _scrub_common(event: Any, *, keep_trace_data: bool) -> None:
         event["transaction"] = _scrub_trace_text(event["transaction"])
     request = event.get("request")
     if isinstance(request, dict):
-        _scrub_request(request)
+        _scrub_request(request, _matched_route(event))
     event.pop("user", None)
     contexts = event.get("contexts")
     trace = contexts.pop("trace", None) if isinstance(contexts, dict) else None
@@ -275,6 +298,9 @@ def sentry_options(settings: CoreSettings) -> dict[str, Any]:
         "traces_sampler": None if settings.sentry_traces_sample_rate else _never_sample,
         # Spans then travel only inside transactions, which before_send_transaction scrubs.
         "trace_lifecycle": "static",
+        # No outgoing call (Clerk, Stripe, the LLM provider, PostHog) carries sentry-trace or baggage: they hold the
+        # release, environment, trace ID and route names, and no provider has a use for them.
+        "trace_propagation_targets": [],
         "before_send": scrub_event,
         "before_send_transaction": scrub_transaction,
         "before_breadcrumb": scrub_breadcrumb,
@@ -401,6 +427,23 @@ ANALYTICS_ALLOWLIST: Mapping[str, frozenset[str]] = {
     "integration_test_sent": frozenset({"source"}),
 }
 
+# A property whose name, split on "_", holds one of these words is refused when its event is registered:
+# user_email, ip_address, first_name, phone_number. A joined form (firstname, ipaddress) is listed too. This stops
+# the obvious mistake of naming a property after personal data or a credential; the allowlist is what keeps a
+# property off the wire. docs/architecture.md ("Adding an analytics event") says so to authors.
+PERSONAL_DATA_WORDS = frozenset(
+    {
+        # who someone is, and how to reach them
+        *("email", "phone", "mobile", "name", "firstname", "lastname", "fullname", "surname", "username", "nickname"),
+        *("address", "street", "zip", "zipcode", "postcode", "postal", "ip", "ipaddress"),
+        *("birth", "birthday", "birthdate", "dob", "ssn", "passport", "iban"),
+        # credentials
+        *("password", "passwd", "secret", "token", "cookie", "jwt", "apikey"),
+        # what a user wrote
+        *("prompt", "message", "messages", "body"),
+    }
+)
+
 logger = logging.getLogger(__name__)
 
 _ANALYTICS_NAME = re.compile(r"[a-z][a-z0-9_]{2,63}")
@@ -412,8 +455,9 @@ class AnalyticsEvents:
     It starts with ``ANALYTICS_ALLOWLIST``. A module adds its own events with
     ``Contribution.analytics_events``, which the composition root registers at startup, so adding
     an event never edits the kernel. Registration refuses what the allowlist exists to prevent: a
-    name another event has, a property named like personal data or a secret, a name outside
-    lower-case snake case. A refusal stops the application from starting.
+    name another event has, a property with a word of ``PERSONAL_DATA_WORDS`` in its name or one of
+    ``SENSITIVE_KEYS`` as its name, a name outside lower-case snake case. A refusal stops the
+    application from starting.
     """
 
     def __init__(self, base: Mapping[str, frozenset[str]] = ANALYTICS_ALLOWLIST) -> None:
@@ -426,7 +470,9 @@ class AnalyticsEvents:
             names = [name, *properties]
             problems += [f"{n!r} is not lower-case snake case" for n in names if not _ANALYTICS_NAME.fullmatch(n)]
             problems += [
-                f"property {p!r} is named like personal data or a secret" for p in properties if p in SENSITIVE_KEYS
+                f"property {p!r} is named like personal data or a secret"
+                for p in properties
+                if p in SENSITIVE_KEYS or PERSONAL_DATA_WORDS.intersection(p.lower().split("_"))
             ]
             if problems:
                 raise ValueError(f"analytics event {name!r} cannot be registered: {'; '.join(problems)}")
