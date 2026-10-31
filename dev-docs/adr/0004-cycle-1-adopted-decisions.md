@@ -1,9 +1,9 @@
 # ADR-0004 — Decisions Adopted by Delegation in the Cycle 1 Fix Round
 
 - **Status:** Adopted by delegation, reversible, awaiting owner confirmation
-- **Date:** 2026-10-30 (§16 to §26, adopted in round 1b and fix round 2, were added on 2026-10-31)
+- **Date:** 2026-10-30 (§16 to §29, adopted in round 1b, fix round 2 and fix round 3, were added on 2026-10-31)
 - **Decided by:** Agents, under the owner's delegation of 2026-10-15: recommend the options, then choose the recommended one. The owner has not reviewed these decisions. None of them is "approved by the owner".
-- **Relates to:** DEC-001, DEC-006, DEC-008, DEC-013 and the new DEC-014 (specification §3); ADR-0001, ADR-0003; [`evidence/2026-10-30-cycle-1-fix-round.md`](../evidence/2026-10-30-cycle-1-fix-round.md), [`evidence/2026-10-31-round-1b-cycle-2-fix-round-2.md`](../evidence/2026-10-31-round-1b-cycle-2-fix-round-2.md)
+- **Relates to:** DEC-001, DEC-006, DEC-008, DEC-013 and the new DEC-014 (specification §3); ADR-0001, ADR-0003; [`evidence/2026-10-30-cycle-1-fix-round.md`](../evidence/2026-10-30-cycle-1-fix-round.md), [`evidence/2026-10-31-round-1b-cycle-2-fix-round-2.md`](../evidence/2026-10-31-round-1b-cycle-2-fix-round-2.md), [`evidence/2026-10-31-cycle-3-fix-round-3.md`](../evidence/2026-10-31-cycle-3-fix-round-3.md)
 - **Amends:** ADR-0001 (DEC-007 routing, DEC-008 login role) and ADR-0003 (cron file), by pointer lines in those files
 
 ## Context
@@ -400,7 +400,7 @@ These change what an adopter or the owner runs. Each row is a decision; each rev
 - **Alternatives.** Install scripts: keep the default and review each dependency (a new version's script would run unreviewed); `ignore-scripts=true` in `.npmrc` (blocks every lifecycle script of the workspace too, with no per-package exception); allow `esbuild` or `unrs-resolver` (each is third-party code run on every install, for a speed-up and for a check the lockfile makes redundant); pnpm 10 (blocks by default and adds the release-age limit, but is a major upgrade, still deferred). Untracked files: copy them too, as `pnpm test:vercel-build` does (it works without `git add`, but a stray or sync-conflict copy then changes the result, which is why the copy holds tracked files only, and a file you forgot to add passes here and fails in CI). A module's own tests: read a JUnit report of the whole run (no second run, but a parser for two runners). The build environment: a denylist of the app's variables (it drifts as variables are added; the allowlist fails closed).
 - **Consequences.**
   - A dependency that needs its install script fails `pnpm test:scripts`, and the message names the two places to edit; without the script it would fail later, at run time.
-  - `pnpm test:new-module` and `pnpm verify` refuse a tree with files git neither tracks nor ignores, editor and sync-conflict copies included: add, delete or ignore them.
+  - `pnpm test:new-module` and `pnpm verify` refuse a tree with files git neither tracks nor ignores, editor and sync-conflict copies included: add, delete or ignore them. A project made by `pnpm init-template` has one such file, `dev-docs/evidence/README.md`, which the rename creates (reproduced on a scratch copy, `local`), so its first `pnpm verify` needs `git add -A`; [setup.md](../../docs/setup.md#steps) says so. Having `init-template` stage the file itself is a code change, not built.
   - The generator check runs six more short test runs.
   - A tool that needs another variable of the shell for `pnpm build:check` fails to start, and the message names `MACHINE_VARIABLES` in `scripts/lib/build-check-env.mjs`.
   - pnpm's side-effects cache, on by default, can restore a package that an earlier install on the same machine built; no script runs (0 lifecycle events in either mode).
@@ -424,8 +424,8 @@ These change what an adopter or the owner runs. Each row is a decision; each rev
 
 - **Positive.** A committed, locally tested deployment baseline; a login role that cannot be the table owner; checkout that refuses a second subscription while one is unsettled (the two-tab race is closed after the fact); misconfiguration that names itself instead of failing silently; one command, `pnpm verify`, that means the same locally and in CI.
 - **Costs.** Beta platform dependence (§1), the shared-environment departure from FE-02 (§1), more Stripe calls at checkout (§2), a sign-in loop when an origin is not listed (§9), one extra request per page load for every signed-in user (§7), every monthly or yearly price of the Pro product granting Pro, whatever it charges (§16), and one extra worker transaction per counted write (§17).
-- **Not verified.** Everything in the "NOT VERIFIED" lists above. The preview deployment (§1) is the single owner action that settles most of them.
+- **Not verified.** Everything in the "NOT VERIFIED" lists above. The preview deployment (§1) is the single owner action that answers most of them; its optional questions ([deployment.md](../../docs/deployment.md#questions-the-first-preview-can-also-answer)) answer two more.
 
 ## Open for the owner
 
-Confirm, amend, or reverse each section. Until then the register records DEC-001 (topology), DEC-013 (option B) and DEC-014 (option B) as `OPEN — adopted by delegation`, and §23 of the specification lists the billing behavior change (§2), the grant of Pro by product (§16), the fix round 2 billing changes (§20, §21), and the other fix round 2 decisions (§22 to §26) as awaiting approval.
+Confirm, amend, or reverse each section. Until then the register records DEC-001 (topology), DEC-013 (option B) and DEC-014 (option B) as `OPEN — adopted by delegation`, and §23 of the specification lists the billing behavior change (§2), the grant of Pro by product (§16), the fix round 2 billing changes (§20, §21), the fix round 3 billing changes (§27), and the other decisions of fix rounds 2 and 3 (§22 to §26, §28, §29) as awaiting approval.

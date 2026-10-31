@@ -41,7 +41,7 @@ Tests never use your `.env`. Database tests create and drop their own database, 
 | `pnpm bootstrap` | Install JavaScript and Python dependencies from the lockfiles |
 | `pnpm api:lock` | Update `apps/api/uv.lock` after you edit a Python dependency (`pnpm install` updates the JavaScript lockfile) |
 | `pnpm dev` | Check the configuration, then run the API and web app with reload (starts the Stripe CLI listener when billing is in sandbox mode). macOS and Linux only: on Windows use WSL, or run `pnpm dev:api` and `pnpm dev:web` in separate terminals |
-| `pnpm build` | Production build of the web app; needs your Clerk publishable key |
+| `pnpm build` | Production build of the web app from your `.env`. The placeholder Clerk keys of `.env.example` build; a build you deploy needs your own |
 | `pnpm build:check` | Account-free production build (it gets a minimal environment, not your shell's, and reads no `.env`; the scan reads both, to look for their values) plus the bundle secret scan: what CI runs |
 | `pnpm format` | Format the web app (Prettier) and the API and perf code (Ruff) |
 | `pnpm contracts` | Regenerate the OpenAPI document and the TypeScript API types |
@@ -54,11 +54,11 @@ Tests never use your `.env`. Database tests create and drop their own database, 
 | Command | Purpose |
 |---|---|
 | `pnpm check:setup [--send-test-events]` | Validate the configuration and run the checks of the Integrations page without signing in |
-| `pnpm verify` | The checks of CI's api, web and secrets jobs, in CI's order, ending with a PASS/FAIL table; a step that cannot run is SKIPPED, and a run in which nothing passed ends NOTHING RAN (`--help` lists the options). CI's other jobs are `pnpm test:vercel-build` and `pnpm test:supabase` |
+| `pnpm verify` | The checks of CI's api, web and secrets jobs, in CI's order, ending with a PASS/FAIL table; a step that cannot run is SKIPPED, and a run in which nothing passed ends NOTHING RAN (`--help` lists the options). It stops first at a file git does not track yet (`git add -A`: the generator step copies tracked files). CI's other jobs are `pnpm test:vercel-build` and `pnpm test:supabase` |
 | `pnpm verify:quick` | Lint, format, types, and the API and web tests |
-| `pnpm verify:sandbox` | The checks that need provider accounts, each when its keys are in `.env`; ends with an evidence record |
+| `pnpm verify:sandbox` | The checks that need provider accounts, each when its keys are in `.env`; ends with an evidence record. It creates a test user in your Clerk development instance and objects in your Stripe sandbox, so it needs the owner's go-ahead (A3 in the [checklist](docs/setup.md#manual-steps-checklist)) |
 | `pnpm test` | API tests (needs `pnpm db:up`) and web unit tests |
-| `pnpm test:e2e` | Playwright tests. Account-free pages, axe and keyboard checks run by default; `E2E_SANDBOX=1` adds the signed-in flows |
+| `pnpm test:e2e` | Playwright tests. Account-free pages, axe and keyboard checks run by default; `E2E_SANDBOX=1` adds the signed-in flows, which create a Clerk test user (A3) |
 | `pnpm test:coverage` | Coverage of the API (`pytest-cov`, with branches) and the web app (`@vitest/coverage-v8`), printed in the terminal; needs `pnpm db:up`. It reports only: no threshold fails it ([limitations](docs/limitations.md#what-the-template-deliberately-does-not-do)) |
 | `pnpm test:stripe-sandbox` | The Stripe lifecycle suite against your sandbox (needs keys; changes the sandbox) |
 | `pnpm lint` / `pnpm typecheck` | ESLint, the Prettier check, Ruff (lint and format check), import contracts and migration lint / `tsc` and mypy (strict) |

@@ -12,7 +12,7 @@ Reference material is elsewhere: what each provider does and how it fails is in 
 
 Everything in this guide is a command, except the steps below. Only a person can do these: create an account, copy a key, change a dashboard-only setting, or authorize a change to a remote service. Everything else is automated: the template renames itself, creates `.env`, migrates the database, creates the Stripe product and prices, starts the Stripe listener, and verifies each integration. The commands that change a provider account or a hosted database also need the owner's authorization (A3).
 
-Each row has an ID. The step in the guide that does it carries a bold tag made of `YOU` and the same ID. `pnpm test:scripts`, which `pnpm verify` and CI run, fails and names the ID when a row has no tag, a tag has no row, or an ID appears twice on either side (`scripts/tests/manual-steps.test.mjs`).
+Each row has an ID. The step in the guide that does it carries a bold tag made of `YOU` and the same ID. `pnpm test:scripts`, which `pnpm verify` and CI run, fails and names the ID when a row has no tag, a tag has no row, or an ID appears twice on either side (`scripts/tests/manual-steps.test.mjs`). It compares IDs, not wording.
 
 ### Needed to run locally
 
@@ -27,11 +27,11 @@ Each row has an ID. The step in the guide that does it carries a bold tag made o
 | S1 | Create a Clerk account and an application; use its Development instance | A Clerk instance | [Clerk](#clerk) |
 | S2 | Enable Organizations with **Membership optional** | The personal workspace appears | [Clerk](#clerk) |
 | S3 | Copy the publishable and secret key into `.env` | `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`; `pnpm dev` starts | [Clerk](#clerk) |
-| S12 | Decide whether users may delete their own account (Clerk: User & authentication > User model) | A deleted user's subscription ends at the period's end either way | [Clerk](#clerk) |
+| S12 | Decide whether users may delete their own account (Clerk: User & authentication > User model) | Self-deletion on or off, as you decide. A deleted user's subscription ends at the period's end only once the Clerk webhook (D12) reaches the API; a local sandbox has no such webhook | [Clerk](#clerk) |
 | S4 | Create a Stripe sandbox and put its `sk_test_` key in `.env` | `STRIPE_SECRET_KEY` | [Stripe](#stripe) |
 | S5 | Save the Customer Portal settings and turn off bank debits in the Stripe Dashboard (test mode) | The portal check passes; Pro is not granted before funds arrive | [Stripe](#stripe) |
 | S6 | Set Billing > Revenue recovery > Retries to cancel or mark unpaid | Pro does not last forever on `past_due` | [Stripe](#stripe) |
-| S7 | Install the Stripe CLI, or paste a `whsec_` signing secret into `.env` | `pnpm dev` starts with sandbox billing; the CLI also gives it local webhooks | [Stripe](#stripe) |
+| S7 | Install the Stripe CLI, or copy the signing secret of a webhook destination from the Stripe Dashboard into `.env` | `pnpm dev` starts with sandbox billing; the CLI also gives it local webhooks | [Stripe](#stripe) |
 | S8 | Optional: create a Supabase project and copy its two pooler strings | A hosted database | [Supabase](#supabase-optional-hosted-database) |
 | S9 | Create a PostHog project; copy the project token; enable "Discard client IP data" | `NEXT_PUBLIC_POSTHOG_KEY` | [PostHog](#posthog) |
 | S10 | Create the Sentry project(s); copy the DSNs; enable "Prevent storing of IP addresses" | `SENTRY_DSN`, `NEXT_PUBLIC_SENTRY_DSN` | [Sentry](#sentry) |
@@ -65,7 +65,7 @@ Each row has an ID. The step in the guide that does it carries a bold tag made o
 |---|---|---|
 | A1 | Push to a remote repository, or change its settings | [Authorizations](deployment.md#authorizations) |
 | A2 | The first preview deployment, with sandbox credentials | [Authorizations](deployment.md#authorizations) |
-| A3 | Commands that change a provider account or a hosted database (`pnpm setup:stripe`, `--send-test-events`, `pnpm test:stripe-sandbox`, `--allow-remote`, the Database migrate workflow) | [Authorizations](deployment.md#authorizations) |
+| A3 | Commands that change a provider account or a hosted database (`pnpm setup:stripe`, `--send-test-events`, `pnpm test:stripe-sandbox`, `E2E_SANDBOX=1 pnpm test:e2e`, which creates a user in your Clerk development instance, `pnpm verify:sandbox`, which runs both, `--allow-remote`, the Database migrate workflow) | [Authorizations](deployment.md#authorizations) |
 | A4 | A production release | [Authorizations](deployment.md#authorizations) |
 | A5 | Live verification in production | [Authorizations](deployment.md#authorizations) |
 
@@ -116,6 +116,8 @@ You get: dependencies installed, a migrated local database, a passing test suite
 
    Success: it prints a JSON report with `"envCreated": true`. It renamed the product, filled in `SECURITY.md` and `CODE_OF_CONDUCT.md`, named the Docker Compose project after the slug, created `.env` from `.env.example` (no credential is copied), and removed the template's own records (`proofs/`, `docs-notes/`, the template's evidence files). The specification and the ADRs stay as inherited reference. Pass `--keep-template-material` to keep the removed records.
 
+   Then run `git add -A` (commit if you like). The rename adds a file, `dev-docs/evidence/README.md`, and `pnpm verify` stops, naming the file, at any file git does not track yet, because its generator check works on a copy of the files git tracks.
+
    Otherwise: the error names the option and its rule (a name of up to 60 characters; a lowercase slug; both contacts while the placeholders remain). Re-running with the same values changes nothing; re-running with different values is refused. To try the template without renaming it, run `cp .env.example .env` instead of this step.
 
 3. **Install dependencies.**
@@ -135,7 +137,7 @@ You get: dependencies installed, a migrated local database, a passing test suite
 
    Success: `pnpm db:up` returns once the container is healthy. `pnpm db:migrate` prints `{"applied": [...]}` with the versions it applied; a second run prints `{"applied": []}`. The database listens on the port in `docker-compose.yml`, which is also in `DATABASE_URL`.
 
-   Otherwise: if Docker is not running, start it. If the port is taken, move it with `--db-port` in step 2, or edit the port in `docker-compose.yml` and in `DATABASE_URL`.
+   Otherwise: if Docker is not running, start it. If the port is taken, run step 2 again with the same `--name` and `--slug` and a `--db-port <port>`: it moves the port in `docker-compose.yml`, `.env.example` and the test defaults (the API tests, the browser tests, the performance server and CI), and does not touch your `.env`, so change the port in its `DATABASE_URL` yourself. If you skipped step 2, edit the port in `docker-compose.yml` and `DATABASE_URL`, and export `TEST_DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:<port>/app` in the shell that runs `pnpm test` and `pnpm verify`: the tests use the port in `DEFAULT_TEST_DATABASE_URL` (`apps/api/tests/conftest.py`) and would create their `app_test_*` databases on any server that listens there.
 
    Optional: `pnpm db:seed --yes` loads deterministic synthetic rows. They are fixtures, not Clerk accounts: signing in creates your own user row, so the seeded users and organizations never appear in the app. `pnpm db:reset --yes` drops the schema `app` and the migration ledger, re-applies the migrations and seeds; objects a migration creates outside `app` survive it. Both refuse unless `APP_ENV` is `local` or `test` and the database is local; `pnpm db:reset` deletes local data, so ask first if it is not yours.
 
@@ -177,7 +179,7 @@ You get: dependencies installed, a migrated local database, a passing test suite
 
 ### You are done with Part 1 when
 
-`pnpm check:setup` exits 0 and `pnpm verify:quick` ends without a failed step. For the checks of CI's api, web and secrets jobs (add the account-free end-to-end tests in a browser, the production build, the audits and the secret scan), install Chromium once and run `pnpm verify`; it takes several minutes, and a step that cannot run (gitleaks not installed) is reported as skipped. CI's other jobs have their own commands: `pnpm test:vercel-build` (the deployment configuration) and `pnpm test:supabase` (Supabase's PostgreSQL image, needs Docker); the CodeQL scan runs only on GitHub. `pnpm verify --help` lists its options.
+`pnpm check:setup` exits 0 and `pnpm verify:quick` ends without a failed step. For the checks of CI's api, web and secrets jobs (add the account-free end-to-end tests in a browser, the production build, the audits and the secret scan), install Chromium once, run `git add -A` (step 2), and run `pnpm verify`; it takes several minutes, and a step that cannot run (gitleaks not installed) is reported as skipped. CI's other jobs have their own commands: `pnpm test:vercel-build` (the deployment configuration) and `pnpm test:supabase` (Supabase's PostgreSQL image, needs Docker); the CodeQL scan runs only on GitHub. `pnpm verify --help` lists its options.
 
 ---
 
@@ -203,7 +205,7 @@ Sign-in, sessions and organizations. Use a **development** instance for everythi
    ```
 
    Do not use Clerk's keyless mode: the API verifies tokens against the issuer in the publishable key and reads memberships with the secret key, so both keys are required.
-4. **[YOU S12]** Decide whether users may delete their own account. In the Dashboard open **User & authentication**, find the **User model** section, and set **Allow users to delete their accounts** as you want it ([Clerk: sign-up and sign-in options](https://clerk.com/docs/guides/configure/auth-strategies/sign-up-sign-in-options)). The template's header shows Clerk's `<UserButton />`, whose profile offers deletion when this is on; Clerk does not state the setting's default (NOT VERIFIED), and you can delete a user in the Dashboard whatever it says. The template handles a deletion either way: when Clerk reports `user.deleted`, the API revokes the user's memberships and records `identity.user_deleted`, and billing asks Stripe to end each of the user's subscriptions at the end of the period they paid for (`BILLING_ON_USER_DELETED`, default `cancel_at_period_end`; `log` only reports it). That needs the Clerk webhook endpoint (D12): the API learns of a deletion nowhere else. A restricted Stripe key needs write access to Subscriptions for it, or set `BILLING_ON_USER_DELETED=log`. Refunds, deleting data and exports are your deletion policy (DEC-004), not the template's ([operations.md](operations.md#a-user-deleted-in-clerk), [data-inventory.md](data-inventory.md#adopter-decision-checklist)).
+4. **[YOU S12]** Decide whether users may delete their own account. In the Dashboard open **User & authentication**, find the **User model** section, and set **Allow users to delete their accounts** as you want it ([Clerk: sign-up and sign-in options](https://clerk.com/docs/guides/configure/auth-strategies/sign-up-sign-in-options)). The template's header shows Clerk's `<UserButton />`, whose profile offers deletion when this is on; Clerk does not state the setting's default (NOT VERIFIED), and you can delete a user in the Dashboard whatever it says. However a user is deleted, the template handles it once Clerk reports `user.deleted`: the API revokes the user's memberships and records `identity.user_deleted`, and billing expires the user's open Checkout Sessions and asks Stripe to end each of the user's subscriptions at the end of the period they paid for (one still awaiting its first payment is cancelled at once; `BILLING_ON_USER_DELETED`, default `cancel_at_period_end`; `log` only reports it). That needs the Clerk webhook endpoint (D12), which only a deployed environment has: the API learns of a deletion nowhere else, so in a local sandbox a deleted user's subscription keeps renewing until you end it in the Stripe Dashboard. A restricted Stripe key needs write access to Subscriptions for it, or set `BILLING_ON_USER_DELETED=log`. Refunds, deleting data and exports are your deletion policy (DEC-004), not the template's ([operations.md](operations.md#a-user-deleted-in-clerk), [data-inventory.md](data-inventory.md#adopter-decision-checklist)).
 5. Start the apps.
 
    ```bash
@@ -233,7 +235,9 @@ Billing with Free and Pro. Use a Stripe **sandbox** (test mode).
 4. **[YOU S5]** Save the Customer Portal in the Stripe Dashboard, in test mode: **Settings > Billing > Customer portal**. Turn on: updating payment methods, viewing invoices, cancellation at the end of the billing period, and switching between exactly the two Pro prices. The template reads the portal and never changes it; `pnpm setup:stripe` and the `/integrations` Stripe check list what is missing. Then open **Settings > Payment methods** (the Dashboard's payment methods page: "Only payment methods that you enabled can be shown to your customers", [Stripe: dynamic payment methods](https://docs.stripe.com/payments/payment-methods/dynamic-payment-methods)) and turn off the bank debits and bank transfers (SEPA, ACH, BECS, Bacs and the like): Pro follows a subscription's status, and a bank debit reads `active` before the funds arrive ([limitations](limitations.md#known-limits-by-area)). Checkout already offers cards only; which methods the portal's payment-method update offers is NOT VERIFIED, so do not leave a delayed method on.
 5. **[YOU S6]** In the Dashboard open **Billing > Revenue recovery > Retries** and set what happens when all retries fail to cancel the subscription or mark it unpaid. Leaving it past due would keep Pro indefinitely (DEC-010).
 6. **[YOU S7]** Install the [Stripe CLI](https://docs.stripe.com/stripe-cli). `pnpm dev` then runs `stripe listen --forward-to http://127.0.0.1:8000/api/v1/webhooks/stripe` for you, and gives the API the signing secret for that run only (it is never written to `.env`), when `BILLING_MODE=sandbox`, the key is an `sk_test_` key and the CLI is installed. You need no `stripe login`. Without the CLI, sandbox billing needs a `STRIPE_WEBHOOK_SECRET` in `.env` (the next step): with it `pnpm dev` prints one line and goes on without a listener, and a test checkout stays Free until `pnpm billing:reconcile`; without it `pnpm dev` stops and lists `STRIPE_WEBHOOK_SECRET is required and must start with whsec_`.
-7. Commands that load the full API configuration without `pnpm dev` (`pnpm billing:reconcile`, `cd apps/api && uv run python -m app.cli job <name>`) read `STRIPE_WEBHOOK_SECRET` from `.env`, and refuse to start without a `whsec_...` value once `BILLING_MODE` is `sandbox`. Set it once: run `stripe login`, then `stripe listen --print-secret`, and put the `whsec_...` it prints in `.env`.
+7. Commands that load the full API configuration without `pnpm dev` (`pnpm billing:reconcile`, `cd apps/api && uv run python -m app.cli job <name>`, and `pnpm verify:sandbox`, whose browser part starts the API from `.env`) read `STRIPE_WEBHOOK_SECRET` from `.env`, and refuse to start without a `whsec_...` value once `BILLING_MODE` is `sandbox`. Put one there once, by either route:
+   - With the CLI: run `stripe login`, then `stripe listen --print-secret`, and copy the `whsec_...` it prints.
+   - Without the CLI: in the Stripe Dashboard, in your sandbox, open **Workbench** and its **Webhooks** tab and select **Create an event destination**. Select **Your account**, choose the payload format **Snapshot** and any event type, select **Continue**, select **Webhook endpoint** as the destination type, select **Continue**, and enter an HTTPS **Endpoint URL**. On the settings page, select **Reveal secret** and copy the `whsec_...` ([Stripe: webhooks](https://docs.stripe.com/webhooks), read 2026-10-31; the labels are from that page, not seen in a Dashboard: NOT VERIFIED). Stripe documents that a registered endpoint must be a publicly accessible HTTPS URL, so use the URL you will deploy to, or any HTTPS URL you control. Stripe cannot deliver to your machine, so local webhooks still need the CLI (step 6); this secret only lets the commands above start.
 8. Restart `pnpm dev`. Check: `pnpm check:setup` shows the Stripe row Passed for the two prices, their product, reading subscriptions and the portal. Open `/billing`, upgrade with a [Stripe test card](https://docs.stripe.com/testing), and confirm the plan becomes Pro within a few seconds. Cancel at period end in the portal. If the plan stays Free, see [Troubleshooting](#troubleshooting).
 9. **(A3)** Automated end to end: `pnpm test:stripe-sandbox` runs the lifecycle against your sandbox (customers, test clocks, subscriptions are created and deleted). It needs the unrestricted key, the two prices and the product. `pnpm verify:sandbox` runs it as a part.
 
@@ -260,7 +264,7 @@ Use it when you want a hosted sandbox or preview database. The local Docker data
    ```
 
    Type a new password of 16 or more characters twice (or set `API_DB_PASSWORD` for one non-interactive run; never put it in `.env`). Success: `{"login_role": "app_login", "login": true}`, and a line saying where `DATABASE_URL` goes. Re-running rotates the password.
-4. Set `DATABASE_URL` in `.env` to the Transaction pooler string with the user `app_login.<project-ref>` and that password. Never use the `postgres` URL there: outside local development the API refuses a login role that could skip row-level security.
+4. Set `DATABASE_URL` in `.env` to the Transaction pooler string with the user `app_login.<project-ref>` and that password. Never use the `postgres` URL there: outside local development the API refuses a login role that could skip row-level security. The browser part of `pnpm verify:sandbox` runs only against a local `DATABASE_URL`, because it writes test rows: with this hosted URL in `.env` that part is BLOCKED and the command exits 1. Keep the local URL in `.env` while you run it, or run `pnpm verify:sandbox --skip e2e`, which leaves the browser tests NOT VERIFIED.
 5. Check: `pnpm check:setup` shows PostgreSQL Passed.
 
 Apply migrations only with `pnpm db:migrate`. Never run `supabase db push` or `supabase db reset`, and do not connect Supabase Branching to this repository: they keep a second migration ledger and bypass the runner's checks.
@@ -292,11 +296,13 @@ A connectivity check only, optional.
 
 ### You are done with Part 2 when
 
+**(A3)** this command
+
 ```bash
 pnpm verify:sandbox
 ```
 
-ends with no `FAIL` and no `BLOCKED` and shows `PASS` for each part you configured. It runs three parts, each only when its keys are there: `pnpm check:setup`, `pnpm test:stripe-sandbox`, and the signed-in browser tests (`E2E_SANDBOX=1 pnpm test:e2e`, which create a Clerk test user `e2e+clerk_test@example.com` in your development instance and need a local `DATABASE_URL` and Chromium). A part without keys is `SKIPPED` and stays NOT VERIFIED. It ends with an evidence record: paste it into a new file under `dev-docs/evidence/` (spec §20). If sign-up restrictions in your Clerk instance block `+clerk_test` addresses, relax them (the Restrictions setting; label not re-checked). Also open `/integrations` and select **Run all server checks**; each configured service must be Passed.
+ends with no `FAIL` and no `BLOCKED` and shows `PASS` for each part you configured. It runs three parts, each only when its keys are there: `pnpm check:setup`, `pnpm test:stripe-sandbox` (customers, test clocks and subscriptions are created and deleted in your Stripe sandbox), and the signed-in browser tests (`E2E_SANDBOX=1 pnpm test:e2e`, which create a Clerk test user `e2e+clerk_test@example.com` in your development instance and need a local `DATABASE_URL` and Chromium; a hosted `DATABASE_URL` from S8 makes that part BLOCKED). A part without keys is `SKIPPED` and stays NOT VERIFIED. It ends with an evidence record: paste it into a new file under `dev-docs/evidence/` (spec §20). If sign-up restrictions in your Clerk instance block `+clerk_test` addresses, relax them (the Restrictions setting; label not re-checked). Also open `/integrations` and select **Run all server checks**; each configured service must be Passed.
 
 ---
 
@@ -306,15 +312,15 @@ Summary; every step, setting and check is in [deployment.md](deployment.md). The
 
 The first deployment needs `APP_BASE_URL`, and the Clerk and Stripe webhook endpoints need the URL of a deployment, which does not exist until the first one. So there are two passes: the first deploys with billing mocked and creates no endpoint, the second adds the endpoints at the real URL ([why, and the details](deployment.md#the-first-preview-in-order)).
 
-1. Put the repository on a Git host and push it (A1).
+1. Put the repository on a Git host and push it (A1). Create your own repository there and point `origin` at it first (`git remote -v` shows where your clone came from).
 2. Create the Vercel project and its settings: root directory, Framework Preset **Services**, function region, Deployment Protection, plan (D1 to D3, D5, D6).
 3. Create the preview database and run the **Database migrate** workflow for `preview`, then `pnpm db:api-login` (D8, A3; [Hosted database and migrations](deployment.md#hosted-database-and-migrations)).
 4. Work out the branch URL, `https://<project-name>-git-<branch-name>-<scope-slug>.vercel.app` ([how, and its limits](deployment.md#the-first-preview-in-order)), and add the Preview variables of the first pass (D4, D16; [the map](deployment.md#variables-which-service-reads-what)): `APP_BASE_URL` set to that URL, `DATABASE_URL` with the `app_login` role, the Clerk development keys, `BILLING_MODE=mock` with `LLM_MODE`, `ANALYTICS_MODE` and `ERROR_REPORTING_MODE` set to `disabled`, and your Clerk user ID in `DIAGNOSTICS_OPERATOR_IDS`.
 5. Authorize the first preview deployment (A2). Read the deployment's URLs on the project's Overview or Deployments tab: if its branch URL differs from `APP_BASE_URL`, correct `APP_BASE_URL` and redeploy.
-6. Run checks 1 to 4, 7 and 8 of [Verify the first preview](deployment.md#verify-the-first-preview). The first takes two minutes: `curl -sI https://<preview-host>/dashboard` signed out (add `-H "x-vercel-protection-bypass: <secret>"` if the preview is protected). A `307` (to `/sign-in`, or to Clerk's handshake URL on a development instance) means the Next.js proxy ran inside the service. A `200` means only the page gate in the browser protects pages; the API authorizes every operation either way. Whether the proxy runs under Services is **NOT VERIFIED** until you do this. Then sign in: the dashboard must show "No projects yet", which also shows that a protected preview lets the app's own API calls through.
+6. Run checks 1 to 4, 7 and 8 of [Verify the first preview](deployment.md#verify-the-first-preview). The first takes two minutes: `curl -sI https://<preview-host>/dashboard` signed out (add `-H "x-vercel-protection-bypass: <secret>"` if the preview is protected). A `307` to `/sign-in?redirect_url=...` means the Next.js proxy ran inside the service (a browser-like request on a development instance is sent to Clerk's handshake URL instead, which also comes from the proxy: [check 1](deployment.md#verify-the-first-preview)). A `200` means only the page gate in the browser protects pages; the API authorizes every operation either way. Whether the proxy runs under Services is **NOT VERIFIED** until you do this. Then sign in: the dashboard must show "No projects yet", which also shows that a protected preview lets the app's own API calls through.
 7. Second pass: create the Clerk and Stripe webhook endpoints at the real URL (D12). Add `BILLING_MODE=sandbox`, the Stripe variables, the two signing secrets, and the PostHog and Sentry variables you use. Redeploy, and run checks 4 to 6 again.
 
-You are done with Part 3 when every check under [Verify the first preview](deployment.md#verify-the-first-preview) passes and you have recorded the results as `sandbox` evidence. Production is a separate sequence ([deployment.md](deployment.md#production)).
+You are done with Part 3 when checks 1 to 8 under [Verify the first preview](deployment.md#verify-the-first-preview) pass and you have recorded the results as `sandbox` evidence. Production is a separate sequence ([deployment.md](deployment.md#production)).
 
 ---
 
@@ -324,7 +330,7 @@ You are done with Part 3 when every check under [Verify the first preview](deplo
 |---|---|
 | `Invalid configuration: ...` when the API starts | `pnpm check:setup` lists the variables by name. Edit `.env`, restart `pnpm dev` |
 | `pnpm dev` stops with "Clerk is not configured" | Paste your Clerk development keys (S3) |
-| `pnpm build` fails on the Clerk publishable key | Use `pnpm build:check` (account-free), or paste your keys |
+| `pnpm build` fails naming `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | `.env` is missing or the key is empty: run step 2 (it creates `.env`) or `cp .env.example .env`. The placeholder pair in `.env.example` builds; a build you deploy needs your own keys. `pnpm build:check` needs neither |
 | `pnpm test` or `pnpm verify` stops with "The database tests are required here", or a bare `uv run pytest` skips them ("PostgreSQL is not available") | `pnpm db:up`; or set `TEST_DATABASE_URL` to a **local** server. `pnpm verify --no-db` is the explicit exception |
 | `/api/v1/*` returns 500 in the browser | The API is not running or stopped at start. Look for `Invalid configuration` in the `pnpm dev` output; run `pnpm check:setup`; fix `.env`; restart `pnpm dev` (the API does not reload `.env`) |
 | Every sign-in asks you to create an organization, or there is no "Personal workspace" | Membership required: set **Membership optional** (S2) |
@@ -339,3 +345,5 @@ You are done with Part 3 when every check under [Verify the first preview](deplo
 | `corepack: command not found` | Node 25 and later: `npm install -g corepack`, or `npm install -g pnpm@9.15.0` |
 | The migration cannot connect to Supabase | The direct host is IPv6-only: use the Session pooler string |
 | `Migration ... was modified after being applied` | A local database that applied an older first migration: `pnpm db:reset --yes` (deletes local data; ask first if it is not yours) |
+| `Migration ...: line endings changed since it was applied` | A tool rewrote the file's line endings; the text is the same. Restore the ones the message names ([operations.md](operations.md#migrations)) |
+| `pnpm verify` or `pnpm test:new-module` stops with "1 file is not in git yet (...)" | The generator check copies the files git tracks, and a file is not tracked yet (`pnpm init-template` and `pnpm new:module` add some): `git add -A`, or delete or ignore the file |

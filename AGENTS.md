@@ -22,7 +22,7 @@ Read it before making changes. Do not restate its requirements in other files; l
 - Vercel deployment proof (DEC-001, local only): [`proofs/dec-001/`](proofs/dec-001/README.md)
 - Quality gates and evidence statuses: §19, §20
 - Requirements traceability matrix: §21
-- Evidence records: [`dev-docs/evidence/`](dev-docs/evidence/2026-10-31-round-1b-cycle-2-fix-round-2.md) (latest: round 1b, the cycle 2 review and fix round 2; before it, [the cycle 1 fix round](dev-docs/evidence/2026-10-30-cycle-1-fix-round.md))
+- Evidence records: [`dev-docs/evidence/`](dev-docs/evidence/2026-10-31-cycle-3-fix-round-3.md) (latest: the cycle 3 review and fix round 3; before it, [round 1b, the cycle 2 review and fix round 2](dev-docs/evidence/2026-10-31-round-1b-cycle-2-fix-round-2.md), and [the cycle 1 fix round](dev-docs/evidence/2026-10-30-cycle-1-fix-round.md))
 
 ## Verify before claiming anything works
 
@@ -33,9 +33,9 @@ pnpm verify:quick     # while iterating: lint, format, types, and the API and we
 pnpm hooks:install    # once per clone: scans staged changes for secrets before each commit (Docker is enough without gitleaks)
 ```
 
-- `pnpm verify --help` lists its options and `pnpm verify --list` its steps. A step that cannot run (gitleaks not installed, `--offline`, `--no-db`) is reported as SKIPPED with the reason, never as PASS.
+- `pnpm verify --help` lists its options and `pnpm verify --list` its steps. A step that cannot run (gitleaks not installed, `--offline`, `--no-db`) is reported as SKIPPED with the reason, never as PASS. `pnpm verify` and `pnpm test:new-module` copy the files git tracks and stop at a file git neither tracks nor ignores: run `git add -A` after you create files (`pnpm new:module`, `pnpm init-template`).
 - CI's other jobs have their own commands: `pnpm test:vercel-build` (deployment configuration, needs network) and `pnpm test:supabase` (Supabase's Postgres image, needs Docker). `pnpm check:setup` checks the configuration and the integration probes without signing in.
 - Test tiers: unit, integration, and contract tests run in `pnpm test`; every API response in a test session is checked against the OpenAPI document. `pnpm test:e2e` is the account-free browser tier (public pages, mocked: clerk-js is blocked). The sandbox tier (`pnpm verify:sandbox`, or `E2E_SANDBOX=1 pnpm test:e2e`) needs provider keys in `.env`.
-- Commands that contact a provider or create objects in an account need the owner's authorization (rule 1): `pnpm setup:stripe`, `pnpm verify:sandbox`, `pnpm test:stripe-sandbox`, `pnpm check:setup --send-test-events`, and anything with `--allow-remote`. Plain `pnpm check:setup` contacts only the providers whose mode is `sandbox`.
+- Commands that contact a provider or create objects in an account need the owner's authorization (rule 1): `pnpm setup:stripe`, `pnpm verify:sandbox`, `E2E_SANDBOX=1 pnpm test:e2e` (it creates a Clerk test user), `pnpm test:stripe-sandbox`, `pnpm check:setup --send-test-events`, and anything with `--allow-remote`. Plain `pnpm check:setup` contacts only the providers whose mode is `sandbox`.
 
 Record results in `dev-docs/evidence/` (one file per run) and label each integration as mocked, local, sandbox, or live. `pnpm verify:sandbox` and `pnpm check:setup` print a record ready to paste. With sandbox keys in `.env`, the `/integrations` page runs a live check per service.

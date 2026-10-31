@@ -17,7 +17,7 @@ pnpm db:up           # local PostgreSQL; the API tests fail without it
 pnpm verify          # the checks of CI's api, web and secrets jobs; `pnpm verify:quick` while iterating
 ```
 
-`pnpm verify` ends in a table of what ran. A step that could not run (gitleaks not installed, `--offline`, `--no-db`) shows as SKIPPED with the reason. `pnpm verify:sandbox` runs the provider checks and needs your own sandbox keys.
+`pnpm verify` ends in a table of what ran. A step that could not run (gitleaks not installed, `--offline`, `--no-db`) shows as SKIPPED with the reason. `pnpm verify` also stops at a file git neither tracks nor ignores, because its generator check copies the tracked files: run `git add -A` after you create files. `pnpm verify:sandbox` runs the provider checks, needs your own sandbox keys, and creates objects in those accounts (a Clerk test user, Stripe sandbox customers).
 
 ## Ground rules
 

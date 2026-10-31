@@ -30,7 +30,7 @@ pnpm hooks:install    # once per clone: scans staged changes for secrets before 
 ```
 
 - First-time setup, from clone to a running app, is in [`docs/setup.md`](docs/setup.md).
-- `pnpm verify --help` lists its options and `pnpm verify --list` its steps. A step that cannot run (gitleaks not installed, `--offline`, `--no-db`) is reported as SKIPPED with the reason, never as PASS.
-- `pnpm check:setup` checks the configuration and the integration probes without signing in; it contacts only the providers whose mode is `sandbox`. Commands that contact a provider or create objects in an account need the owner's authorization (rule 1): `pnpm setup:stripe`, `pnpm verify:sandbox`, `pnpm test:stripe-sandbox`, `pnpm check:setup --send-test-events`, and anything with `--allow-remote`.
+- `pnpm verify --help` lists its options and `pnpm verify --list` its steps. A step that cannot run (gitleaks not installed, `--offline`, `--no-db`) is reported as SKIPPED with the reason, never as PASS. `pnpm verify` and `pnpm test:new-module` copy the files git tracks and stop at a file git neither tracks nor ignores: run `git add -A` after you create files (`pnpm new:module`, `pnpm init-template`).
+- `pnpm check:setup` checks the configuration and the integration probes without signing in; it contacts only the providers whose mode is `sandbox`. Commands that contact a provider or create objects in an account need the owner's authorization (rule 1): `pnpm setup:stripe`, `pnpm verify:sandbox`, `E2E_SANDBOX=1 pnpm test:e2e` (it creates a Clerk test user), `pnpm test:stripe-sandbox`, `pnpm check:setup --send-test-events`, and anything with `--allow-remote`.
 
 Record results in `dev-docs/evidence/` and label each integration as mocked, sandbox, or live. With sandbox keys in `.env`, the `/integrations` page runs a live check per service.
