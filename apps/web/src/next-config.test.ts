@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { PHASE_PRODUCTION_BUILD } from "next/constants";
 
+import { PROXY_TIMEOUT_MS } from "./lib/api/deadlines";
 import { buildContentSecurityPolicy } from "./lib/csp";
 
 /**
@@ -64,6 +65,21 @@ describe("next.config.ts", () => {
   it("passes an empty value where CLERK_JWT_KEY is unset, which the proxy reads as no key", async () => {
     const config = await configFor(serverEnv);
     expect(config.env?.NEXT_PUBLIC_CLERK_JWT_KEY).toBe("");
+  });
+});
+
+/**
+ * `next dev` and `next start` serve /api/v1 through a rewrite proxy that gives up after 30 s with a bare 500 unless
+ * `experimental.proxyTimeout` says otherwise. The browser waits up to PROVIDER_TIMEOUT_MS for the calls that reach
+ * Stripe or the LLM, so the proxy must outlast it (src/lib/api/deadlines.ts; client.test.ts pins the order).
+ */
+describe("the /api/v1 rewrite proxy of next dev and next start", () => {
+  it("is given the timeout that outlasts the client's longest deadline", async () => {
+    const config = await configFor(serverEnv);
+    expect(
+      config.experimental?.proxyTimeout,
+      "experimental.proxyTimeout must be PROXY_TIMEOUT_MS: the proxy's 30 s default answers a slow Stripe or LLM call with a bare 500 while the client still waits",
+    ).toBe(PROXY_TIMEOUT_MS);
   });
 });
 
