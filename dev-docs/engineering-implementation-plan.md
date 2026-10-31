@@ -121,7 +121,7 @@ These decisions are confirmed. A confirmed technology choice is not evidence tha
 
 | ID | Decision | Status | Blocks | Next action |
 |---|---|---|---|---|
-| DEC-001 | Python backend on Vercel | OPEN — local proof recorded 2026-10-14 ([evidence](evidence/dec-001-vercel-python.md)); topology B (one project with Vercel Services, Beta) adopted by delegation 2026-10-30 ([ADR-0004 §1](adr/0004-cycle-1-adopted-decisions.md)); platform verification pending | The platform items of Gate E | Owner authorizes the preview deployment, runs the two-minute check, and confirms or reverses the topology (§18, P1; §23) |
+| DEC-001 | Python backend on Vercel | OPEN — local proof recorded 2026-10-14 ([evidence](evidence/dec-001-vercel-python.md)); topology B (one project with Vercel Services, Beta) adopted by delegation 2026-10-30 ([ADR-0004 §1](adr/0004-cycle-1-adopted-decisions.md)); platform verification pending | The platform verification of the backend (Gate E); implementation ran ahead of it under deviation D-001 | Owner authorizes the preview deployment, runs the two-minute check, and confirms or reverses the topology (§18, P1; §23) |
 | DEC-002 | Individual billing vs. organization entitlements | RESOLVED 2026-10-14 — option (b) ([ADR-0002](adr/0002-organization-entitlements-contacts-adopter-decisions.md)) | — | — |
 | DEC-003 | Performance targets | RESOLVED 2026-10-14 — adopter-owned (ADR-0002) | — (the template claims no targets) | Each adopter sets targets from its own preview baseline (`perf/run-plan-template.md`) |
 | DEC-004 | Data retention, export, and deletion | RESOLVED 2026-10-14 — adopter-owned (ADR-0002) | Deletion and export features remain out of the template; no deletion-completeness claim | Each adopter completes the checklist in `docs/data-inventory.md` |
@@ -143,7 +143,7 @@ These decisions are confirmed. A confirmed technology choice is not evidence tha
 - **Status:** OPEN — mandatory technical validation. Topology B was adopted by delegation on 2026-10-30 ([ADR-0004 §1](adr/0004-cycle-1-adopted-decisions.md)), reversible, awaiting owner confirmation.
 - **Owner:** Repository owner.
 - **Blocks:**
-  - Backend implementation beyond the proof.
+  - Backend implementation beyond the proof (it ran ahead under deviation D-001, with local-only verification).
   - Final Python framework selection.
   - Validation of DEC-008.
   - Vercel project topology (DEC-007).
