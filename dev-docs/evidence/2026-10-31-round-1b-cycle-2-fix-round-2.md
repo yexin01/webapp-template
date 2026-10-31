@@ -119,7 +119,11 @@ Run in `arch/docs2` at `1729bd0` plus the documentation commits, label `local`. 
 |---|---|
 | The checklist and guide agreement command of `docs/setup.md` | Prints "checklist and guide agree" (S12 added to both) |
 | `pnpm check:links` | Every relative Markdown link, its `#fragment` and the `docs/…#fragment` pointers in code resolve |
-| `pnpm check:placeholders`, `pnpm test:init-template` | See the final report of the pass: recorded there, not restated here |
+| `pnpm check:placeholders` | Exit 0 (template mode: the two contact placeholders are present, as expected) |
+| `pnpm test:init-template` | Passed, 6.6 s (the copy renames, applies the adopter policy once, and every link in it resolves) |
+| `pnpm test:scripts` | 114 tests, 114 pass, 3.4 s |
+
+Not run in this pass: the API and web suites, `pnpm verify`, `pnpm build:check`, and the end-to-end tests. No code, test, script, workflow or lint configuration changed.
 
 Platform facts were re-read from Vercel, Clerk, Stripe, Supabase and GitHub pages on 2026-10-31; each page used is cited where its fact is written (deployment, operations, limitations, data inventory, the DEC-001 record). Nothing from them was observed on a deployment.
 
