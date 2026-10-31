@@ -26,10 +26,16 @@ const example = readFileSync(path.join(root, ".env.example"), "utf8");
 const PLATFORM = ["VERCEL_ENV"];
 /** Read from the build environment by next.config.ts and Sentry's build plugin, never loaded from .env. */
 const BUILD_ENVIRONMENT = ["SENTRY_AUTH_TOKEN", "SENTRY_ORG", "SENTRY_PROJECT"];
-/** Read by test tooling, not by the app. No tag line; the file that reads each must still name it. */
-const TOOLING: Record<string, string> = {
-  E2E_CLERK_USER_EMAIL: "apps/web/e2e/support/sandbox.ts",
-  E2E_DATABASE_URL: "apps/web/playwright.config.ts",
+/** Read by test tooling, not by the app: no tag line. Each has the file that reads it, which must still name it, and why. */
+const TOOLING: Record<string, { file: string; why: string }> = {
+  E2E_CLERK_USER_EMAIL: {
+    file: "apps/web/e2e/support/sandbox.ts",
+    why: "the test user of the sandbox end-to-end run",
+  },
+  E2E_DATABASE_URL: {
+    file: "apps/web/playwright.config.ts",
+    why: "the database of the account-free end-to-end API server",
+  },
 };
 
 type Tag = { apps?: string; kind?: string; baked: boolean };
@@ -262,7 +268,7 @@ describe(".env.example and the web app's variables", () => {
     expect(found, `\n${found.join("\n")}`).toEqual([]);
   });
 
-  it.each(Object.entries(TOOLING))("%s is still read where this test says", (name, file) => {
+  it.each(Object.entries(TOOLING))("%s is still read where this test says", (name, { file }) => {
     expect(
       readFileSync(path.join(root, file), "utf8"),
       `${file} no longer reads ${name}: drop it from TOOLING`,

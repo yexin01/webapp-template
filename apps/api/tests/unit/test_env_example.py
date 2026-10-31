@@ -1,10 +1,10 @@
 """``.env.example`` names the variables the API reads, tagged for the app that reads them (ENV-06).
 
-Three lists are kept by hand: the API's settings (``Settings`` and ``DatabaseSettings``), the web app's
-variables, and the file an adopter edits. This is the API half of the check that they agree; the web half
-is apps/web/src/lib/env-example-parity.test.ts. Both read the file by the rules its legend gives: a
-variable is a line ``NAME=`` or ``# NAME=``; its tag is the ``# >`` line in the comment block just above it,
-else the default in the title of its section (the Advanced section).
+Four lists are kept by hand: the API's settings (``Settings`` and ``DatabaseSettings``), the web app's
+variables, the bundle scan's ``SERVER_ONLY_NAMES``, and the file an adopter edits. This is the API half of
+the check that they agree; the web half is apps/web/src/lib/env-example-parity.test.ts. Both read the file
+by the rules its legend gives: a variable is a line ``NAME=`` or ``# NAME=``; its tag is the ``# >`` line in
+the comment block just above it, else the default in the title of its section (the Advanced section).
 
 ``problems`` is a pure function of the file's text, so the last tests show what each kind of drift reports.
 A failure names the variable and what to change.
@@ -36,10 +36,10 @@ VOCABULARY = {
 PLATFORM_LEAD = "# Set by the platform"
 # Names Vercel sets on a deployment that the API reads. Read, never written: the header lists them, the file has no line.
 PLATFORM = {"VERCEL_ENV", "VERCEL_URL", "VERCEL_BRANCH_URL", "VERCEL_GIT_COMMIT_SHA"}
-# Read by test tooling, not by the apps. No tag line; the file that reads each must still name it.
+# Read by test tooling, not by the apps: no tag line. Each has the file that reads it, which must still name it, and why.
 TOOLING = {
-    "E2E_CLERK_USER_EMAIL": "apps/web/e2e/support/sandbox.ts",
-    "E2E_DATABASE_URL": "apps/web/playwright.config.ts",
+    "E2E_CLERK_USER_EMAIL": ("apps/web/e2e/support/sandbox.ts", "the test user of the sandbox end-to-end run"),
+    "E2E_DATABASE_URL": ("apps/web/playwright.config.ts", "the database of the account-free end-to-end API server"),
 }
 # Settings the API keeps out of its logs (SecretStr) that are not secrets, so the file tags them kind=config.
 NOT_SECRET = {
@@ -252,7 +252,7 @@ def test_env_example_and_the_api_settings_agree() -> None:
     assert not found, "\n" + "\n".join(found)
 
 
-@pytest.mark.parametrize(("name", "path"), TOOLING.items())
+@pytest.mark.parametrize(("name", "path"), [(name, path) for name, (path, _) in TOOLING.items()])
 def test_the_tooling_exceptions_are_still_read_where_they_say(name: str, path: str) -> None:
     assert name in (REPO_ROOT / path).read_text(encoding="utf-8"), (
         f"{path} no longer reads {name}: drop it from TOOLING"
