@@ -230,7 +230,7 @@ Jobs are registered in code (`kernel.jobs.register(Job(...))`), and every job mu
 - the CLI: `uv run python -m app.cli job` lists jobs, and `job <name>` runs one;
 - `GET /api/v1/jobs/<name>` with `Authorization: Bearer <CRON_SECRET>`. This is what Vercel Cron calls, from the `crons` of the root `vercel.json`. A test fails if that file drifts from the registry.
 
-Without `CRON_SECRET`, the endpoint returns 404. Default schedules are daily, which a Hobby project can run. Hobby restricts a project to non-commercial, personal use ([Hobby plan](https://vercel.com/docs/plans/hobby), updated 2026-09-14) and fires a daily cron anywhere within its scheduled hour ([cron usage and pricing](https://vercel.com/docs/cron-jobs/usage-and-pricing), updated 2026-07-15), so a commercial launch needs a plan that allows it, and on plans that allow it you can run `drain-outbox` more often. Vercel Cron invokes production deployments only. Every job bounds its work per run: open-ended work (`drain-outbox`, `prune-expired`) stops after 60 s, and the reconciliation jobs check a fixed-size batch, least recently checked first; the next run continues.
+Without `CRON_SECRET`, the endpoint returns 404. Over HTTP a job runs once at a time across all instances, and no sooner than `JOB_MIN_SPACING_SECONDS` after its previous start: the run claims its row in `app.job_runs` with one statement, and releases it with another, so nothing is held while the job runs and a transaction pooler is no obstacle. A call that finds the job running gets 409; one that comes too soon gets 429 with `Retry-After`. The CLI is not guarded. Default schedules are daily, which a Hobby project can run. Hobby restricts a project to non-commercial, personal use ([Hobby plan](https://vercel.com/docs/plans/hobby), updated 2026-09-14) and fires a daily cron anywhere within its scheduled hour ([cron usage and pricing](https://vercel.com/docs/cron-jobs/usage-and-pricing), updated 2026-07-15), so a commercial launch needs a plan that allows it, and on plans that allow it you can run `drain-outbox` more often. Vercel Cron invokes production deployments only. Every job bounds its work per run: open-ended work (`drain-outbox`, `prune-expired`) stops after 60 s, and the reconciliation jobs check a fixed-size batch, least recently checked first; the next run continues.
 
 ## API conventions
 
@@ -329,12 +329,14 @@ How a configuration is validated (ENV-09):
    - a web feature with a component test;
    - typed client methods;
    - the wiring in `app/bootstrap.py`;
-   - the `can` flags for create and delete.
+   - the `can` flags for create and delete;
+   - the per-user write limit (`kernel.limit_writes(auth)` in the router's dependencies), so a user's writes count against `WRITES_PER_USER_PER_MINUTE`.
 2. Run `pnpm db:migrate`, `pnpm contracts`, and `pnpm test`.
 3. Model your real fields: edit `domain.py`, the migration (before it is applied anywhere shared), `adapters.py`, and `routes.py`.
    - Keep every new database object in schema `app`. `pnpm db:reset` drops schema `app` and the migration ledger only, so an extension or a function created elsewhere survives a reset; create such objects with `IF NOT EXISTS` or `OR REPLACE`.
    - To allow editing, uncomment the column-level `UPDATE` grant in the generated migration for the editable columns only (never `id`, `org_id`, `owner_user_id`, `created_by`, or `created_at`), declare an update permission in `domain.py`, treat a row count of 0 as a 404 as delete does, and re-check the role inside the transaction when editing is limited by role (TEN-07).
-4. Declare permissions in `domain.py`. They are denied unless a context or role is listed. Each route declares its permission with `dependencies=[requires(PERMISSION)]` and its errors with `responses=errors(...)`, and the use case calls `authorize()`.
+4. Declare permissions in `domain.py`. They are denied unless a context or role is listed. Each route declares its permission with `dependencies=[requires(PERMISSION)]` and its errors with `responses=errors(...)` (a write also declares 429), and the use case calls `authorize()`.
+   - **A write route is counted or says why not.** A router that writes lists `kernel.limit_writes(auth)` after `Depends(auth.authenticate)` and `Depends(request_transaction, scope="function")`: the counter takes a worker connection, and a burst of writes should queue at the admission gate, which holds no thread. A route with a limit of its own is listed in `NOT_COUNTED` in `apps/api/tests/integration/test_write_limit.py`, which fails for any other write route.
    - **A permission the UI offers needs a flag.** Add the action to `Capabilities` (domain), `service.capabilities`, and `<Entity>Capabilities` (routes); run `pnpm contracts`; render the control from `can` in the panel; and add the action to the module's `test_the_list_says_what_the_caller_may_do` table, which compares `can` with what the route returns. Never read a Clerk role in the UI. A screen with no list response (navigation, a settings page) has no flag to read; that is when to add a kernel-level context endpoint, as an amendment to ADR-0003.
 5. If other modules need something, prefer an event, or expose a narrow `api.py`.
 6. Mount the panel in a page (`<XPanel />` takes no props), and add an e2e check for the main flow. A page requires sign-in by default; make one public only by listing it in `PUBLIC_PAGES` (`apps/web/src/lib/page-access.ts`) and in `EXPECTED_PUBLIC_ROUTES` (`apps/web/src/lib/app-routes.testing.ts`).
@@ -405,6 +407,8 @@ API: keep personal data out of exception messages and log arguments (patterns ar
 | Commit before response; rollback on block error; no context leaks | `tests/integration/test_request_scope.py` |
 | Outbox recording, dispatch, retries, dead letters, leases, retention | `tests/integration/test_outbox_jobs.py` |
 | Cron config matches the job registry | `tests/integration/test_outbox_jobs.py` |
+| A user's writes are counted per minute; every write route is counted or listed with its reason | `tests/integration/test_write_limit.py` |
+| A job over HTTP runs once at a time and is spaced; a failed run does not lock it | `tests/integration/test_job_guard.py` |
 | API contract and TypeScript types are in sync | `pnpm contracts:check` |
 | Generated modules pass every gate | `pnpm test:new-module` |
 | Frontend feature boundaries | ESLint `import/no-restricted-paths` (`apps/web/eslint.boundaries.mjs`); `src/boundaries.test.ts` lints real snippets through the real configuration |

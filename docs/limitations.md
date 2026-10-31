@@ -89,6 +89,13 @@ Ten findings from the architecture review were deferred, with the reason. What t
 - The migration lint skips the first eight migrations by exact name; squashing or removing migrations needs an edit to `.squawk.toml`. It fails if every migration is excluded.
 - A `service=` entry's `sslmode` is invisible to the TLS default, so such connections are left unchanged.
 
+**Limits and jobs**
+
+- The coarse per-IP rule is a dashboard step (D7, [deployment.md](deployment.md#set-up-vercel)) and is not applied. Until you add it, a flood without a valid session is bounded only by Vercel's automatic DDoS mitigation and the database. Its effect on a deployment is NOT VERIFIED.
+- Application limits count in fixed windows in PostgreSQL, and a refused request counts too: a burst across a window boundary can use up to twice the limit. Each account has an allowance of its own, so a crowd of accounts is for the per-IP rule.
+- Each counted write adds one short worker transaction, about four database round trips, ahead of its own. At 20 ms a round trip, the figure PERF-07 modelled for a remote database, that is about 80 ms ([operations.md](operations.md#limits)).
+- A run of a job that the platform stopped holds its job for up to 15 minutes: calls over HTTP get `409` meanwhile. Run it from the CLI, which is not limited.
+
 **Telemetry**
 
 - An opaque string in the path of an unmatched URL is sent as the transaction name and `request.url`: emails and token-shaped strings are redacted, other text cannot be recognized. Exception and log messages are only pattern-redacted.
@@ -115,7 +122,6 @@ Ten findings from the architecture review were deferred, with the reason. What t
 Found while writing these documents or listed in the package notes, and not done. They need a code change:
 
 - Run `check-bundle-secrets.mjs --require-values` inside every Vercel build (chain `&& node ../../scripts/check-bundle-secrets.mjs --require-values` onto the web `build` script), so the web service is checked with the real values. Today it runs in `pnpm test:vercel-build` with canary values. Not built: the local `vercel build` runs that script with the repository around `apps/web` and `VERCEL=1` (checked), but the platform's service build is unverified, and a chain that cannot find `scripts/` fails every deployment. Add it once the first preview shows `scripts/` in the web build ([ADR-0004 §18](../dev-docs/adr/0004-cycle-1-adopted-decisions.md)).
-- A per-user limit on ordinary writes (creating and deleting projects, and every generated module), and a guard against concurrent or repeated runs of a job through `GET /api/v1/jobs/{name}`: a leaked `CRON_SECRET` can start `reconcile-billing` repeatedly, at up to `BILLING_RECONCILE_BATCH_SIZE` Stripe calls a run. Until then: the WAF rule (step D7) and rotating `CRON_SECRET`.
 - Wire `apps/web/eslint.guards.mjs` into `eslint.config.mjs` (a lint-config edit that an owner applies).
 - A message for a rejected database URL that says which part is wrong. Today it lists both likely causes (the password's encoding, a driver-only query parameter), because libpq's reason quotes the URL.
 - `scripts/init-template.mjs` and the messages of `apps/api/app/doctor.py` and `scripts/lib/preflight.mjs` still say "see docs/integrations.md"; the setup guide is [setup.md](setup.md) (the `#clerk` anchor they use is kept).

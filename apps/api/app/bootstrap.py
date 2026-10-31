@@ -18,6 +18,7 @@ from typing import Any
 from fastapi import FastAPI
 from starlette.middleware import Middleware
 
+from app.kernel.application.job_guard import JobGuard
 from app.kernel.application.outbox import OutboxDispatcher
 from app.kernel.application.probes import AnalyticsProbe, DatabaseProbe, ErrorReportingProbe
 from app.kernel.application.rate_limit import RateLimiter
@@ -147,6 +148,7 @@ def build_container(settings: Settings, **adapters: Any) -> Container:
         outbox=outbox,
         on_record=note_recorded_event,
         request_transaction=request_transaction(database),
+        writes_per_user_per_minute=settings.writes_per_user_per_minute,
     )
     # Daily schedules work on every Vercel plan; tighten drain-outbox where the plan allows.
     jobs.register(Job("drain-outbox", "Dispatch outbox events left after requests.", "15 2 * * *", _drain(outbox)))
@@ -197,7 +199,8 @@ def create_app(container: Container) -> FastAPI:
     routers = [build_health_router(kernel.store)]
     for contribution in container.contributions():
         routers += contribution.routers
-    routers.append(build_jobs_router(kernel.jobs, cron_secret.get_secret_value() if cron_secret else None))
+    guard = JobGuard(kernel.store, kernel.clock, min_spacing_seconds=container.settings.job_min_spacing_seconds)
+    routers.append(build_jobs_router(kernel.jobs, cron_secret.get_secret_value() if cron_secret else None, guard))
     if cron_secret is None and container.settings.app_env is AppEnv.PRODUCTION:
         # Not an error: jobs can also run from the CLI. But nothing schedules them otherwise.
         logger.warning(

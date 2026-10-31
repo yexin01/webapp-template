@@ -79,7 +79,8 @@ def create_projects(h: Harness, path: str, headers: dict[str, str], count: int) 
 
 
 @pytest.mark.parametrize("path", ["/api/v1/projects", "/api/v1/orgs/org_q/projects"])
-def test_project_list_query_count_is_independent_of_rows(harness: Harness, path: str) -> None:
+def test_project_list_query_count_is_independent_of_rows(make_harness: Callable[..., Harness], path: str) -> None:
+    harness = make_harness({"writes_per_user_per_minute": 600})  # it creates 60 projects, a minute's allowance
     harness.directory.set("user_a", [ExternalMembership("org_q", Role.ADMIN)])
     headers = harness.login("user_a")
     create_projects(harness, path, headers, 1)

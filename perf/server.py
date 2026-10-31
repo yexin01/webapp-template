@@ -325,9 +325,10 @@ def build_app(
         stripe_price_pro_yearly=PRICE_YEARLY,
         stripe_webhook_secret=WEBHOOK_SECRET,
         llm_mode="mock",
-        # Generous limits so the LLM class measures latency, not the rate limiter.
+        # Generous limits so the LLM and write classes measure latency, not the rate limiter.
         llm_checks_per_user_per_minute=600,
         llm_checks_global_per_day=100_000,
+        writes_per_user_per_minute=600,
         log_level="WARNING",
         **pools,
         **telemetry,

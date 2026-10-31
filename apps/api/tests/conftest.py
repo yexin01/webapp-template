@@ -66,6 +66,8 @@ _ENV_PREFIXES = (
     "DIAGNOSTICS_",
     "CRON_",
     "OUTBOX_",
+    "WRITES_",
+    "JOB_",
 )
 
 
@@ -248,7 +250,7 @@ def db(database_url: str) -> Iterator[str]:
         conn.execute(
             "TRUNCATE app.users, app.organizations, app.organization_memberships, app.projects, "
             "app.billing_customers, app.subscriptions, app.billing_events, app.identity_events, "
-            "app.audit_log, app.rate_limit_counters, app.outbox RESTART IDENTITY CASCADE"
+            "app.audit_log, app.rate_limit_counters, app.job_runs, app.outbox RESTART IDENTITY CASCADE"
         )
 
 

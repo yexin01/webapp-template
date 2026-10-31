@@ -1,5 +1,5 @@
 """PostgreSQL adapter for the kernel's own store: health, rate-limit counters,
-and the outbox. All SQL uses bound parameters only."""
+the outbox, and job runs. All SQL uses bound parameters only."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from app.kernel.events import StoredEvent
-from app.kernel.ports import ConnectionDescription, LoginRole
+from app.kernel.ports import ConnectionDescription, JobRun, LoginRole
 
 _MAX_ERROR_LENGTH = 500
 
@@ -249,3 +249,39 @@ class PgKernelStore:
     def outbox_counts(self) -> Mapping[str, int]:
         rows = self._all("SELECT status, count(*) AS n FROM app.outbox GROUP BY status")
         return {r["status"]: int(r["n"]) for r in rows}
+
+    # -- Job runs ---------------------------------------------------------------
+
+    def claim_job_run(self, name: str, *, now: datetime, lease_until: datetime, spaced_before: datetime) -> bool:
+        """One conditional upsert: of any number of concurrent claims, at most one finds the job free and spaced.
+
+        A claim that finds the row held waits for the holder's commit, then re-checks the condition against
+        the committed row, so it is refused instead of starting a second run.
+        """
+        row = self._one(
+            """
+            INSERT INTO app.job_runs AS j (job_name, started_at, lease_until)
+            VALUES (%(name)s, %(now)s, %(lease_until)s)
+            ON CONFLICT (job_name) DO UPDATE
+              SET started_at = EXCLUDED.started_at, lease_until = EXCLUDED.lease_until
+              WHERE j.lease_until <= %(now)s AND j.started_at <= %(spaced_before)s
+            RETURNING j.job_name
+            """,
+            {"name": name, "now": now, "lease_until": lease_until, "spaced_before": spaced_before},
+        )
+        return row is not None
+
+    def release_job_run(self, name: str, started_at: datetime, now: datetime) -> None:
+        # Fenced to the run: one whose lease ran out, and whose job another run claimed since, changes nothing.
+        self._one(
+            """
+            UPDATE app.job_runs SET lease_until = %(now)s
+            WHERE job_name = %(name)s AND started_at = %(started_at)s AND lease_until > %(now)s
+            RETURNING job_name
+            """,
+            {"name": name, "started_at": started_at, "now": now},
+        )
+
+    def job_run(self, name: str) -> JobRun | None:
+        row = self._one("SELECT started_at, lease_until FROM app.job_runs WHERE job_name = %s", (name,))
+        return JobRun(row["started_at"], row["lease_until"]) if row else None

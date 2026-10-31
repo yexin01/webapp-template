@@ -54,8 +54,9 @@ def reserved_request_threads(s: Settings) -> int:
     connection-waiter budget.
 
     Work that no concurrency limit caps is not counted (see ``Database``):
-    operator diagnostics, cron job runs, and key-set lookups while no usable
-    key set is cached.
+    operator diagnostics and key-set lookups while no usable key set is
+    cached. Cron job runs are not counted either, but each job runs at most
+    once at a time.
     """
     return (
         s.llm_max_concurrent_checks

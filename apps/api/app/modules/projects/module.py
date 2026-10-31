@@ -21,5 +21,7 @@ class ProjectsModule:
 def build_projects(kernel: Kernel, auth: AuthDeps) -> ProjectsModule:
     service = ProjectService(kernel.transactions(PgProjectRepository), kernel.analytics)
     kernel.handlers.subscribe(ProjectCreated, "projects.analytics", service.capture_created)
-    contribution = Contribution(routers=[build_router(service, auth, kernel.request_transaction)])
+    contribution = Contribution(
+        routers=[build_router(service, auth, kernel.request_transaction, kernel.limit_writes(auth))]
+    )
     return ProjectsModule(service, contribution)

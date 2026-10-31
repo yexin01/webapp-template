@@ -159,10 +159,12 @@ class Database:
       their round trips ends within the client-side deadline
       (``BoundedConnection``);
     - blocking work that no concurrency limit caps, which can delay a
-      holder's next hop while it runs: operator diagnostics and cron job runs
-      (trusted callers), and Clerk key-set lookups while no usable key set is
-      cached. Every token then waits for the fetch, so no new scoped request
-      is admitted before it ends.
+      holder's next hop while it runs: operator diagnostics (trusted callers),
+      and Clerk key-set lookups while no usable key set is cached. Every token
+      then waits for the fetch, so no new scoped request is admitted before it
+      ends;
+    - cron job runs over HTTP: each job runs once at a time (``JobGuard``), so
+      they hold at most one thread per registered job.
 
     Within the connection waiters' budget, each pool's waiters may take
     every place except those kept for the other pool: as many as the other
