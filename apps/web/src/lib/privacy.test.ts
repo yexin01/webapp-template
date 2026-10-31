@@ -6,6 +6,7 @@ import {
   scrubEvent,
   scrubSpan,
   SENSITIVE_QUERY_PARAMETERS,
+  stripPathIds,
   stripQuery,
 } from "./redact";
 
@@ -151,6 +152,65 @@ describe("redaction", () => {
       const expected = text.replace(unbounded, "[REDACTED]").replace(/(?:\[REDACTED\])+/g, "[REDACTED]");
       expect(redactText(text), text).toBe(expected);
     }
+  });
+});
+
+// apps/api/tests/unit/test_sentry_tracing.py (TestProviderIds): the API replaces the same segments.
+describe("provider IDs in paths (OBS-04)", () => {
+  const USER = "user_" + "CANARYCLERKUSER1";
+  const ORG = "org_" + "CANARYCLERKORG1";
+  const SESSION = "cs_test_" + "CANARYSESSION1";
+
+  it.each([
+    ["an organization route", `/api/v1/orgs/${ORG}/projects`, "/api/v1/orgs/{id}/projects"],
+    [
+      "a Clerk user",
+      `https://api.clerk.com/v1/users/${USER}/organization_memberships`,
+      "https://api.clerk.com/v1/users/{id}/organization_memberships",
+    ],
+    ["a Checkout Session, at the end", `/v1/checkout/sessions/${SESSION}`, "/v1/checkout/sessions/{id}"],
+    ["two IDs of kinds nobody listed", `/a/${USER}/b/${ORG}`, "/a/{id}/b/{id}"],
+    [
+      "a route template",
+      "/api/v1/orgs/{org_id}/projects/{project_id}",
+      "/api/v1/orgs/{org_id}/projects/{project_id}",
+    ],
+    ["words and short segments", "/v1/users/me/user_short/a_b", "/v1/users/me/user_short/a_b"],
+  ])("are replaced in %s", (_label, url, expected) => {
+    expect(stripPathIds(url)).toBe(expected);
+    const fetched = scrubBreadcrumb({
+      category: "fetch",
+      type: "http",
+      data: { method: "GET", url: `${url}?x=1` },
+    });
+    expect(fetched?.data).toEqual({ method: "GET", url: expected });
+    const navigated = scrubBreadcrumb({ category: "navigation", data: { from: url, to: `${url}#top` } });
+    expect(navigated?.data).toEqual({ from: expected, to: expected });
+    expect(
+      scrubEvent({ type: undefined, request: { url: `https://app.example.com${url}` } }).request?.url,
+    ).toBe(`https://app.example.com${expected}`);
+  });
+
+  it("are replaced in a span's name and URL attributes", () => {
+    const span = {
+      trace_id: "0".repeat(32),
+      span_id: "0".repeat(16),
+      start_timestamp: 1,
+      end_timestamp: 2,
+      status: "ok" as const,
+      is_segment: false,
+      name: `GET /api/v1/orgs/${ORG}/projects`,
+      attributes: {
+        "http.target": `/api/v1/orgs/${ORG}/projects`,
+        "url.full": `https://h/api/v1/orgs/${ORG}/x?a=1`,
+      },
+    };
+    const scrubbed = scrubSpan(span);
+    expect(scrubbed.name).toBe("GET /api/v1/orgs/{id}/projects");
+    expect(scrubbed.attributes).toEqual({
+      "http.target": "/api/v1/orgs/{id}/projects",
+      "url.full": "https://h/api/v1/orgs/{id}/x",
+    });
   });
 });
 
