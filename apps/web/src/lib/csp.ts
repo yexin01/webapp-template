@@ -8,7 +8,7 @@
  * when enabled, PostHog and Sentry ingestion. Clerk's required sources:
  * https://clerk.com/docs/guides/secure/best-practices/csp-headers (recheck on
  * each @clerk/nextjs upgrade; csp.test.ts pins them), except its telemetry
- * host: layout.tsx turns the SDK's telemetry off, so nothing may send there
+ * host: the template turns the SDK's telemetry off, so nothing may send there
  * (ADR-0004 §29). Next.js requires inline scripts without a nonce setup, and
  * development additionally needs eval.
  */

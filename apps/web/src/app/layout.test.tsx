@@ -95,8 +95,8 @@ describe("the root layout with a signed-out visitor", () => {
 /**
  * ADR-0004 §29: the template sends no SDK telemetry to Clerk. Left alone, clerk-js records which components and hooks
  * a page uses and posts the events, with the instance's publishable key, to clerk-telemetry.com from every development
- * instance. `telemetry={false}` keeps clerk-js from creating its collector at all. csp.ts does not allow that host,
- * so a layout without the prop would also show a CSP violation in the console of a development instance.
+ * instance. `telemetry={false}` keeps clerk-js from creating its collector at all. The variable next.config.ts sets
+ * (next-config.test.ts) would only hand it `{ disabled: true }`, a collector that stays quiet on a flag of its own.
  */
 describe("the Clerk provider in the root layout (ADR-0004 §29)", () => {
   it("is told to collect no SDK telemetry", () => {
@@ -104,7 +104,7 @@ describe("the Clerk provider in the root layout (ADR-0004 §29)", () => {
     expect(clerkProvider.props, "the root layout renders no ClerkProvider").toBeDefined();
     expect(
       clerkProvider.props?.telemetry,
-      "ClerkProvider needs telemetry={false}: any other value lets clerk-js send usage events to clerk-telemetry.com (ADR-0004 §29)",
+      "ClerkProvider must be given telemetry={false}, so that clerk-js creates no telemetry collector at all (ADR-0004 §29)",
     ).toBe(false);
   });
 });

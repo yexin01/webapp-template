@@ -112,7 +112,7 @@ describe("content security policy", () => {
     for (const source of required) expect(directive(csp, name), source).toContain(source);
   });
 
-  // layout.tsx passes telemetry={false} to ClerkProvider (layout.test.tsx pins it), so nothing sends to
+  // The template turns Clerk's SDK telemetry off (layout.test.tsx, next-config.test.ts), so nothing sends to
   // Clerk's telemetry host and the policy must not allow it (ADR-0004 §29).
   it.each([false, true])("allows no host of Clerk's SDK telemetry (isDev: %s)", (isDev) => {
     const csp = buildContentSecurityPolicy({ clerkPublishableKey: key, isDev });
