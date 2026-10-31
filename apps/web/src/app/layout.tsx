@@ -18,7 +18,8 @@ export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
       <body>
-        <ClerkProvider signInUrl="/sign-in" signUpUrl="/sign-up" afterSignOutUrl="/">
+        {/* telemetry={false}: no SDK telemetry to Clerk, and csp.ts leaves its host out (ADR-0004 §29). */}
+        <ClerkProvider signInUrl="/sign-in" signUpUrl="/sign-up" afterSignOutUrl="/" telemetry={false}>
           <DiagnosticsAccessProvider>
             <a href="#main" className="skip-link">
               Skip to content

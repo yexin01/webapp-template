@@ -97,11 +97,12 @@ describe("content security policy", () => {
 
   // Clerk's required sources (https://clerk.com/docs/guides/secure/best-practices/csp-headers).
   // Recheck this table on every @clerk/nextjs upgrade: a source missing here breaks sign-in or
-  // sign-up without a visible error (the only sign is a console violation).
+  // sign-up without a visible error (the only sign is a console violation). Its list also names
+  // https://clerk-telemetry.com: the template sends no SDK telemetry, so that host is left out (below).
   it.each([
     ["script-src", [FAPI, "https://challenges.cloudflare.com", "https://*.protect.clerk.com"]],
     // The port wildcard is required: Clerk Protect hosts are served on ports other than 443.
-    ["connect-src", [FAPI, "https://*.protect.clerk.com:*", "https://clerk-telemetry.com"]],
+    ["connect-src", [FAPI, "https://*.protect.clerk.com:*"]],
     ["frame-src", ["https://challenges.cloudflare.com", "https://*.protect.clerk.com"]],
     ["img-src", ["https://img.clerk.com"]],
     ["style-src", ["'unsafe-inline'"]],
@@ -111,10 +112,18 @@ describe("content security policy", () => {
     for (const source of required) expect(directive(csp, name), source).toContain(source);
   });
 
-  it("allows nothing beyond what Clerk requires for framing and telemetry", () => {
+  // The template turns Clerk's SDK telemetry off (layout.test.tsx, next-config.test.ts), so nothing sends to
+  // Clerk's telemetry host and the policy must not allow it (ADR-0004 §29).
+  it.each([false, true])("allows no host of Clerk's SDK telemetry (isDev: %s)", (isDev) => {
+    const csp = buildContentSecurityPolicy({ clerkPublishableKey: key, isDev });
+    expect(
+      csp,
+      "clerk-telemetry.com is allowed: the template turns Clerk's SDK telemetry off, so add the host back only together with ADR-0004 §29",
+    ).not.toMatch(/clerk-telemetry/i);
+  });
+
+  it("allows nothing beyond what Clerk requires for framing", () => {
     const csp = buildContentSecurityPolicy({ clerkPublishableKey: key, isDev: false });
-    // Telemetry goes to the apex host only (and only from development instances).
-    expect(directive(csp, "connect-src")).not.toContain("https://*.clerk-telemetry.com");
     // frame-ancestors 'none' and X-Frame-Options: DENY already forbid framing our own pages.
     expect(directive(csp, "frame-src")).not.toContain("'self'");
     expect(directive(csp, "frame-ancestors")).toEqual(["'none'"]);
@@ -139,7 +148,7 @@ describe("content security policy", () => {
         "https://challenges.cloudflare.com",
         "https://*.protect.clerk.com",
       ],
-      "connect-src": ["'self'", FAPI, "https://*.protect.clerk.com:*", "https://clerk-telemetry.com"],
+      "connect-src": ["'self'", FAPI, "https://*.protect.clerk.com:*"],
       "img-src": ["'self'", "data:", "https://img.clerk.com"],
       "style-src": ["'self'", "'unsafe-inline'"],
       "font-src": ["'self'", "data:"],
@@ -175,7 +184,6 @@ describe("content security policy", () => {
             "'self'",
             FAPI,
             "https://*.protect.clerk.com:*",
-            "https://clerk-telemetry.com",
             "https://eu.i.posthog.com",
             "https://eu-assets.i.posthog.com",
             "https://o123.ingest.de.sentry.io",
@@ -195,13 +203,7 @@ describe("content security policy", () => {
             "https://challenges.cloudflare.com",
             "https://*.protect.clerk.com",
           ],
-          "connect-src": [
-            "'self'",
-            FAPI,
-            "https://*.protect.clerk.com:*",
-            "https://clerk-telemetry.com",
-            "ws:",
-          ],
+          "connect-src": ["'self'", FAPI, "https://*.protect.clerk.com:*", "ws:"],
         },
       ],
       [
@@ -222,7 +224,6 @@ describe("content security policy", () => {
             "'self'",
             FAPI,
             "https://*.protect.clerk.com:*",
-            "https://clerk-telemetry.com",
             "https://eu.i.posthog.com",
             "https://eu-assets.i.posthog.com",
             "https://o123.ingest.de.sentry.io",

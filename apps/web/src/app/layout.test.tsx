@@ -14,9 +14,13 @@ import RootLayout from "./layout";
 const auth = vi.hoisted(() => ({ isLoaded: true, isSignedIn: false }));
 const navigation = vi.hoisted(() => ({ pathname: "/" }));
 const router = vi.hoisted(() => ({ replace: vi.fn() }));
+const clerkProvider = vi.hoisted(() => ({ props: undefined as { telemetry?: unknown } | undefined }));
 
 vi.mock("@clerk/nextjs", () => ({
-  ClerkProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  ClerkProvider: (props: { children: React.ReactNode; telemetry?: unknown }) => {
+    clerkProvider.props = props;
+    return <>{props.children}</>;
+  },
   useAuth: () => auth,
   useClerk: () => ({ status: "ready" }),
 }));
@@ -43,6 +47,7 @@ beforeEach(() => {
   auth.isLoaded = true;
   auth.isSignedIn = false;
   router.replace.mockReset();
+  clerkProvider.props = undefined;
 });
 
 const everyUrl = routes().flatMap((route) =>
@@ -84,5 +89,22 @@ describe("the root layout with a signed-out visitor", () => {
     visit("/dashboard");
     expect(screen.getByText(PAGE)).toBeInTheDocument();
     expect(router.replace).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * ADR-0004 §29: the template sends no SDK telemetry to Clerk. Left alone, clerk-js records which components and hooks
+ * a page uses and posts the events, with the instance's publishable key, to clerk-telemetry.com from every development
+ * instance. `telemetry={false}` keeps clerk-js from creating its collector at all. The variable next.config.ts sets
+ * (next-config.test.ts) would only hand it `{ disabled: true }`, a collector that stays quiet on a flag of its own.
+ */
+describe("the Clerk provider in the root layout (ADR-0004 §29)", () => {
+  it("is told to collect no SDK telemetry", () => {
+    visit("/");
+    expect(clerkProvider.props, "the root layout renders no ClerkProvider").toBeDefined();
+    expect(
+      clerkProvider.props?.telemetry,
+      "ClerkProvider must be given telemetry={false}, so that clerk-js creates no telemetry collector at all (ADR-0004 §29)",
+    ).toBe(false);
   });
 });

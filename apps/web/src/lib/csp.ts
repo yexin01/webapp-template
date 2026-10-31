@@ -7,8 +7,10 @@
  * hosts are served on ports other than 443, hence the port wildcard), and,
  * when enabled, PostHog and Sentry ingestion. Clerk's required sources:
  * https://clerk.com/docs/guides/secure/best-practices/csp-headers (recheck on
- * each @clerk/nextjs upgrade; csp.test.ts pins them). Next.js requires inline
- * scripts without a nonce setup, and development additionally needs eval.
+ * each @clerk/nextjs upgrade; csp.test.ts pins them), except its telemetry
+ * host: the template turns the SDK's telemetry off, so nothing may send there
+ * (ADR-0004 §29). Next.js requires inline scripts without a nonce setup, and
+ * development additionally needs eval.
  */
 
 export type CspInput = {
@@ -98,7 +100,6 @@ export function buildContentSecurityPolicy(input: CspInput): string {
       "'self'",
       clerk,
       `${CLERK_PROTECT}:*`,
-      "https://clerk-telemetry.com",
       ...posthog.connect,
       sentry,
       input.isDev && "ws:",
