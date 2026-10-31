@@ -379,7 +379,7 @@ export interface components {
          * @description What the UI shows. Derived here so every surface agrees (BILL-20).
          * @enum {string}
          */
-        BillingState: "none" | "active" | "canceling" | "past_due" | "processing" | "payment_required" | "canceled";
+        BillingState: "none" | "active" | "canceling" | "past_due" | "processing" | "payment_required" | "unrecognized" | "canceled";
         /** BillingStatus */
         BillingStatus: {
             /** Available Plans */
