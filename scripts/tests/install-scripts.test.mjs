@@ -110,7 +110,7 @@ test("pnpm skips a dependency's install script when the allowlist is empty, and 
       path.join(folder, "package.json"),
       JSON.stringify({ name: project, version: "1.0.0", private: true, dependencies: { "script-probe-dependency": "file:../dep" }, ...(pnpmField && { pnpm: pnpmField }) }),
     );
-    const result = spawnSync("pnpm", ["install", "--offline", "--ignore-workspace", "--reporter=silent"], { cwd: folder, env, encoding: "utf8", shell: process.platform === "win32" });
+    const result = spawnSync("pnpm", ["install", "--offline", "--ignore-workspace", "--no-frozen-lockfile", "--reporter=silent"], { cwd: folder, env, encoding: "utf8", shell: process.platform === "win32" });
     assert.equal(result.status, 0, `${project}: pnpm install failed:\n${result.stdout}${result.stderr}`);
     const built = path.join(folder, "node_modules", ".pnpm", readdirSync(path.join(folder, "node_modules", ".pnpm")).find((name) => name.startsWith("script-probe-dependency")), "node_modules", "script-probe-dependency", "ran.txt");
     return existsSync(built);
