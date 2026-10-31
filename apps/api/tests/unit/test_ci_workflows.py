@@ -72,6 +72,24 @@ def test_the_api_and_web_jobs_run_exactly_what_pnpm_verify_runs_for_the_job(job:
     assert not workflow["jobs"][job].get("continue-on-error")
 
 
+def test_python_dependencies_install_from_a_lock_that_must_be_current() -> None:
+    """`uv sync --frozen` (or UV_FROZEN) installs what uv.lock says after pyproject.toml has moved on, and CI
+    passes; `--locked` fails the job. Each job that installs the API's dependencies says so."""
+    installs: dict[str, set[str]] = {}
+    for path in sorted(WORKFLOWS.glob("*.yml")):
+        workflow = load(path.name)
+        assert "UV_FROZEN" not in json.dumps(workflow), f"{path.name} sets UV_FROZEN"
+        for name, job in workflow["jobs"].items():
+            for step in job.get("steps", []):
+                for line in step.get("run", "").splitlines():
+                    if "uv sync" in line:
+                        assert "--locked" in line.split(), line
+                        assert "--frozen" not in line.split(), line
+                        installs.setdefault(path.name, set()).add(name)
+    assert installs == {"ci.yml": {"api", "api-supabase", "deploy-config"}, "db-migrate.yml": {"migrate"}}
+    assert load("db-migrate.yml")["env"].get("UV_LOCKED") == "1"  # the migration's `uv run` asserts the lock too
+
+
 def test_deploy_config_runs_without_credentials_or_telemetry() -> None:
     job = load("ci.yml")["jobs"]["deploy-config"]
     assert job["env"]["VERCEL_TELEMETRY_DISABLED"] == "1"

@@ -43,8 +43,8 @@ test("every step names a script, file and job that exist", () => {
 test("the API steps are the ones CI runs from apps/api, with the migrations listed one by one", () => {
   const steps = catalog({ root: repo });
   const squawk = steps.find((step) => step.id === "api-migrations");
-  assert.deepEqual(squawk.args.slice(0, 4), ["run", "squawk", "--config", "../../.squawk.toml"]);
-  const migrations = squawk.args.slice(4);
+  assert.deepEqual(squawk.args.slice(0, 5), ["run", "--locked", "squawk", "--config", "../../.squawk.toml"]);
+  const migrations = squawk.args.slice(5);
   assert.ok(migrations.length >= 10 && migrations.every((file) => /^\.\.\/\.\.\/supabase\/migrations\/\d+_.+\.sql$/.test(file)));
   assert.deepEqual(migrations, [...migrations].sort());
   for (const file of migrations) assert.ok(existsSync(path.join(repo, "apps/api", file)), file);
@@ -247,12 +247,12 @@ test("--keep-going runs every step and lists each failure", async (t) => {
 
 test("the API tests require the database unless --no-db, and a real run never reads the sandbox switch or the Stripe key", async (t) => {
   const strict = await runMain(t, ["--only", "api-tests"], { env: { E2E_SANDBOX: "1", STRIPE_SANDBOX_TESTS: "1" } });
-  assert.deepEqual(strict.calls[0].args, ["run", "pytest", "--require-db"]);
+  assert.deepEqual(strict.calls[0].args, ["run", "--locked", "pytest", "--require-db"]);
   assert.equal(strict.calls[0].env.STRIPE_SANDBOX_TESTS, "");
   assert.equal(strict.calls[0].cwd, path.join(strict.root, "apps/api"));
   const lax = await runMain(t, ["--only", "api-tests", "--no-db"], { probe: healthy({ reachable: async () => false }) });
   assert.equal(lax.status, 0);
-  assert.deepEqual(lax.calls[0].args, ["run", "pytest"]);
+  assert.deepEqual(lax.calls[0].args, ["run", "--locked", "pytest"]);
   assert.match(lax.out, /verify: PASS - 1 passed; database tests were not required \(--no-db\)/);
   const e2e = await runMain(t, ["--only", "e2e"], { env: { E2E_SANDBOX: "1" } });
   assert.equal(e2e.calls[0].env.E2E_SANDBOX, "");
@@ -273,6 +273,18 @@ test("a skipped step is a PASS with the reason in the verdict, so nothing is ski
   assert.equal(status, 0);
   assert.match(out, /secrets\s+secrets\s+SKIPPED\s+-?\S*\s+gitleaks is not installed/);
   assert.match(out, /verify: PASS - 0 passed; 1 skipped: secrets \(gitleaks is not installed/);
+});
+
+test("the uv steps assert the lock, and an inherited UV_FROZEN is dropped because uv refuses the two together", async (t) => {
+  const uvSteps = catalog({ root: repo }).filter((step) => step.command === "uv");
+  assert.ok(uvSteps.length >= 6);
+  for (const step of uvSteps) assert.deepEqual(step.args.slice(0, 2), ["run", "--locked"], step.id);
+  const { calls } = await runMain(t, ["--only", "api-types", "--only", "web-lint"], { env: { UV_FROZEN: "1", KEPT: "yes" } });
+  assert.equal(calls.length, 2);
+  for (const call of calls) {
+    assert.equal(call.env.UV_FROZEN, undefined);
+    assert.equal(call.env.KEPT, "yes");
+  }
 });
 
 test("--list, --help and a usage error run nothing", async (t) => {

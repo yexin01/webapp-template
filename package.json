@@ -12,7 +12,7 @@
     "dev": "node scripts/dev.mjs",
     "dev:web": "pnpm --filter web dev",
     "dev:api": "cd apps/api && uv run uvicorn index:app --reload --host 127.0.0.1 --port 8000",
-    "api:sync": "cd apps/api && uv sync --frozen",
+    "api:sync": "cd apps/api && uv sync --locked",
     "build": "pnpm --filter web build",
     "build:check": "node scripts/build-check.mjs",
     "lint": "pnpm --filter web lint && pnpm --filter web format:check && pnpm api:lint",

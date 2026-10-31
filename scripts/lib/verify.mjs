@@ -93,7 +93,8 @@ function migrationFiles(root) {
  * `needs`: the tools the step uses, which the preflight checks. `summary`: how to read the runner's result line.
  */
 export function catalog({ root, migrations = migrationFiles(root) }) {
-  const uv = (id, label, args, extra = {}) => ({ id, job: "api", label, command: "uv", args: ["run", ...args], cwd: "apps/api", needs: ["uv"], ...extra });
+  // --locked: a uv.lock that pyproject.toml has moved past fails the step. A plain `uv run` would re-lock and go on.
+  const uv = (id, label, args, extra = {}) => ({ id, job: "api", label, command: "uv", args: ["run", "--locked", ...args], cwd: "apps/api", needs: ["uv"], ...extra });
   const pnpm = (id, label, args, extra = {}) => ({ id, job: "web", label, command: "pnpm", args, cwd: ".", needs: ["pnpm"], ...extra });
   const node = (id, job, label, args, extra = {}) => ({ id, job, label, command: "node", args, cwd: ".", needs: [], ...extra });
   return [
@@ -381,6 +382,8 @@ export async function main(
   }
 
   const ci = env.GITHUB_ACTIONS === "true";
+  // The uv steps assert the lock (--locked); an inherited UV_FROZEN would make uv refuse the flag.
+  const { UV_FROZEN: _inherited, ...inherited } = env;
   const start = now();
   const scope = options.only.length ? `only ${options.only.join(", ")}` : `${options.jobs.join(", ")}${options.quick ? ", quick" : ""}`;
   log(`verify: ${steps.filter((step) => !step.skip).length} steps (${scope}); ${checks.length} preflight checks passed.`);
@@ -395,7 +398,7 @@ export async function main(
           command: step.command,
           args: step.db === "tests" && !options.noDb ? [...step.args, "--require-db"] : step.args,
           cwd: path.join(root, step.cwd),
-          env: { ...env, NEXT_TELEMETRY_DISABLED: "1", ...step.env },
+          env: { ...inherited, NEXT_TELEMETRY_DISABLED: "1", ...step.env },
         }),
     })),
     { keepGoing: options.keepGoing, now, log, ci },

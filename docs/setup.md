@@ -128,7 +128,7 @@ You get: dependencies installed, a migrated local database, a passing test suite
    pnpm bootstrap
    ```
 
-   Success: it ends without an error, and `apps/api/.venv` exists. It installs the JavaScript packages from the lockfile (`pnpm install --frozen-lockfile`) and the Python packages with `uv sync --frozen`. Otherwise: a version or lockfile error means a prerequisite is older than required; do not edit the lockfiles.
+   Success: it ends without an error, and `apps/api/.venv` exists. It installs the JavaScript packages from the lockfile (`pnpm install --frozen-lockfile`) and the Python packages with `uv sync --locked`, which also fails when `apps/api/pyproject.toml` has moved past `apps/api/uv.lock`. Otherwise: a version or lockfile error means a prerequisite is older than required, or a Python dependency was edited without `uv lock`; do not edit the lockfiles by hand.
 
 4. **Start the database and apply the migrations.**
 

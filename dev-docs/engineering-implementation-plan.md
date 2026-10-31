@@ -672,7 +672,7 @@ Since ADR-0003, the API layers below apply **inside every feature module** (`app
   - a link to this specification.
 - **REPO-02** `.env.example` satisfies ENV-06 and contains safe placeholders only.
 - **REPO-03** One documented set of commands is used identically locally and in CI: setup, dev, lint, format, typecheck, unit, integration, e2e, build, `db:migrate`, `db:seed`, `db:reset`, and the performance scripts. `pnpm verify` runs what CI requires, in CI's order, and the CI jobs `api` and `web` run the same script (`node scripts/verify.mjs --job api` and `--job web`). The API tests require a database (`pytest --require-db`) instead of skipping.
-- **REPO-04** Lockfiles are committed, and installs use frozen lockfiles. Runtime versions are pinned in version files.
+- **REPO-04** Lockfiles are committed, and installs use them as they are: `pnpm install --frozen-lockfile`, and `uv sync --locked` (CI, `pnpm bootstrap`, `pnpm verify`), which fails when `pyproject.toml` has moved past `uv.lock`. Runtime versions are pinned in version files.
 - **REPO-05** Database migrations are version-controlled (§8.3). Seed data is deterministic and synthetic.
 - **REPO-06** A safe development reset procedure exists. It works only on local targets and is guarded by ENV-05.
 - **REPO-07** A template initialization script:
