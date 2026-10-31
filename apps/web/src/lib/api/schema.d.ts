@@ -1228,6 +1228,15 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
             /** @description Too Many Requests */
             429: {
                 headers: {
