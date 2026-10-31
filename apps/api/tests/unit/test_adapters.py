@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
 import logging
 import time
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
@@ -16,12 +18,14 @@ import sentry_sdk
 from sentry_sdk.envelope import Envelope
 from sentry_sdk.integrations.logging import LoggingIntegration
 from sentry_sdk.transport import Transport
+from svix.webhooks import Webhook
 
 from app.kernel.errors import InvalidRequestError, WebhookSignatureError
 from app.kernel.infrastructure.observability import scrub_event, sentry_options
 from app.kernel.infrastructure.redaction import REDACTED, redact, redact_text
 from app.modules.billing.adapters.stripe import StripeWebhookVerifier, to_snapshot
 from app.modules.billing.domain import PlanKey, PriceCatalog, SubscriptionStatus
+from app.modules.identity.adapters.clerk import ClerkWebhookVerifier
 from app.modules.llm import adapters as llm_adapters
 from app.modules.llm.adapters import AnthropicProvider, OpenAIProvider
 from tests.conftest import make_settings
@@ -126,6 +130,59 @@ class TestStripeWebhookVerifier:
     def test_a_signed_body_that_is_not_an_event_is_unsupported(self, body: bytes) -> None:
         with pytest.raises(InvalidRequestError, match="Snapshot"):
             StripeWebhookVerifier(SECRET).verify(body, sign(body))
+
+
+CLERK_SECRET = "whsec_" + base64.b64encode(b"test-only-clerk-signing-secret!!").decode()
+
+
+def clerk_headers(payload: bytes, *, secret: str = CLERK_SECRET, timestamp: int | None = None) -> dict[str, str]:
+    ts = int(time.time()) if timestamp is None else timestamp
+    signature = Webhook(secret).sign("msg_1", datetime.fromtimestamp(ts, UTC), payload.decode())
+    return {"svix-id": "msg_1", "svix-timestamp": str(ts), "svix-signature": signature}
+
+
+class TestClerkWebhookVerifier:
+    PAYLOAD = json.dumps({"type": "user.deleted", "data": {"id": "user_x"}, "object": "event"}).encode()
+
+    def test_valid_signature(self) -> None:
+        event = ClerkWebhookVerifier(CLERK_SECRET).verify(self.PAYLOAD, clerk_headers(self.PAYLOAD))
+        assert (event.event_id, event.event_type, event.data) == ("msg_1", "user.deleted", {"id": "user_x"})
+
+    @pytest.mark.parametrize("age", [3600, 600], ids=["an hour old", "ten minutes old"])
+    def test_a_correctly_signed_message_from_the_past_is_a_replay(self, age: int) -> None:
+        """SEC-13: the signature covers the timestamp, so a captured delivery stays valid only for svix's five minutes."""
+        headers = clerk_headers(self.PAYLOAD, timestamp=int(time.time()) - age)
+        with pytest.raises(WebhookSignatureError):
+            ClerkWebhookVerifier(CLERK_SECRET).verify(self.PAYLOAD, headers)
+
+    def test_a_message_dated_in_the_future_is_refused(self) -> None:
+        headers = clerk_headers(self.PAYLOAD, timestamp=int(time.time()) + 3600)
+        with pytest.raises(WebhookSignatureError):
+            ClerkWebhookVerifier(CLERK_SECRET).verify(self.PAYLOAD, headers)
+
+    def test_a_message_a_few_minutes_old_is_still_accepted(self) -> None:
+        """Deliveries are retried and queued: the window is minutes, not seconds."""
+        headers = clerk_headers(self.PAYLOAD, timestamp=int(time.time()) - 240)
+        assert ClerkWebhookVerifier(CLERK_SECRET).verify(self.PAYLOAD, headers).event_id == "msg_1"
+
+    @pytest.mark.parametrize(
+        "forge",
+        [
+            lambda p: clerk_headers(
+                p, secret="whsec_" + base64.b64encode(b"another-secret-0123456789abcdef!").decode()
+            ),
+            lambda p: {**clerk_headers(p), "svix-timestamp": str(int(time.time()) - 5)},  # re-dated after signing
+            lambda p: {k: v for k, v in clerk_headers(p).items() if k != "svix-signature"},
+        ],
+        ids=["another secret", "re-dated after signing", "no signature"],
+    )
+    def test_a_forged_message_is_refused(self, forge: Any) -> None:
+        with pytest.raises(WebhookSignatureError):
+            ClerkWebhookVerifier(CLERK_SECRET).verify(self.PAYLOAD, forge(self.PAYLOAD))
+
+    def test_a_body_altered_after_signing_is_refused(self) -> None:
+        with pytest.raises(WebhookSignatureError):
+            ClerkWebhookVerifier(CLERK_SECRET).verify(self.PAYLOAD + b" ", clerk_headers(self.PAYLOAD))
 
 
 class TestSubscriptionMapping:

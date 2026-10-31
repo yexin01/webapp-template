@@ -673,10 +673,12 @@ def test_analytics_events_are_allowlisted(harness: Harness) -> None:
 SVIX_SECRET = "whsec_" + base64.b64encode(b"test-only-clerk-signing-secret!!").decode()
 
 
-def clerk_send(h: Harness, event_type: str, data: dict[str, Any], msg_id: str | None = None) -> Any:
+def clerk_send(
+    h: Harness, event_type: str, data: dict[str, Any], msg_id: str | None = None, timestamp: int | None = None
+) -> Any:
     payload = json.dumps({"type": event_type, "data": data, "object": "event"}).encode()
     msg_id = msg_id or f"msg_{time.time_ns()}"
-    ts = int(time.time())
+    ts = int(time.time()) if timestamp is None else timestamp
     from datetime import UTC, datetime
 
     signature = Webhook(SVIX_SECRET).sign(msg_id, datetime.fromtimestamp(ts, UTC), payload.decode())
@@ -750,6 +752,18 @@ def test_clerk_webhook_forgery_and_duplicates(clerk_harness: Harness) -> None:
     first = clerk_send(h, "user.deleted", {"id": "user_x"}, msg_id="msg_same")
     second = clerk_send(h, "user.deleted", {"id": "user_x"}, msg_id="msg_same")
     assert first.json()["status"] == second.json()["status"] == "processed"
+
+
+def test_a_clerk_webhook_signed_an_hour_ago_is_refused_and_leaves_no_trace(clerk_harness: Harness) -> None:
+    """SEC-13: a captured, correctly signed delivery cannot be replayed later (the signature covers the timestamp).
+    The refusal is a 400 and nothing is recorded, so the same message signed now is still processed."""
+    h = clerk_harness
+    stale = clerk_send(h, "user.deleted", {"id": "user_x"}, msg_id="msg_replay", timestamp=int(time.time()) - 3600)
+    assert stale.status_code == 400
+    assert stale.json()["code"] == "WEBHOOK_SIGNATURE_INVALID"
+    assert superuser_query(h.database_url, "SELECT count(*) FROM app.identity_events") == [(0,)]
+    fresh = clerk_send(h, "user.deleted", {"id": "user_x"}, msg_id="msg_replay")
+    assert (fresh.status_code, fresh.json()["status"]) == (200, "processed")
 
 
 # -- Migration safety -------------------------------------------------------------
