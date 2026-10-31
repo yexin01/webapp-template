@@ -41,7 +41,7 @@ Tests never use your `.env`. Database tests create and drop their own database, 
 | `pnpm bootstrap` | Install JavaScript and Python dependencies from the lockfiles |
 | `pnpm dev` | Check the configuration, then run the API and web app with reload (starts the Stripe CLI listener when billing is in sandbox mode). macOS and Linux only: on Windows use WSL, or run `pnpm dev:api` and `pnpm dev:web` in separate terminals |
 | `pnpm build` | Production build of the web app; needs your Clerk publishable key |
-| `pnpm build:check` | Account-free production build (it reads no `.env`) plus the bundle secret scan: what CI runs |
+| `pnpm build:check` | Account-free production build (the build reads no `.env`; the scan does, to look for its values) plus the bundle secret scan: what CI runs |
 | `pnpm format` | Format the web app (Prettier) and the API and perf code (Ruff) |
 | `pnpm contracts` | Regenerate the OpenAPI document and the TypeScript API types |
 | `pnpm new:module <name>` | Scaffold a tenant-scoped feature module end to end ([docs/architecture.md](docs/architecture.md#adding-a-feature)) |
@@ -53,7 +53,7 @@ Tests never use your `.env`. Database tests create and drop their own database, 
 | Command | Purpose |
 |---|---|
 | `pnpm check:setup [--send-test-events]` | Validate the configuration and run the checks of the Integrations page without signing in |
-| `pnpm verify` | Everything CI runs, in CI's order, ending with a PASS/FAIL table (`--help` lists the options) |
+| `pnpm verify` | The checks of CI's api, web and secrets jobs, in CI's order, ending with a PASS/FAIL table; a step that cannot run is SKIPPED, and a run in which nothing passed ends NOTHING RAN (`--help` lists the options). CI's other jobs are `pnpm test:vercel-build` and `pnpm test:supabase` |
 | `pnpm verify:quick` | Lint, format, types, and the API and web tests |
 | `pnpm verify:sandbox` | The checks that need provider accounts, each when its keys are in `.env`; ends with an evidence record |
 | `pnpm test` | API tests (needs `pnpm db:up`) and web unit tests |

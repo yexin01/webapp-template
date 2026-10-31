@@ -46,7 +46,7 @@ The full threat model is in [`dev-docs/engineering-implementation-plan.md`](dev-
 - Tenant isolation is enforced by the application *and* by forced PostgreSQL row-level security. The API logs in as a role that owns nothing and cannot bypass row-level security, and in preview and production it refuses to start database work under a login role that could. Row-level security does not stop SQL injection: code that runs arbitrary SQL can still read across tenants through the worker role.
 - Pro entitlements come only from signature-verified Stripe data that is re-read from Stripe.
 - Secrets never reach the browser bundle. This is checked in CI. On Vercel, a project with more than one service gives every service every project variable, so the web service's server processes can read the API's secrets; the template ships that topology. Vercel documents the sharing; it has not been observed here.
-- Logs and telemetry are redacted and collect no request bodies. They carry the request ID and internal, pseudonymous user and organization IDs.
+- Logs and telemetry are redacted and collect no request bodies. They carry the request ID and internal, pseudonymous user and organization IDs; some billing log lines also carry Stripe record IDs. The hosting platform keeps its own request logs ([`docs/data-inventory.md`](docs/data-inventory.md#external-services)).
 - Pages require sign-in by default, but the API is the authority: it authorizes every operation whatever the web app shows.
 
 Known limitations that bear on security are listed in [`docs/limitations.md`](docs/limitations.md).

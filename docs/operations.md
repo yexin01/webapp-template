@@ -5,7 +5,7 @@ Day-two procedures for adopters: health checks, provider outages, routine tasks,
 ## Health and readiness
 
 - `GET /api/v1/health`: liveness only, with no dependency calls. Answers `{"status":"ok"}`.
-- `GET /api/v1/ready`: checks the database and answers `{"status":"ready","checks":{"database":"ok"}}`, or `503` with `{"status":"not_ready"}` when it is unavailable, at most one round-trip deadline later ([provider outages](#provider-outages)). It does not reveal configuration.
+- `GET /api/v1/ready`: checks the database and answers `{"status":"ready","checks":{"database":"ok"}}`, or `503` with `{"status":"not_ready","checks":{"database":"unavailable"}}` when it is unavailable, at most one round-trip deadline later ([provider outages](#provider-outages)). It does not reveal configuration.
 - In preview and production a database login that could skip row-level security makes every database transaction fail with `503` and `/ready` report not ready, while `/health` stays up ([The runtime login role](#the-runtime-login-role)).
 
 ## Provider outages
@@ -58,7 +58,7 @@ It does not replace a customer that still has a subscription which is not over. 
 
 ### A user deleted in Clerk
 
-When Clerk reports `user.deleted` (the user deleted their account, or you deleted them in the Clerk Dashboard), the API revokes their memberships and records the outbox event `identity.user_deleted` in the same transaction. Billing handles that event after commit and asks Stripe to end each of the user's subscriptions that is not over (an `incomplete` one expires by itself) at the end of the period it paid for: Pro and billing run to that date, and nothing renews. The signed-in user is gone, so nobody could reach the Customer Portal. Replays are harmless (a subscription already scheduled to end is left alone). Nothing is refunded and nothing is cancelled at once: both are yours, in the Stripe Dashboard.
+When Clerk reports `user.deleted` (the user deleted their account, or you deleted them in the Clerk Dashboard), the API revokes their memberships and records the outbox event `identity.user_deleted` in the same transaction. The API learns of a deletion only from the Clerk webhook (one of the five events of [the endpoint](integrations.md#clerk), step D12): without the endpoint, or if a delivery is lost, nothing ends the subscription, and you cancel it in the Stripe Dashboard. Billing handles that event after commit and asks Stripe to end each of the user's subscriptions that is not over (an `incomplete` one expires by itself) at the end of the period it paid for: Pro and billing run to that date, and nothing renews. The signed-in user is gone, so nobody could reach the Customer Portal. Replays are harmless (a subscription already scheduled to end is left alone). Nothing is refunded and nothing is cancelled at once: both are yours, in the Stripe Dashboard.
 
 If Stripe cannot be asked, the log has `billing_deleted_user_has_subscription` at ERROR with `stripe_customer_id` and `stripe_subscription_ids`, and the event is retried with backoff until `OUTBOX_MAX_ATTEMPTS`, after which it is `dead` ([Outbox](#outbox)): cancel the subscription in the Stripe Dashboard, then replay or ignore the event. With `BILLING_ON_USER_DELETED=log` the same ERROR is the only action, once. The application data and the Stripe customer are kept ([data-inventory.md](data-inventory.md#adopter-decision-checklist)). The Stripe key needs write access to Subscriptions ([integrations.md](integrations.md#stripe)).
 
@@ -87,7 +87,7 @@ Rotate immediately after any suspected exposure, and periodically otherwise. For
 | `NEXT_PUBLIC_POSTHOG_KEY`, `NEXT_PUBLIC_SENTRY_DSN` | Vercel (web, and the API for the PostHog key) | Events arrive | Baked: a rotated key stays in already-built browser bundles until you redeploy |
 | `SENTRY_DSN` | Vercel (API) | `pnpm check:setup --send-test-events` | |
 | `SENTRY_AUTH_TOKEN` | Vercel (web build) | The build log shows the upload | Revoke at Sentry |
-| Protection Bypass secret | Vercel project, and the webhook URLs registered at Stripe and Clerk | A test delivery | Regenerating invalidates earlier deployments: redeploy and update the URLs |
+| Protection Bypass secrets (the one in the webhook URLs, the one your tools use) | Vercel project, and the webhook URLs registered at Stripe and Clerk | A test delivery; a `curl` with the header | Each secret opens every protected deployment of the project, so revoke a leaked one at once. Regenerating invalidates earlier deployments: redeploy and update the URLs ([deployment.md](deployment.md#preview-details)) |
 
 Vercel's own guide: [rotating environment variables](https://vercel.com/docs/environment-variables/rotating-secrets).
 
@@ -144,7 +144,7 @@ Jobs are registered in code ([architecture](architecture.md#jobs)). Run them in 
 
 **When a job fails.** Vercel does not retry a failed cron invocation. Delivery is best effort: a run can be missed, and the same run can occasionally be delivered twice ([Vercel: managing cron jobs](https://vercel.com/docs/cron-jobs/manage-cron-jobs)). The jobs are written for that: each is safe to repeat and to run concurrently with itself, and each run works through what is outstanding. The guard refuses the second delivery of a run (409 while the first is running, 429 after), which is harmless. A run that the platform stopped (a timeout) holds its job for up to 15 minutes, so a call in that time returns 409: run the job from the CLI to catch up at once. Find a failed run in the project's **Settings > Cron Jobs > View Logs** (cron runs are logged as function invocations); a completed run logs `job_completed` with the job name, `duration_ms` and a summary. To catch up at once, run the job by hand ([above](#scheduled-jobs)) or call its route.
 
-The root `vercel.json` holds the schedules, and a test fails if it drifts from the registry. Schedules are daily so the configuration deploys on any Vercel plan; the Hobby plan runs a daily cron at any minute within the scheduled hour. If your plan allows it, run `drain-outbox` every few minutes, and set `JOB_MIN_SPACING_SECONDS` below the interval if it is a minute or less. With Vercel Services (one project), crons must be in the root `vercel.json`: a service's own `vercel.json` crons are not registered.
+The root `vercel.json` holds the schedules, and a test fails if it drifts from the registry. Schedules are daily so the configuration deploys on any Vercel plan; the Hobby plan runs a daily cron at any minute within the scheduled hour. If your plan allows it, run `drain-outbox` every few minutes, and set `JOB_MIN_SPACING_SECONDS` below the interval if it is a minute or less. With Vercel Services (one project), keep the crons in the root `vercel.json`: Vercel's pages do not say where they go, and in an exploratory local build a service's own `vercel.json` crons were not registered ([deployment.md](deployment.md#what-ships)).
 
 **Not verified until the first deployment:** Vercel Cron delivery, plan limits, and whether after-response dispatch completes before the function is frozen. If it does not complete, `drain-outbox` delivers the events at its next run. Vercel Cron calls the **production** deployment only, never a preview ([Vercel: cron jobs](https://vercel.com/docs/cron-jobs)), so verifying it needs a production deployment, which is a separately authorized remote action. On a preview, call the job routes yourself with `Authorization: Bearer <CRON_SECRET>`; that checks the routes, not the scheduler.
 
@@ -158,7 +158,7 @@ The root `vercel.json` holds the schedules, and a test fails if it drifts from t
   ```
 - **Replay a dead event** after fixing its handler: `UPDATE app.outbox SET status = 'pending', attempts = 0, available_at = now() WHERE id = '<id>';` Handlers are idempotent, so a replay is safe.
 - **Retention:** processed events are deleted after `OUTBOX_RETENTION_DAYS`. Dead events are kept until you replay or delete them.
-- **Leases:** `OUTBOX_LEASE_SECONDS` (default 900) must stay longer than the longest a function may run (Vercel: 300 s by default, up to 800 s). If you raise the function duration past it, raise the lease too, or a slow handler can lose its lease and run twice at once.
+- **Leases:** `OUTBOX_LEASE_SECONDS` (default 900) must stay longer than the longest a function may run. Vercel's default is 300 s and the generally available maximum is 800 s on Pro and Enterprise (Hobby: 300 s); durations up to 1800 s are in beta and set per function in `vercel.json` ([Vercel: maximum duration](https://vercel.com/docs/functions/configuring-functions/duration), updated 2026-08-24). The root `vercel.json` sets none, so 900 s outlasts every function it configures. If you raise a function's `maxDuration` past the lease, raise the lease too, or a slow handler can lose its lease and run twice at once.
 
 ## Limits
 
@@ -252,7 +252,7 @@ Those belong to the hosted restore test above.
 
 Current behavior:
 
-- `user.deleted` from Clerk revokes all of the user's organization memberships, and no membership read taken earlier can restore them. Application data and billing records are retained.
+- `user.deleted` from Clerk revokes all of the user's organization memberships, and no membership read taken earlier can restore them. Billing sets the user's subscription to end at the period's end ([above](#a-user-deleted-in-clerk)). Application data and billing records are retained.
 - Webhook ledgers store event IDs and types only, not payloads.
 - Telemetry retention follows each provider's project settings.
 
@@ -267,10 +267,10 @@ From the DEC-001 local proof ([evidence](../dev-docs/evidence/dec-001-vercel-pyt
 | Topic | Finding |
 |---|---|
 | Runtime | `python3.12` on x86_64. Vercel's runtime shim (`vercel_runtime`, with a vendored uvicorn) serves the ASGI app, and one instance serves concurrent requests. Local: verified in an Amazon Linux 2023 container. |
-| Bundle | Local: 74.3 MiB uncompressed, installed from `uv.lock` with Linux wheels. Documented limit: 500 MB. `excludeFiles` in the root `vercel.json` keeps `tests/` and tool caches out. |
+| Bundle | Local: 74.5 MiB uncompressed (`pnpm test:vercel-build`; the 2026-10-14 proof measured 74.3 MiB on an earlier tree), installed from `uv.lock` with Linux wheels. Documented limit: 500 MB. `excludeFiles` in the root `vercel.json` keeps `tests/` and tool caches out. |
 | Function root | Read-only. The API writes nothing there, and in a bundle it reads no `.env` file: configuration comes from environment variables only. |
 | Cold start | Local, under x86_64 emulation: 2.2 to 6.6 s to the first response (p50 3.6 s; it varies with machine load). Natively, about 0.6 s. Platform cold starts are not measured: pre-warming and bytecode caching differ. |
-| Duration | Documented: 300 s by default (the maximum on Hobby); up to 800 s on Pro and Enterprise. |
+| Duration | Documented: 300 s by default (the maximum on Hobby); up to 800 s on Pro and Enterprise, and up to 1800 s per function in a beta that this template does not use ([Vercel: maximum duration](https://vercel.com/docs/functions/configuring-functions/duration), updated 2026-08-24). The root `vercel.json` sets no `maxDuration`. |
 | Payload | Documented: 4.5 MB request and response bodies. The API rejects bodies over `MAX_REQUEST_BODY_BYTES` (1 MB) first. |
 | Database | Use the transaction pooler. Every setting is transaction-local and prepared statements are off (local: verified with PgBouncer in transaction mode). A database or pooler that stops responding fails each call after the round-trip deadline (15 s by default). |
-| Crons | With Services, only the root `vercel.json` crons are registered. |
+| Crons | Local build: with Services, a service's own `vercel.json` crons were not registered, so the crons are in the root file. Vercel's pages do not say. |
