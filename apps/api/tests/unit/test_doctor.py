@@ -293,6 +293,14 @@ def steps_for(settings: Any, results: list[CheckResult], send: bool = False) -> 
     return "\n".join(doctor.manual_steps(settings, results, send_test_events=send))
 
 
+def assert_clerk_step_names_membership_optional(steps: str) -> None:
+    """Clerk's default since 2025-08-22, Membership required, removes the personal workspace: the step says which to pick."""
+    clerk = next(line for line in steps.splitlines() if line.startswith("Clerk"))
+    assert "Organizations" in clerk
+    assert "Membership optional (Personal accounts)" in clerk
+    assert "docs/setup.md#clerk" in clerk
+
+
 def test_manual_steps_follow_what_was_skipped_or_failed() -> None:
     placeholder = make_settings(
         app_env="local",
@@ -320,6 +328,7 @@ def test_manual_steps_follow_what_was_skipped_or_failed() -> None:
     ):
         assert expected in steps, expected
     assert "Organizations enabled" not in steps
+    assert_clerk_step_names_membership_optional(steps)
 
 
 def test_manual_steps_name_what_no_api_can_check_once_keys_are_in() -> None:
@@ -338,6 +347,7 @@ def test_manual_steps_name_what_no_api_can_check_once_keys_are_in() -> None:
     )
     steps = steps_for(settings, results)
     assert "Organizations enabled" in steps
+    assert_clerk_step_names_membership_optional(steps)
     assert "Clerk membership webhook" in steps
     assert "Customer Portal" in steps
     assert "api/v1/webhooks/stripe" in steps
