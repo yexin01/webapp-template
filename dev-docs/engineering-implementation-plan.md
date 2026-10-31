@@ -1580,6 +1580,7 @@ The report clearly distinguishes verified behavior from assumptions, mocks, and 
   - **Awaiting owner approval:**
     - granting Pro by the Stripe product (`STRIPE_PRODUCT_PRO`, in place of the retained-price settings; a billing-related choice, §17 rule 5; [ADR-0004 §16](adr/0004-cycle-1-adopted-decisions.md)), and the defaults and choices listed under "Not fixed" in both second-review records;
     - the billing behavior change of BILL-06: the success page, the portal return, and a refused checkout ask the server to re-read from Stripe once (BILL-22);
+    - the billing behavior changes of fix round 2 (§17 rule 5; [ADR-0004 §20 and §21](adr/0004-cycle-1-adopted-decisions.md)): the scheduled job applies Stripe's state outside mock mode (BILL-19), Checkout offers cards only (BILL-05), a deleted Stripe customer is replaced at the user's next checkout (BILL-04), and a deleted user's subscription is set to end at the period's end (BILL-16);
     - the other decisions of ADR-0004, including the departure from FE-02 at the environment level under Services, and the AUTH-06 wording deviation (a sign-in link the user clicks, not an automatic redirect).
 - **Deviations:** D-001 to D-004 (§18).
 - **Remote actions:** none. No push, publication, deployment, or release has occurred. One disclosed accident: during a manual run, the real Stripe CLI ran once with a synthetic, invalid key and Stripe rejected it; nothing was created or changed.
