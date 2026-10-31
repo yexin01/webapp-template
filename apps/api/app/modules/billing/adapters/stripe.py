@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 from datetime import UTC, datetime
@@ -33,6 +34,8 @@ logger = logging.getLogger(__name__)
 _METADATA_USER_KEY = "app_user_id"
 _SIGNATURE_TOLERANCE_SECONDS = 300
 _MAX_SUBSCRIPTIONS_PER_CUSTOMER = 100
+# A customer has at most one open Checkout Session (DEC-013): the largest page Stripe allows is far more than that.
+_MAX_OPEN_SESSIONS_PER_CUSTOMER = 100
 
 
 def _ts(value: Any) -> datetime | None:
@@ -209,6 +212,18 @@ class StripeBillingProvider:
     def expire_checkout_session(self, session_id: str) -> None:
         self._call(self._client.v1.checkout.sessions.expire, session_id)
 
+    def expire_open_checkout_sessions(self, customer_id: str) -> None:
+        # The sessions the customer can still pay: ``customer`` and ``status`` are parameters of
+        # https://docs.stripe.com/api/checkout/sessions/list.
+        listed = self._call(
+            self._client.v1.checkout.sessions.list,
+            params={"customer": customer_id, "status": "open", "limit": _MAX_OPEN_SESSIONS_PER_CUSTOMER},
+        )
+        for session in listed.data:
+            # One that was completed or expired since the listing cannot be completed any more.
+            with contextlib.suppress(InvalidRequestError):
+                self.expire_checkout_session(str(session.id))
+
     def open_checkout_session_url(self, session_id: str) -> str | None:
         session = self._call(self._client.v1.checkout.sessions.retrieve, session_id)
         url = _get(session, "url")
@@ -260,6 +275,12 @@ class StripeBillingProvider:
             self._client.v1.subscriptions.update, subscription_id, params={"cancel_at_period_end": True}
         )
         return to_snapshot(updated, self._catalog)
+
+    def cancel_subscription_immediately(self, subscription_id: str) -> SubscriptionSnapshot:
+        # Nothing but the ID: no final invoice and no proration for a subscription that was never paid
+        # (https://docs.stripe.com/api/subscriptions/cancel).
+        canceled = self._call(self._client.v1.subscriptions.cancel, subscription_id)
+        return to_snapshot(canceled, self._catalog)
 
     def describe_price(self, price_id: str) -> PriceDescription:
         # Diagnostics only: unlike customer-facing calls, failures are specific

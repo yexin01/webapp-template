@@ -115,6 +115,13 @@ class BillingProvider(Protocol):
         """Close a session so it can no longer be completed. ``InvalidRequestError`` if it is not open (any more)."""
         ...
 
+    def expire_open_checkout_sessions(self, customer_id: str) -> None:
+        """Close every session of the customer that can still be completed, whoever opened it.
+
+        ``InvalidRequestError`` if Stripe rejects the customer (for example, because it was deleted).
+        """
+        ...
+
     def open_checkout_session_url(self, session_id: str) -> str | None:
         """The URL of the session, or ``None`` if it is not open (any more)."""
         ...
@@ -123,7 +130,11 @@ class BillingProvider(Protocol):
     def list_customer_subscriptions(self, customer_id: str) -> list[SubscriptionSnapshot]: ...
     def retrieve_subscription(self, subscription_id: str) -> SubscriptionSnapshot: ...
     def cancel_subscription_at_period_end(self, subscription_id: str) -> SubscriptionSnapshot:
-        """Stop the subscription renewing; it runs to the end of the period it paid for. (Immediate: not built.)"""
+        """Stop the subscription renewing; it runs to the end of the period it paid for."""
+        ...
+
+    def cancel_subscription_immediately(self, subscription_id: str) -> SubscriptionSnapshot:
+        """End the subscription now, with no final invoice. Only for one nothing was paid for (``incomplete``)."""
         ...
 
     def get_customer_app_user_id(self, customer_id: str) -> UUID | None: ...

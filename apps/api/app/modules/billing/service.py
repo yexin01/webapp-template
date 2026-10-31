@@ -691,9 +691,11 @@ class BillingService:
         reach the Customer Portal, and the subscription would renew until an operator noticed.
 
         Asks Stripe to end each subscription of the user's customer that is not over at the end of its period, so
-        what the user paid for runs out and nothing more is charged. A repeat finds them scheduled and does
-        nothing. Without ``cancel_on_user_deleted`` it only names them. A subscription that cannot be ended is
-        an ERROR naming the customer, for an operator, and the handler raises, so the outbox retries.
+        what the user paid for runs out and nothing more is charged, and to cancel one still awaiting its first
+        payment at once. First it expires the customer's open Checkout Sessions: one paid after the deletion would
+        start a subscription nobody ends. A repeat finds them closed or scheduled and does nothing. Without
+        ``cancel_on_user_deleted`` it only names them. Whatever cannot be done is an ERROR naming the customer, for
+        an operator, and the handler raises, so the outbox retries.
         """
         user_id = UUID(str(event.payload["user_id"]))
         with self._tx.as_system() as t:
@@ -708,6 +710,9 @@ class BillingService:
             return
         provider = self._require_provider()
         try:
+            # Before the subscriptions are read, so one paid meanwhile is among them. The stored session row stays:
+            # its user cannot sign in, and the worker role has no grant on it.
+            provider.expire_open_checkout_sessions(customer_id)
             listed = provider.list_customer_subscriptions(customer_id)
         except InvalidRequestError:
             if provider.customer_exists(customer_id):
@@ -719,11 +724,16 @@ class BillingService:
             raise
         failed: list[SubscriptionSnapshot] = []
         for sub in listed:
-            if sub.status in _ENDABLE_STATUSES and not _scheduled_to_end(sub):
-                try:
-                    provider.cancel_subscription_at_period_end(sub.stripe_subscription_id)
-                except DomainError:
-                    failed.append(sub)
+            if sub.status is SubscriptionStatus.INCOMPLETE:
+                end = provider.cancel_subscription_immediately
+            elif sub.status in _ENDABLE_STATUSES and not _scheduled_to_end(sub):
+                end = provider.cancel_subscription_at_period_end
+            else:
+                continue
+            try:
+                end(sub.stripe_subscription_id)
+            except DomainError:
+                failed.append(sub)
         if failed:
             self._alert_deleted_users_subscription(customer_id, failed)
             raise DependencyUnavailableError("A deleted user's subscription could not be ended.")
@@ -806,7 +816,8 @@ class _Slots:
             self._slots.release()
 
 
-# The subscriptions that charge, or will: an incomplete one expires by itself, within a day, without a charge.
+# The subscriptions that charge, or will, and are ended at the period's end. An incomplete one has paid nothing and
+# is cancelled at once; the over ones are left alone.
 _ENDABLE_STATUSES = frozenset(
     {
         SubscriptionStatus.ACTIVE,

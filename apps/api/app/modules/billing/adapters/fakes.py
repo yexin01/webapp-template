@@ -43,8 +43,9 @@ class InMemoryBillingProvider:
         self.checkout_requests: list[dict[str, object]] = []
         self.portal_requests: list[dict[str, object]] = []
         self.customer_requests: list[dict[str, object]] = []
-        # The IDs of the subscriptions set to end at the period's end, in order.
+        # The IDs of the subscriptions set to end at the period's end, and of those ended at once, in order.
         self.cancellations: list[str] = []
+        self.immediate_cancellations: list[str] = []
         self.fail_with: Callable[[], Exception] | None = None
 
     def _maybe_fail(self, call: str) -> None:
@@ -116,6 +117,15 @@ class InMemoryBillingProvider:
                 raise InvalidRequestError("The billing request was rejected.")
             session.status = "expired"
 
+    def expire_open_checkout_sessions(self, customer_id: str) -> None:
+        self._maybe_fail("expire_open_checkout_sessions")
+        with self._lock:
+            if customer_id in self._deleted_customers:
+                raise InvalidRequestError("The billing request was rejected.")
+            for session in self._sessions.values():
+                if session.customer_id == customer_id and session.status == "open":
+                    session.status = "expired"
+
     def open_checkout_session_url(self, session_id: str) -> str | None:
         self._maybe_fail("open_checkout_session_url")
         with self._lock:
@@ -160,6 +170,20 @@ class InMemoryBillingProvider:
                         self._subscriptions[customer_id][index] = updated
                         self.cancellations.append(subscription_id)
                         return updated
+        raise InvalidRequestError("The billing request was rejected.")
+
+    def cancel_subscription_immediately(self, subscription_id: str) -> SubscriptionSnapshot:
+        self._maybe_fail("cancel_subscription_immediately")
+        with self._lock:
+            for customer_id, subs in self._subscriptions.items():
+                for index, sub in enumerate(subs):
+                    if sub.stripe_subscription_id == subscription_id:
+                        if sub.status in (SubscriptionStatus.CANCELED, SubscriptionStatus.INCOMPLETE_EXPIRED):
+                            raise InvalidRequestError("The billing request was rejected.")
+                        ended = replace(sub, status=SubscriptionStatus.CANCELED)
+                        self._subscriptions[customer_id][index] = ended
+                        self.immediate_cancellations.append(subscription_id)
+                        return ended
         raise InvalidRequestError("The billing request was rejected.")
 
     def get_customer_app_user_id(self, customer_id: str) -> UUID | None:
