@@ -177,6 +177,37 @@ def test_checkout_requires_idempotency_key(harness: Harness) -> None:
     assert r.status_code == 422
 
 
+@pytest.mark.parametrize(
+    ("key", "status", "code"),
+    [
+        ("bad key!!", 400, "INVALID_REQUEST"),
+        ("key with spaces", 400, "INVALID_REQUEST"),  # one offending character each, so a wider class is caught
+        ("dot.in.key.1", 400, "INVALID_REQUEST"),
+        ("slash/in/key1", 400, "INVALID_REQUEST"),
+        ("semi;colon:key", 400, "INVALID_REQUEST"),
+        ("short", 422, "VALIDATION_FAILED"),
+        ("k" * 65, 422, "VALIDATION_FAILED"),
+    ],
+)
+def test_checkout_refuses_an_idempotency_key_outside_8_to_64_letters_digits_hyphens_and_underscores(
+    harness: Harness, key: str, status: int, code: str
+) -> None:
+    """The key becomes part of the key sent to Stripe and of a stored row: nothing else is accepted, before any call."""
+    headers = {**harness.login("user_a"), "Idempotency-Key": key}
+    r = harness.client.post("/api/v1/billing/checkout", json={"plan": "pro_monthly"}, headers=headers)
+    assert (r.status_code, r.json()["code"]) == (status, code)
+    assert harness.billing.calls == []  # a refused key costs no Stripe call and no customer
+    assert superuser_query(harness.database_url, "SELECT count(*) FROM app.billing_customers") == [(0,)]
+
+
+def test_checkout_accepts_the_whole_idempotency_alphabet(harness: Harness) -> None:
+    headers = {**harness.login("user_a"), "Idempotency-Key": "Az09_-" + "x" * 58}
+    assert (
+        harness.client.post("/api/v1/billing/checkout", json={"plan": "pro_monthly"}, headers=headers).status_code
+        == 200
+    )
+
+
 def test_checkout_refused_when_already_pro(harness: Harness) -> None:
     make_pro(harness, "user_a")
     r = start_checkout(harness, harness.login("user_a"))
