@@ -16,11 +16,13 @@ import pytest
 from app.bootstrap import build_container
 from app.kernel.infrastructure.observability import (
     ANALYTICS_ALLOWLIST,
+    PERSONAL_DATA_WORDS,
     AnalyticsEvents,
     NoopAnalytics,
     PostHogAnalytics,
     _filter,
 )
+from app.kernel.infrastructure.redaction import SENSITIVE_KEYS
 from app.kernel.wiring import Contribution
 from tests.conftest import make_settings
 from tests.stub_server import stub_server
@@ -69,6 +71,69 @@ def test_a_registration_the_allowlist_exists_to_prevent_is_refused(events: dict[
     with pytest.raises(ValueError, match=why):
         registry.register(events)
     assert registry.properties("note_created") is None  # nothing of a refused registration is kept
+
+
+@pytest.mark.parametrize(
+    "prop",
+    [
+        # Named like the exact names the guard knew, with another word around them.
+        "user_email",
+        "email_address",
+        "customer_email",
+        "phone_number",
+        "api_token",
+        "client_secret",
+        "password_hash",
+        # Personal data it did not know at all.
+        "name",
+        "first_name",
+        "last_name",
+        "full_name",
+        "firstname",
+        "username",
+        "ip_address",
+        "client_ip",
+        "address",
+        "billing_address",
+        "birthday",
+        "date_of_birth",
+        "dob",
+        "ssn",
+        # Text a user wrote.
+        "message",
+        "error_message",
+        # Written in capitals too, where the name is also refused as malformed.
+        "User_Email",
+    ],
+)
+def test_a_property_with_a_personal_data_word_in_its_name_is_refused(prop: str) -> None:
+    registry = AnalyticsEvents()
+    with pytest.raises(ValueError, match=f"property '{prop}' is named like personal data or a secret"):
+        registry.register({"signed_up": frozenset({prop})})
+    assert registry.properties("signed_up") is None
+
+
+@pytest.mark.parametrize(
+    "prop",
+    [
+        # Properties the template and a module may well send.
+        *("plan", "context", "source", "provider", "format", "length", "plan_key", "project_count"),
+        "is_first_visit",
+        # Letters of a personal data word inside another word.
+        *("ipsum", "recipe", "shipping_method", "nameplate", "usernames", "emailed"),
+    ],
+)
+def test_a_property_is_refused_for_a_word_of_its_name_not_for_letters_inside_one(prop: str) -> None:
+    registry = AnalyticsEvents()
+    registry.register({"signed_up": frozenset({prop})})
+    assert registry.properties("signed_up") == frozenset({prop})
+
+
+def test_none_of_the_kernels_own_properties_is_named_like_personal_data() -> None:
+    for event, properties in ANALYTICS_ALLOWLIST.items():
+        for prop in properties:
+            assert prop not in SENSITIVE_KEYS, (event, prop)
+            assert PERSONAL_DATA_WORDS.isdisjoint(prop.split("_")), (event, prop)
 
 
 def test_a_second_registration_of_the_same_name_is_refused() -> None:

@@ -427,6 +427,23 @@ ANALYTICS_ALLOWLIST: Mapping[str, frozenset[str]] = {
     "integration_test_sent": frozenset({"source"}),
 }
 
+# A property whose name, split on "_", holds one of these words is refused when its event is registered:
+# user_email, ip_address, first_name, phone_number. A joined form (firstname, ipaddress) is listed too. This stops
+# the obvious mistake of naming a property after personal data or a credential; the allowlist is what keeps a
+# property off the wire. docs/architecture.md ("Adding an analytics event") lists the words for authors.
+PERSONAL_DATA_WORDS = frozenset(
+    {
+        # who someone is, and how to reach them
+        *("email", "phone", "mobile", "name", "firstname", "lastname", "fullname", "surname", "username", "nickname"),
+        *("address", "street", "zip", "zipcode", "postcode", "postal", "ip", "ipaddress"),
+        *("birth", "birthday", "birthdate", "dob", "ssn", "passport", "iban"),
+        # credentials
+        *("password", "passwd", "secret", "token", "cookie", "jwt", "apikey"),
+        # what a user wrote
+        *("prompt", "message", "messages", "body"),
+    }
+)
+
 logger = logging.getLogger(__name__)
 
 _ANALYTICS_NAME = re.compile(r"[a-z][a-z0-9_]{2,63}")
@@ -438,8 +455,9 @@ class AnalyticsEvents:
     It starts with ``ANALYTICS_ALLOWLIST``. A module adds its own events with
     ``Contribution.analytics_events``, which the composition root registers at startup, so adding
     an event never edits the kernel. Registration refuses what the allowlist exists to prevent: a
-    name another event has, a property named like personal data or a secret, a name outside
-    lower-case snake case. A refusal stops the application from starting.
+    name another event has, a property with a word of ``PERSONAL_DATA_WORDS`` in its name or one of
+    ``SENSITIVE_KEYS`` as its name, a name outside lower-case snake case. A refusal stops the
+    application from starting.
     """
 
     def __init__(self, base: Mapping[str, frozenset[str]] = ANALYTICS_ALLOWLIST) -> None:
@@ -452,7 +470,9 @@ class AnalyticsEvents:
             names = [name, *properties]
             problems += [f"{n!r} is not lower-case snake case" for n in names if not _ANALYTICS_NAME.fullmatch(n)]
             problems += [
-                f"property {p!r} is named like personal data or a secret" for p in properties if p in SENSITIVE_KEYS
+                f"property {p!r} is named like personal data or a secret"
+                for p in properties
+                if p in SENSITIVE_KEYS or PERSONAL_DATA_WORDS.intersection(p.lower().split("_"))
             ]
             if problems:
                 raise ValueError(f"analytics event {name!r} cannot be registered: {'; '.join(problems)}")
