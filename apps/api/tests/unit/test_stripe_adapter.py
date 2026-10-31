@@ -8,6 +8,7 @@ Stripe, how answers map to domain values, and which failures are rejections
 
 from __future__ import annotations
 
+import json
 import logging
 import socket
 import uuid
@@ -17,9 +18,12 @@ from typing import Any, ClassVar
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
+import stripe
 
 from app.kernel.errors import DependencyUnavailableError, ForbiddenError, InvalidRequestError, NotConfiguredError
-from app.modules.billing.adapters.stripe import StripeBillingProvider
+from app.kernel.infrastructure.observability import JsonFormatter
+from app.kernel.request_context import request_id_var
+from app.modules.billing.adapters.stripe import StripeBillingProvider, _configuration_error
 from app.modules.billing.domain import (
     PlanKey,
     PortalConfiguration,
@@ -340,6 +344,20 @@ class TestConfigurationErrors:
         assert "price_attacker" not in caplog.text
         assert "cus_victim" not in caplog.text
         assert errors[0].http_status == status  # type: ignore[attr-defined]
+
+    def test_stripes_request_id_is_logged_under_its_own_name(self, caplog: pytest.LogCaptureFixture) -> None:
+        """The line keeps the API request's ID, which an operator filters by; Stripe's is one more field."""
+        rejected = stripe.AuthenticationError("m", http_status=401, headers={"request-id": "req_CANARYSTRIPE1"})
+        token = request_id_var.set("0123456789abcdef0123456789abcdef")
+        try:
+            with caplog.at_level(logging.WARNING):
+                _configuration_error(rejected)
+            [record] = caplog.records
+            line = json.loads(JsonFormatter().format(record))
+        finally:
+            request_id_var.reset(token)
+        assert line["request_id"] == "0123456789abcdef0123456789abcdef"
+        assert line["stripe_request_id"] == "req_CANARYSTRIPE1"
 
     @pytest.mark.parametrize("call", ["checkout", "portal"])
     def test_a_customer_stripe_does_not_have_stays_a_rejection(

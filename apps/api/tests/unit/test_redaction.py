@@ -13,6 +13,7 @@ import pytest
 
 from app.kernel.infrastructure.observability import JsonFormatter, scrub_breadcrumb, scrub_event
 from app.kernel.infrastructure.redaction import MAX_TEXT_LENGTH, REDACTED, TRUNCATED, redact, redact_text
+from app.kernel.request_context import request_id_var
 
 JWT = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJjYW5hcnkifQ.c2lnbmF0dXJlY2FuYXJ5"
 SECRET = "sk_" + "live_CANARY1234567890"
@@ -360,3 +361,31 @@ class TestRedactionCost:
         assert seconds < 0.1
         assert scrubbed["exception"]["values"][0]["value"] == f"{REDACTED} {TRUNCATED}"
         assert all(len(text) <= 4096 + len(TRUNCATED) for text in (scrubbed["message"], scrubbed["extra"]["blob"]))
+
+
+class TestRequestIdInLogLines:
+    """OBS-05: ``request_id`` on a log line is the API request's ID, which an operator filters by."""
+
+    REQUEST = "0123456789abcdef0123456789abcdef"
+
+    @staticmethod
+    def line(**extra: Any) -> dict[str, Any]:
+        record = logging.LogRecord("app", logging.WARNING, __file__, 1, "something_failed", None, None)
+        record.__dict__.update(extra)
+        line: dict[str, Any] = json.loads(JsonFormatter().format(record))
+        return line
+
+    def test_a_log_call_cannot_replace_it(self) -> None:
+        """A provider's request ID, passed as ``extra={"request_id": ...}``, is kept under another name."""
+        token = request_id_var.set(self.REQUEST)
+        try:
+            line = self.line(request_id="req_CANARYPROVIDER1")
+        finally:
+            request_id_var.reset(token)
+        assert line["request_id"] == self.REQUEST
+        assert line["extra_request_id"] == "req_CANARYPROVIDER1"
+
+    def test_outside_a_request_the_line_has_none_of_its_own(self) -> None:
+        line = self.line(request_id="req_CANARYPROVIDER1")
+        assert "request_id" not in line
+        assert line["extra_request_id"] == "req_CANARYPROVIDER1"

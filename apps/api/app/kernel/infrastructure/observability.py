@@ -69,6 +69,9 @@ class JsonFormatter(logging.Formatter):
             if telemetry.org_id is not None:
                 payload["org_id"] = str(telemetry.org_id)
         extras = {k: v for k, v in vars(record).items() if k not in _STANDARD_RECORD_FIELDS}
+        if "request_id" in extras:
+            # An operator filters by the request's ID: a log call's own (a provider's, say) never replaces it.
+            extras["extra_request_id"] = extras.pop("request_id")
         if extras:
             payload.update(redact(extras))
         if record.exc_info and record.exc_info[0] is not None:
