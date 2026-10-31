@@ -82,4 +82,26 @@ describe("state views", () => {
     rerender(<ErrorState error={new Error("not an API error")} />);
     expect(screen.getByRole("alert")).not.toHaveTextContent("Reference");
   });
+
+  it("offers the plans, and no retry, for a feature that needs Pro", () => {
+    const onRetry = vi.fn();
+    render(
+      <ErrorState
+        error={new ApiError(403, "ENTITLEMENT_REQUIRED", "This feature requires the Pro plan.", null)}
+        onRetry={onRetry}
+      />,
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent("Pro feature");
+    expect(screen.getByRole("alert")).toHaveTextContent("This feature requires the Pro plan.");
+    expect(screen.getByRole("link", { name: "See plans" })).toHaveAttribute("href", "/billing");
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Sign in" })).toBeNull();
+  });
+
+  it("offers nothing to do for a refusal that retrying or signing in cannot change", () => {
+    render(<ErrorState error={new ApiError(403, "FORBIDDEN", "No.", null)} onRetry={vi.fn()} />);
+    expect(screen.getByRole("alert")).toHaveTextContent("Not allowed");
+    expect(screen.queryByRole("link")).toBeNull();
+    expect(screen.queryByRole("button")).toBeNull();
+  });
 });

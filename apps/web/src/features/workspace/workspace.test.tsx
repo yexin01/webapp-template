@@ -2,6 +2,7 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { type Schemas } from "@/lib/api/client";
+import { ApiError } from "@/lib/api/errors";
 import { CLERK_LOAD_BACKSTOP_MS } from "@/lib/use-resource";
 
 import { Workspace } from "./workspace";
@@ -20,6 +21,11 @@ const server = vi.hoisted(() => ({
   can: { create: true, delete: true },
   listCalls: [] as string[],
   entitlementCalls: 0,
+  // What the API says about an organization's plan (otherwise the user's own), and a lookup that fails.
+  orgPlans: {} as Record<string, "pro" | "free">,
+  entitlementFails: false,
+  // An answer that has not arrived yet, by organization: the lookup waits for it.
+  holdEntitlement: {} as Record<string, Promise<void>>,
 }));
 // What Clerk says about the active organization and the user's role there.
 const clerk = vi.hoisted(() => ({
@@ -43,9 +49,12 @@ vi.mock("@/lib/api/client", async (importOriginal) => {
     createApiClient: (token: () => Promise<string | null>) => {
       const caller = async () => ((await token()) ?? "").replace("token-for-", "") as User;
       return {
-        entitlement: async () => {
+        entitlement: async (orgId: string | null) => {
           server.entitlementCalls += 1;
-          return { plan: server.plans[await caller()] };
+          const user = await caller();
+          if (orgId !== null) await server.holdEntitlement[orgId];
+          if (server.entitlementFails) throw new ApiError(503, "DEPENDENCY_UNAVAILABLE", "Down.", null);
+          return { plan: (orgId !== null && server.orgPlans[orgId]) || server.plans[user] };
         },
         listProjects: async () => {
           const user = await caller();
@@ -73,6 +82,9 @@ beforeEach(() => {
   server.can = { create: true, delete: true };
   server.listCalls = [];
   server.entitlementCalls = 0;
+  server.orgPlans = {};
+  server.entitlementFails = false;
+  server.holdEntitlement = {};
   server.projects = {
     user_a: [
       {
@@ -132,6 +144,35 @@ describe("workspace", () => {
     await waitFor(() => expect(server.listCalls).toEqual(["user_a", "user_b"]));
     expect(screen.queryByText("A's secret project")).toBeNull();
     expect(screen.queryByText("A's new project")).toBeNull();
+  });
+
+  it("shows nothing of the previous organization's plan after an organization switch", async () => {
+    clerk.organization = { id: "org_a", name: "Acme" };
+    server.orgPlans = { org_a: "pro", org_b: "free" };
+    const { rerender } = render(<Workspace />);
+    expect(await screen.findByRole("heading", { name: "Acme" })).toBeInTheDocument();
+    expect(await screen.findByText("Pro")).toBeInTheDocument();
+
+    let answer: () => void = () => undefined;
+    server.holdEntitlement = { org_b: new Promise<void>((resolve) => (answer = resolve)) };
+    clerk.organization = { id: "org_b", name: "Beta" };
+    rerender(<Workspace />);
+    expect(await screen.findByRole("heading", { name: "Beta" })).toBeInTheDocument();
+    // Beta's plan has not arrived: Acme's is not shown in its place.
+    expect(screen.queryByText("Pro")).toBeNull();
+    expect(screen.queryByText("Free")).toBeNull();
+
+    answer();
+    expect(await screen.findByText("Free")).toBeInTheDocument();
+    expect(screen.queryByText("Pro")).toBeNull();
+  });
+
+  it("shows a plan lookup that failed as Free, never as Pro, and still shows the projects", async () => {
+    server.entitlementFails = true;
+    render(<Workspace />);
+    expect(await screen.findByText("Free")).toBeInTheDocument();
+    expect(screen.queryByText("Pro")).toBeNull();
+    expect(await screen.findByText("A's secret project")).toBeInTheDocument();
   });
 
   it("offers a reload instead of loading forever when Clerk never loads (§16.4)", () => {
