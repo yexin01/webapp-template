@@ -112,7 +112,7 @@ Rules for reading it:
 
 - **Decision.** `GET /api/v1/diagnostics/access` answers any signed-in caller with `200 {"available": bool}` and writes no audit entry or rate-limit counter. `DiagnosticsService.may_use` is the one predicate (diagnostics enabled, personal context, no session someone else started, and the operator policy), shared with the integrations listing. The web's `DiagnosticsAccessProvider` grants only on `available: true`; a 401, an unreachable API, or any failure means no access. The header link, the home page's "Check integrations" button, and the dashboard's LLM card render through `OperatorOnly`. In production diagnostics also need `DIAGNOSTICS_ENABLED=true`.
 - **Alternatives.** A browser gate on `APP_ENV` (a guess that hides the link from a production operator). A boolean on `GET /me` (needs identity to learn the operator policy). Probing the integrations endpoint (answers 404 for customers, which showed in every customer's browser console; replaced by this endpoint).
-- **Consequences.** One extra `GET` per page load for a signed-in user. The operator capability itself still lacks owner approval: see DEC-014 in the register.
+- **Consequences.** One extra `GET` per page load for a signed-in user. The operator capability itself is registered as DEC-014 and awaits the owner's confirmation (§15).
 - **Reversal and cost.** Low. Both ends are small and tested together.
 - **Carried by.** `apps/api/app/modules/diagnostics/service.py`, `apps/api/app/modules/diagnostics/routes.py`; `apps/api/tests/integration/test_diagnostics_access.py`, `apps/api/tests/unit/test_diagnostics_access.py`; `apps/web/src/lib/diagnostics-access.tsx`, `apps/web/src/ui/operator-only.tsx`.
 
@@ -206,6 +206,15 @@ These change what an adopter or the owner runs. Each row is a decision; each rev
 - A webhook-endpoint check and a "last verified webhook" line on `/integrations` (needs a restricted-key permission).
 - The deferred review findings listed in [the evidence record](../evidence/2026-10-30-cycle-1-fix-round.md#cycle-1-findings-by-disposition), each with its reason and a cycle in which to re-evaluate it.
 
+## 15. DEC-014 — Diagnostics operators: keep the model, no second factor in code
+
+- **Context.** ADM-02 requires a register entry and approval for any operator capability. The diagnostics allowlist (`DIAGNOSTICS_OPERATOR_IDS`) had neither. A listed account with a valid session can read the integration configuration report and run authenticated checks against the configured providers. The capability is off in production unless `DIAGNOSTICS_ENABLED=true`, answers 404 to everyone else, is rate-limited, and audits every run and refusal.
+- **Decision.** Option (B) of DEC-014: keep the model as built and register it. No second factor is checked in code. Every listed operator should have multi-factor authentication required in Clerk (Dashboard, User & authentication).
+- **Alternatives.** (A) Expose the session token's `fva` claim from `ClerkTokenVerifier` and answer 404 when the second factor is unverified or older than 60 minutes. It is the stronger rule and the recommended one for an adopter who enables diagnostics in production. Not chosen as the template default because it cannot be exercised against a real Clerk instance here, and because it puts MFA enrolment in front of the first preview check, which runs on the Integrations page. (C) Diagnostics only in `local` and `preview`.
+- **Consequences.** A stolen operator session can run the provider checks (each rate-limited and audited) until it expires. Production is not exposed by default.
+- **Reversal and cost.** Low for (A): one claim in the verifier, one rule in `DiagnosticsService`, two tests (an unverified and a stale second factor). Low for (C): a settings rule.
+- **Carried by.** `apps/api/app/modules/diagnostics/service.py`, `apps/api/app/modules/diagnostics/settings.py`; the register entry DEC-014 and the ADM-02 row of §21 in the specification.
+
 ## Consequences
 
 - **Positive.** A committed, locally tested deployment baseline; a login role that cannot be the table owner; checkout that refuses a second subscription while one is unsettled (the two-tab race is closed after the fact); misconfiguration that names itself instead of failing silently; one command, `pnpm verify`, that means the same locally and in CI.
@@ -214,4 +223,4 @@ These change what an adopter or the owner runs. Each row is a decision; each rev
 
 ## Open for the owner
 
-Confirm, amend, or reverse each section. Until then the register records DEC-001 (topology) and DEC-013 (option B) as `OPEN — adopted by delegation`, and §23 of the specification lists the billing behavior change (§2) as awaiting approval.
+Confirm, amend, or reverse each section. Until then the register records DEC-001 (topology), DEC-013 (option B) and DEC-014 (option B) as `OPEN — adopted by delegation`, and §23 of the specification lists the billing behavior change (§2) as awaiting approval.

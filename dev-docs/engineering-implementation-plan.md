@@ -134,7 +134,7 @@ These decisions are confirmed. A confirmed technology choice is not evidence tha
 | DEC-011 | Rate limiting and shared counters | RESOLVED 2026-10-14 — option A approved (ADR-0001) | — | Configure platform rate-limit rules at deployment time |
 | DEC-012 | License and community contacts | RESOLVED 2026-10-14 — Apache-2.0 (ADR-0001); contacts are adopter placeholders (ADR-0002) | — | — |
 | DEC-013 | Preventing a second subscription while one is unsettled | OPEN (recorded 2026-10-15) — option (B) adopted by delegation 2026-10-30 ([ADR-0004 §2](adr/0004-cycle-1-adopted-decisions.md)); implemented and tested with mocks, sandbox verification NOT RUN | Owner confirmation; sandbox verification (DEC-006) | Owner confirms or reverses option (B) |
-| DEC-014 | The diagnostics operator capability: approval (ADM-02) and a second factor for operators | OPEN (recorded 2026-10-30) | ADM-02 acceptance of the operator capability | Owner chooses an option (below) |
+| DEC-014 | The diagnostics operator capability: approval (ADM-02) and a second factor for operators | OPEN (recorded 2026-10-30) — option (B) adopted by delegation 2026-10-31 ([ADR-0004 §15](adr/0004-cycle-1-adopted-decisions.md)) | Owner confirmation | Owner confirms or reverses option (B) |
 
 ### 3.3 Decision entries
 
@@ -484,9 +484,9 @@ These decisions are confirmed. A confirmed technology choice is not evidence tha
 
 #### DEC-014 — The Diagnostics Operator Capability
 
-- **Status:** OPEN — recorded 2026-10-30 by the cycle 1 review (finding `secarch-adm02-operator-approval`).
+- **Status:** OPEN — recorded 2026-10-30 by the cycle 1 review (finding `secarch-adm02-operator-approval`). Option (B) was adopted by delegation on 2026-10-31 ([ADR-0004 §15](adr/0004-cycle-1-adopted-decisions.md)): reversible, awaiting owner confirmation.
 - **Owner:** Repository owner.
-- **Blocks:** ADM-02 acceptance of the operator capability. Nothing else: the capability exists as described below.
+- **Blocks:** the owner's confirmation of the ADM-02 entry. Nothing else: the capability exists as described below.
 - **Rationale:** ADM-02 requires a register entry and approval for any operator or support capability. The diagnostics tooling had neither. A signed-in user whose Clerk user ID is in `DIAGNOSTICS_OPERATOR_IDS` can read the integration configuration report and run authenticated checks against the configured providers (a Sentry test event, a PostHog event, Clerk and Stripe calls, the LLM provider). It is on by default outside production, can be switched on in production with `DIAGNOSTICS_ENABLED=true`, answers 404 to everyone else, is rate-limited, and audits every run and refusal. In `local` with no operators listed, any signed-in user is an operator. An operator is a listed account with a valid session: no second factor is required. It was introduced after a broken-access-control review ([evidence](evidence/2026-10-14-diagnostics-perf-local.md)). Its defaults were chosen during implementation and have not been approved by the owner.
 - **Questions:**
   1. Should the capability exist in the template, and in which environments?
@@ -496,7 +496,7 @@ These decisions are confirmed. A confirmed technology choice is not evidence tha
   - **(A)** Keep the current model and require a verified second factor for operators outside `APP_ENV=local`: expose the session token's `fva` claim from `ClerkTokenVerifier`, and answer 404 when the second factor is unverified or older than 60 minutes. The review notes that Clerk v2 session tokens carry `fva` by default ([session tokens](https://clerk.com/docs/guides/sessions/session-tokens); not re-read for this entry). Needs code and tests; not built.
   - **(B)** Keep the current model without the second-factor rule.
   - **(C)** Diagnostics only in `local` and `preview`.
-- **Recommendation:** (A).
+- **Recommendation:** (B) for the template, with multi-factor authentication required at the identity provider for every listed operator. (A) is the stronger rule, but it cannot be exercised against a real Clerk instance here, and it would put MFA enrolment in front of the first preview check, which runs on the Integrations page. An adopter who enables diagnostics in production should choose (A).
 - **Impact:** the diagnostics module, the identity verifier, their tests, and the operations guide.
 - **Required evidence:** owner choice; for (A), tests for an unverified and a stale second factor.
 - **Resolution criteria:** an ADR records the choice, and the ADM-02 row of §21 is updated.
@@ -1449,7 +1449,7 @@ Status as of 2026-10-30. Evidence: [`dev-docs/evidence/2026-10-14-local-verifica
 | TEN-01 to TEN-06, TEN-08 | Tenant context, deny-by-default, scoping, RLS, 404/403 | NT-01 to NT-04, NT-08, NT-09, route manifest, RLS tests; every route declares `requires(...)`, and a declared permission that is never evaluated fails closed (`tests/integration/test_platform.py`). [cycle 1: apix](evidence/2026-10-30-cycle-1-fix-round.md#apix) | C | — | PASS |
 | TEN-07 | Membership change enforcement | NT-05 (bound, webhook, outage), NT-06 (re-check, serialization) | C | — | PASS (300 s, confirmed in ADR-0002) |
 | ADM-01 | Admin authorization and audit | NT-07; audit assertions; the impersonating actor is recorded when impersonation is allowed (`test_impersonation.py`); the access probe writes no audit entry (`test_diagnostics_access.py`) | C | — | PASS |
-| ADM-02 | No super-admin bypass; an operator capability needs a register entry and approval | NT-07; review (no bypass in the code). The diagnostics operator allowlist is the operator capability, now registered as DEC-014 | C | DEC-014 (owner approval) | PASS for the absence of a bypass; BLOCKED for the approval of the operator capability |
+| ADM-02 | No super-admin bypass; an operator capability needs a register entry and approval | NT-07; review (no bypass in the code). The diagnostics operator allowlist is the operator capability, registered as DEC-014 | C | DEC-014 (owner confirmation) | PASS (local) for the absence of a bypass and for the register entry; option (B) is adopted by delegation, so the owner's confirmation is pending |
 | ADM-03 | Actor sessions refused unless allowed, and audited | `test_impersonation.py`, `test_clerk_verifier.py`; mutation-checked (actor refusal off, actor not passed to the audit insert, `act` ignored, operator check without the actor). NT-13. [cycle 1: apix](evidence/2026-10-30-cycle-1-fix-round.md#apix) | C | — | PASS (mocked IdP); real Clerk actor tokens NOT VERIFIED |
 | DB-01 to DB-09 | Integrity, indexes, transactions, bounds, pooling, RLS, isolation, fixtures | RLS and integration tests | B, C | — | PASS |
 | DB-10 | Backup and restore | Local restore drill (restores with `pg_restore --no-owner --single-transaction`, then `supabase/restore/post-restore.sql`; fails when that file is emptied); the same procedure by hand on the Supabase image; adopter checklist and hosted restore-test procedure. [cycle 1: db](evidence/2026-10-30-cycle-1-fix-round.md#db) | E | — | PASS (local drill and documentation). Hosted restore is adopter-owned (ADR-0002) |
@@ -1563,14 +1563,14 @@ The report clearly distinguishes verified behavior from assumptions, mocks, and 
   |---|---|---|
   | A | NOT VERIFIED | Remote CI has never run (needs authorization to push). The clean-clone run (REPO-11) must be re-recorded after cycle 1 |
   | B | NOT VERIFIED | Signed-in end-to-end tests need Clerk sandbox keys (DEC-006). The account-free browser tier passes (mocked) |
-  | C | NOT VERIFIED | CodeQL (remote CI) and sandbox verification pending; local security tests PASS; DEC-014 awaits the owner |
+  | C | NOT VERIFIED | CodeQL (remote CI) and sandbox verification pending; local security tests PASS; DEC-014 option (B) awaits the owner's confirmation |
   | D | NOT VERIFIED | Local PERF-01 to PERF-07 recorded; PERF-03, PERF-04, and PERF-06 must be re-recorded (the earlier figures were whole-run averages, and PERF-06 could not detect reprocessing). Preview runs need DEC-001. Targets are adopter-owned (ADR-0002) |
   | E | BLOCKED | DEC-001 (preview deployment; topology B is adopted by delegation, and the proxy under Services and the shared environment are NOT VERIFIED), DEC-006 (integration classification) |
 
 - **Decisions:**
   - DEC-002 to DEC-012: RESOLVED (ADR-0001, ADR-0002). DEC-003 to DEC-005 are adopter-owned.
   - Architecture: ADR-0003. ADR-0004 records the decisions that agents adopted by delegation in cycle 1.
-  - **Open:** DEC-001 (topology B adopted by delegation; the preview deployment and the owner's confirmation are pending), DEC-006, DEC-013 (option (B) adopted by delegation; confirmation and the sandbox run pending), and DEC-014 (the diagnostics operator capability, recorded by cycle 1).
+  - **Open:** DEC-001 (topology B adopted by delegation; the preview deployment and the owner's confirmation are pending), DEC-006, DEC-013 (option (B) adopted by delegation; confirmation and the sandbox run pending), and DEC-014 (the diagnostics operator capability; option (B) adopted by delegation, confirmation pending).
   - **Awaiting owner approval:**
     - the opt-in `STRIPE_PRICE_PRO_MONTHLY_RETAINED` and `STRIPE_PRICE_PRO_YEARLY_RETAINED` settings (a billing-related choice, §17 rule 5; empty by default), and the defaults and choices listed under "Not fixed" in both second-review records;
     - the billing behavior change of BILL-06: the success page, the portal return, and a refused checkout ask the server to re-read from Stripe once (BILL-22);
@@ -1600,7 +1600,7 @@ The report clearly distinguishes verified behavior from assumptions, mocks, and 
   5. Review the license exceptions in `scripts/check-licenses.mjs`: the Sentry CLI (`sentry`, FSL-1.1-Apache-2.0, build time only) and the weak-copyleft packages (psycopg, certifi, libvips, tzdata).
   6. Confirm or reverse DEC-013 option (B), and approve the BILL-06 behavior change.
   7. Decide the retained-price settings and the entitlement key, and confirm the defaults listed under "Not fixed" in the two second-review records (for example: outbox lease 900 s, migration lock timeout 5 s, `DATABASE_POOL_MAX_SIZE` at most 30, a domain `503` keeps the request's writes). The cycle 1 review offers two options for the first: (A) approve `STRIPE_PRICE_PRO_MONTHLY_RETAINED` and `STRIPE_PRICE_PRO_YEARLY_RETAINED` as they are; or (B) grant Pro by the Stripe product, so that any monthly or yearly price of the Pro product grants Pro, the retained settings are deleted, and `STRIPE_PRODUCT_PRO` is added (the reviewer recommends B; it needs no migration, contract, or web change; it is not implemented; and the next `reconcile --apply` would give Pro back to anyone a past price change dropped). The same item covers `decide()` returning a feature set (BILL-01).
-  8. Decide DEC-014: keep the operator model and add a verified second factor (recommended), keep it as it is, or limit diagnostics to local and preview.
+  8. Confirm or reverse DEC-014 option (B): keep the operator model and require MFA for the listed operators in Clerk. Option (A) adds a verified second factor in code (the session token's `fva` claim); option (C) limits diagnostics to local and preview.
   9. Confirm or reverse the other decisions of [ADR-0004](adr/0004-cycle-1-adopted-decisions.md).
 - **Next steps (no owner action needed):** re-record PERF-03, PERF-04, and PERF-06 locally with the corrected harness; run `pnpm verify` end to end on an idle machine and record it; re-record the clean-clone run (REPO-11).
 

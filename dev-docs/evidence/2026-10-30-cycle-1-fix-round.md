@@ -40,7 +40,7 @@ Claims inside findings that a package found false or overstated (kept here becau
 | `docs-dx-github-first-push` | Specification (REPO-09 and SEC-12 rows); the GitHub settings, the CodeQL licensing note, and a `CODEOWNERS` template are user documentation or follow-ups |
 | `web-arch-rendering-model-undocumented` | `docs/architecture.md` (Frontend); [ADR-0004 §6](../adr/0004-cycle-1-adopted-decisions.md) |
 | `obs-no-blocker-safe-relay` | [ADR-0004 §11](../adr/0004-cycle-1-adopted-decisions.md), `docs/data-inventory.md`; the PostHog proxy recipe is user documentation |
-| `secarch-adm02-operator-approval` | Specification (DEC-014 `OPEN`, ADM-02 row) |
+| `secarch-adm02-operator-approval` | Specification (DEC-014 `OPEN`, option (B) adopted by delegation 2026-10-31; ADM-02 row) |
 | `secarch-edge-and-write-limits` | Specification (SEC-09 row); the firewall rule is user documentation |
 | `stripe-plans-hardcoded-price-keyed-entitlement` | Specification (BILL-01 row, §23 next step 7) |
 

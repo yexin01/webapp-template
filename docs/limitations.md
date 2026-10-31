@@ -72,7 +72,7 @@ Ten findings from the architecture review were deferred, with the reason. What t
 - Opening the app at an origin that `APP_BASE_URL` and `CLERK_AUTHORIZED_PARTIES` do not name loops between `/sign-in` and the page. IDN origins must be listed in punycode. A custom domain assigned to a branch must be listed or be `APP_BASE_URL`.
 - What the UI offers (`can` on each list) is as fresh as the membership mirror (at most 300 s); the routes re-check. A new action needs its flag added by hand. A screen with no list response has no flag.
 - Impersonation is audited only where a use case writes an audit entry (organization project deletes, diagnostics); the `actor_session` log line records the rest.
-- Diagnostics operators are authenticated by a listed Clerk user ID and a valid session; no second factor is required. They are off in production unless `DIAGNOSTICS_ENABLED=true`, and on for listed operators elsewhere; every run and refusal is audited. The operator capability has no entry in the decision register yet (ADM-02); approving it, or requiring a verified second factor, is the owner's decision.
+- Diagnostics operators are authenticated by a listed Clerk user ID and a valid session; no second factor is required. They are off in production unless `DIAGNOSTICS_ENABLED=true`, and on for listed operators elsewhere; every run and refusal is audited. The capability is registered as DEC-014 (option B adopted by delegation, awaiting the owner's confirmation; [ADR-0004 §15](../dev-docs/adr/0004-cycle-1-adopted-decisions.md)). Require multi-factor authentication for every listed operator in Clerk. If you enable diagnostics in production, choose option (A) and have the API check the session's second factor (`fva`); that check is not built.
 
 **Billing**
 
