@@ -1,7 +1,10 @@
--- Deterministic synthetic seed data for LOCAL development only (DB-09).
+-- Deterministic synthetic fixtures for local development and tests (DB-09).
 -- Fixed identifiers, no real personal data, idempotent.
--- These users do not exist in Clerk; they are fixtures for exploring the
--- schema and for performance tests, not accounts you can sign in with.
+-- `pnpm db:seed --yes` and `pnpm db:reset --yes` load them into a local database; the
+-- hosted restore test applies them with psql (docs/operations.md). The performance
+-- server (perf/server.py) seeds its own data.
+-- These users do not exist in Clerk; they are fixtures for exploring the schema and
+-- for tests, not accounts you can sign in with.
 
 INSERT INTO app.users (id, clerk_user_id) VALUES
   ('00000000-0000-4000-8000-00000000a11c', 'user_seed_alice'),
