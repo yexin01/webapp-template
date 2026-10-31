@@ -14,7 +14,7 @@ What is verified, what is only assumed, what was deferred, and what the template
 | Performance | Recorded locally for relative comparison only. Targets are yours to set ([perf/run-plan-template.md](../perf/run-plan-template.md)) |
 | Backup and restore | The local restore drill only. Objectives and the hosted restore test are yours ([operations.md](operations.md#backup-and-restore)) |
 | Data retention, deletion, export | No deletion or export feature. The policy is yours ([data-inventory.md](data-inventory.md#adopter-decision-checklist)) |
-| Test coverage measurement | NOT VERIFIED: no coverage tool is installed (TEST-03) |
+| Test coverage | Reported by `pnpm test:coverage`, with no threshold (TEST-03 is PARTIAL: the threshold is yours). No coverage figure is recorded as evidence |
 
 ## Assumptions not verified
 
@@ -123,7 +123,7 @@ Found while writing these documents or listed in the package notes, and not done
 - A test that the docs list exactly `SYNC_EVENT_TYPES`, and a `stripe-events` command to feed `stripe listen --events`; a webhook-endpoint check and a "last verified webhook" line on `/integrations`.
 - A second, worker-only login role and pool; detection of `supabase_migrations.schema_migrations` in the runner; a no-transaction migration mode for `CREATE INDEX CONCURRENTLY`.
 - Naming unmatched transactions `unmatched` and dropping `request.url` for them (OBS-07).
-- An `ErrorCode` enum with exhaustive web typing; coverage tooling (TEST-03).
+- An `ErrorCode` enum with exhaustive web typing.
 - A web-side `CLERK_JWT_KEY` wired into the proxy (it needs a path through `next.config.ts`, because `proxy.ts` may not read `CLERK_*` variables).
 
 ## What the template deliberately does not do
@@ -139,3 +139,4 @@ These choices were adopted by delegation of the owner and are reversible; [ADR-0
 - **No organization plan.** Subscriptions belong to individuals (ADR-0002); a Team tier is a scope change.
 - **No account deletion or export, no recovery objectives, no performance targets, no analytics consent banner.** These are adopter decisions ([deployment.md](deployment.md#before-you-launch)).
 - **No application built on the LLM.** The integration is a connectivity check; `LLM_MODE=disabled` is a supported mode.
+- **No coverage threshold.** `pnpm test:coverage` prints the coverage of the API and the web app and fails on nothing. A number to hold is your decision (TEST-03): add `--cov-fail-under=<n>` to `test:coverage:api` in `package.json`, and `coverage.thresholds` to `apps/web/vitest.config.ts`. Keep the reports on the terminal: files written to `apps/web/coverage/` are picked up by ESLint and Prettier, whose ignore lists are `eslint.config.mjs` and `.prettierignore`.

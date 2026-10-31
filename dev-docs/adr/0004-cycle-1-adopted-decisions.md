@@ -201,7 +201,7 @@ These change what an adopter or the owner runs. Each row is a decision; each rev
 
 - A second, worker-only login role and pool (§3); a nonce CSP and CSP reporting (§11); a first-party telemetry relay (§11).
 - A kernel `GET /context` endpoint (§8) and an `ErrorCode` enum with exhaustive web typing (needs a contract change of its own).
-- Test coverage reporting (TEST-03: no `pytest-cov` or `@vitest/coverage-v8`).
+- A coverage threshold (TEST-03): reporting is built (§19); a number to hold is the adopter's decision.
 - A no-transaction migration mode for `CREATE INDEX CONCURRENTLY`.
 - A webhook-endpoint check and a "last verified webhook" line on `/integrations` (needs a restricted-key permission).
 - The deferred review findings listed in [the evidence record](../evidence/2026-10-30-cycle-1-fix-round.md#cycle-1-findings-by-disposition), each with its reason and a cycle in which to re-evaluate it.
@@ -214,6 +214,19 @@ These change what an adopter or the owner runs. Each row is a decision; each rev
 - **Consequences.** A stolen operator session can run the provider checks (each rate-limited and audited) until it expires. Production is not exposed by default.
 - **Reversal and cost.** Low for (A): one claim in the verifier, one rule in `DiagnosticsService`, two tests (an unverified and a stale second factor). Low for (C): a settings rule.
 - **Carried by.** `apps/api/app/modules/diagnostics/service.py`, `apps/api/app/modules/diagnostics/settings.py`; the register entry DEC-014 and the ADM-02 row of §21 in the specification.
+
+## 19. Coverage is reported, not gated; two checks that only CI ran now run locally
+
+- **Context.** TEST-03 asks for coverage to be reported, and no coverage tool was installed, so the row was NOT VERIFIED. Two other checks ran only in CI or only in part: `pnpm lint` left out the Prettier check that `pnpm verify` and CI run, and CI applied the migrations twice in a step of its own that no local command ran.
+- **Decision.**
+  - `pytest-cov` (API) and `@vitest/coverage-v8` (web, pinned to the `vitest` version) are development dependencies. `pnpm test:coverage` runs the API suite with branch coverage and the web suite, and prints a table and totals for each in the terminal. It is not part of `pnpm verify` or CI. **No threshold is set**: a number to hold is the adopter's decision, so TEST-03 is PARTIAL, not PASS. The reporters write no files: anything under `apps/web/coverage/` would be linted and format-checked.
+  - `pnpm lint` also runs `pnpm --filter web format:check`, so it agrees with `pnpm verify`.
+  - "Migrations apply cleanly to an empty database" is a test. `test_maintenance_commands.py` runs `python -m app.cli migrate` twice, each in a process of its own, against an empty scratch database: the first run applies every migration, the second applies none and prints `{"applied": []}`. It runs wherever the database tests run (`pnpm verify`, and the CI jobs `api` and `api-supabase`), and the CI step is removed.
+  - The rendering baseline (§6) and the absence of a telemetry relay (§11) now have tests of their own (`rendering-baseline.test.ts`, `next-config.test.ts`). They record no new decision.
+- **Alternatives.** A coverage gate in `pnpm verify` and CI at a fixed figure: a number chosen without the adopter's code would either never bind or fail every change in a new project, and it slows the gate. Keeping the CI step: nothing local would run it, and the CI-only check would drift from `pnpm verify` again.
+- **Consequences.** No coverage figure is recorded as evidence, and a figure would drift with every commit. Coverage shows which lines the tests ran, not whether the decision matrices are exhaustive (TEST-03 still rests on review). A run under coverage is slower than `pnpm test`.
+- **Reversal and cost.** Low. A threshold is `--cov-fail-under=<n>` in `test:coverage:api` and `coverage.thresholds` in `apps/web/vitest.config.ts`. Removing the reporting is two dependencies, three scripts, and one config block. Restoring the CI step is three lines.
+- **Carried by.** `apps/api/pyproject.toml` and `apps/api/uv.lock` (`pytest-cov`), `apps/web/package.json` and `pnpm-lock.yaml` (`@vitest/coverage-v8`), `apps/web/vitest.config.ts`, `package.json` (`test:coverage`, `test:coverage:api`, `test:coverage:web`, `lint`); `apps/api/tests/integration/test_maintenance_commands.py`; `.github/workflows/ci.yml`; the TEST-03 and MIG-03 rows of §21 in the specification.
 
 ## Consequences
 

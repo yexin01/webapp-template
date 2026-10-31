@@ -1414,7 +1414,7 @@ Evidence records never contain secrets, tokens, or personal data.
 
 Status as of 2026-10-30. Evidence: [`dev-docs/evidence/2026-10-14-local-verification.md`](evidence/2026-10-14-local-verification.md), [`2026-10-14-diagnostics-perf-local.md`](evidence/2026-10-14-diagnostics-perf-local.md), [`2026-10-14-adr-0002-perf07-local.md`](evidence/2026-10-14-adr-0002-perf07-local.md), [`2026-10-14-adr-0003-modular-architecture.md`](evidence/2026-10-14-adr-0003-modular-architecture.md), [`dec-001-vercel-python.md`](evidence/dec-001-vercel-python.md), the two second-review records of 2026-10-15, and [`2026-10-30-cycle-1-fix-round.md`](evidence/2026-10-30-cycle-1-fix-round.md), which holds the cycle 1 results by package (cited below as "cycle 1: <package>"), the merged-tree checks, and what was not run.
 
-`PASS` here means the check was **executed locally** with **mocked** external integrations and met its criteria. It is not sandbox or live verification (TEST-04). Where a row says `NOT RUN`, a test or command exists and was not executed. A test file named without a path is under `apps/api/tests` (API) or `apps/web/src` (web).
+`PASS` here means the check was **executed locally** with **mocked** external integrations and met its criteria. It is not sandbox or live verification (TEST-04). `PARTIAL` means part of the requirement is verified and the row names the rest. Where a row says `NOT RUN`, a test or command exists and was not executed. A test file named without a path is under `apps/api/tests` (API) or `apps/web/src` (web).
 
 | Requirements | Summary | Verification | Gate | Blocked by | Status |
 |---|---|---|---|---|---|
@@ -1483,7 +1483,7 @@ Status as of 2026-10-30. Evidence: [`dev-docs/evidence/2026-10-14-local-verifica
 | SEC-11 | Vulnerability reporting | SECURITY.md with an adopter placeholder enforced by `check:placeholders` | A | — | PASS (ADR-0002) |
 | SEC-12 | Required review of migrations and workflows | CODEOWNERS and branch protection | A | Remote settings not authorized | NOT VERIFIED |
 | TEST-01, TEST-02, TEST-04, TEST-05 | Test discipline | Review; deterministic clocks; labeled evidence; `pytest --require-db` instead of silent skips | B | — | PASS |
-| TEST-03 | Exhaustive decision matrices; coverage reported | Review; the decision matrices are tested. Coverage is not measured: no `pytest-cov` or `@vitest/coverage-v8` is installed. [cycle 1: test](evidence/2026-10-30-cycle-1-fix-round.md#test) | B | A coverage tool | NOT VERIFIED |
+| TEST-03 | Exhaustive decision matrices; coverage reported | Review; the decision matrices are tested. `pnpm test:coverage` prints the coverage of the API (`pytest-cov`, with branches) and the web app (`@vitest/coverage-v8`) in the terminal and fails on nothing: a threshold is the adopter's decision ([ADR-0004 §19](adr/0004-cycle-1-adopted-decisions.md)). The command ran locally; no figure is recorded as evidence. [cycle 1: test](evidence/2026-10-30-cycle-1-fix-round.md#test) | B | A threshold (adopter); a recorded run | PARTIAL |
 | TEST-06 | Two end-to-end tiers | Account-free: 56 passed, 14 skipped (`mocked`; the final run, committed state, `--retries=0`); sandbox: `pnpm verify:sandbox` with no `.env` skips every part, exits 0, and prints a record that says NOT VERIFIED. Mutation-checked, including the guards for a CSP violation, an uncaught error, and a skipped handshake. [cycle 1: test](evidence/2026-10-30-cycle-1-fix-round.md#test) | B, E | DEC-006 | PASS (mocked) for the account-free tier; the sandbox tier NOT RUN |
 | PERF-01 to PERF-07 | Performance scenarios | Reports per §15.2 | D | Preview environment (DEC-001) | NOT VERIFIED (all seven recorded **locally** for relative comparison only; PERF-03, PERF-04, and PERF-06 to be re-recorded with the corrected harness; no preview runs) |
 | Performance acceptance | Approved targets met | §15.4 | D | — | RETIRED for the template: adopter-owned (ADR-0002) |
@@ -1583,7 +1583,7 @@ The report clearly distinguishes verified behavior from assumptions, mocks, and 
   - DB-11: a query can still `SET ROLE app_worker`; row-level security does not stop SQL injection.
   - The CSP keeps `'unsafe-inline'`, with no nonce and no violation reporting; there is no first-party telemetry relay ([ADR-0004 §11](adr/0004-cycle-1-adopted-decisions.md)).
   - Plans are hard-wired as Free and Pro, and entitlement is keyed by price; `decide()` returns no feature set (BILL-01).
-  - Coverage is not measured (TEST-03).
+  - Coverage is reported (`pnpm test:coverage`) with no threshold, and no figure is recorded as evidence (TEST-03).
 - **Next steps (owner action required):**
   1. Create a Clerk development instance with Organizations enabled and **Membership optional**, add the sandbox keys to `.env`, and put your Clerk user ID in `DIAGNOSTICS_OPERATOR_IDS` (or use `APP_ENV=local`). Run `pnpm check:setup`, then `pnpm verify:sandbox`, which runs the setup check, the Stripe sandbox suite (after `pnpm setup:stripe`), and the signed-in end-to-end tests, each when its keys are present. Save the record it prints under `dev-docs/evidence/` (DEC-006).
   2. Authorize pushing to a remote, so CI, CodeQL, the generator check, and the `deploy-config` job run (Gates A and C).
