@@ -7,6 +7,7 @@ environment that person chose.
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 from pathlib import Path
@@ -36,6 +37,16 @@ def steps(workflow: dict[str, Any], job: str) -> list[dict[str, Any]]:
     return found
 
 
+# The keys the `api` and `web` jobs use. GitHub reports a job that did not run (`if`, `needs` on a skipped job, a
+# `strategy` matrix with no values) as successful, so a required check would pass without a single step running;
+# `continue-on-error` turns a failure into a pass. A key outside this set is reviewed before it is added here.
+VERIFY_JOB_KEYS = frozenset({"name", "runs-on", "timeout-minutes", "services", "defaults", "steps"})
+
+
+def unexpected_job_keys(workflow: dict[str, Any], job: str) -> list[str]:
+    return sorted(set(workflow["jobs"][job]) - VERIFY_JOB_KEYS)
+
+
 @pytest.mark.parametrize("path", sorted(WORKFLOWS.glob("*.yml")), ids=lambda p: p.name)
 def test_every_action_is_pinned_to_a_commit(path: Path) -> None:
     workflow = yaml.safe_load(path.read_text())
@@ -63,13 +74,36 @@ def test_ci_receives_no_secrets_and_never_runs_on_pull_request_target() -> None:
 def test_the_api_and_web_jobs_run_exactly_what_pnpm_verify_runs_for_the_job(job: str) -> None:
     """CI and `pnpm verify` share one step list. Another command, a flag that narrows the run (--skip, --only,
     --quick, --offline, --no-db), or a step that may fail without failing the job would leave CI green on
-    checks it did not make."""
+    checks it did not make. So would a job that may be skipped or may fail without failing."""
     workflow = load("ci.yml")
     verify = [step for step in steps(workflow, job) if "verify.mjs" in step.get("run", "")]
     assert [step["run"].strip() for step in verify] == [f"node scripts/verify.mjs --job {job}"]
     assert "if" not in verify[0]
     assert not verify[0].get("continue-on-error")
-    assert not workflow["jobs"][job].get("continue-on-error")
+    assert unexpected_job_keys(workflow, job) == [], (
+        f"job {job} has keys that can skip it or let it fail without failing the check: review them, "
+        "then add them to VERIFY_JOB_KEYS"
+    )
+
+
+@pytest.mark.parametrize("job", ["api", "web"])
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("if", "${{ false }}"),
+        ("needs", ["secrets"]),
+        ("strategy", {"matrix": {"os": []}}),
+        ("strategy", {}),
+        ("continue-on-error", True),
+        ("uses", "./.github/workflows/other.yml"),
+    ],
+)
+def test_the_job_key_check_flags_a_job_that_can_pass_without_running(job: str, key: str, value: Any) -> None:
+    """The control for the test above: each key that skips a job or lets it fail unnoticed is seen on the real
+    workflow with that key added."""
+    workflow = copy.deepcopy(load("ci.yml"))
+    workflow["jobs"][job][key] = value
+    assert unexpected_job_keys(workflow, job) == [key]
 
 
 def test_python_dependencies_install_from_a_lock_that_must_be_current() -> None:
