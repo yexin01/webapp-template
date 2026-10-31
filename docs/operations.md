@@ -119,6 +119,7 @@ Jobs are registered in code ([architecture](architecture.md#jobs)). Run them in 
 - **HTTP, which Vercel Cron uses:** `GET /api/v1/jobs/<name>` with `Authorization: Bearer <CRON_SECRET>`.
   - Without `CRON_SECRET`, the endpoint returns 404. In production the API then logs a `jobs_endpoint_disabled` warning at startup, because nothing else runs the jobs.
   - A wrong or missing secret returns 401.
+  - A job runs once at a time, across all instances, and no sooner than `JOB_MIN_SPACING_SECONDS` (60) after its previous start. A call that finds it running returns 409; one that comes too soon returns 429 with `Retry-After`. A failed run does not block the next: only the spacing counts, from its start. The CLI is not limited.
   - Rotate the secret like any other ([Key rotation](#key-rotation)).
 
 | Job | Default schedule (UTC) | What it does | If a run is missed |
@@ -128,9 +129,9 @@ Jobs are registered in code ([architecture](architecture.md#jobs)). Run them in 
 | `reconcile-billing` | 04:00 daily | Compares a batch of `BILLING_RECONCILE_BATCH_SIZE` customers with Stripe: up to half are customers with recently flagged (`needs_reconciliation`) webhook events, the rest the least recently checked, so every customer is checked in turn. A customer Stripe rejects (for example, deleted in Stripe) is reported as `rejected` and still moves to the back of the rotation. A run stops starting new checks after 60 s. It applies Stripe's state only when `BILLING_RECONCILE_APPLY=true` | A missed webhook is not repaired until the next run, or `pnpm billing:reconcile` |
 | `reconcile-memberships` | 03:30 daily | Re-verifies the stalest organization-membership mirrors against Clerk (`MEMBERSHIP_RECONCILE_BATCH_SIZE` per run) | A mirror is re-verified later; access still follows the `MEMBERSHIP_MAX_STALENESS_SECONDS` bound on each request |
 
-**When a job fails.** Vercel does not retry a failed cron invocation. Delivery is best effort: a run can be missed, and the same run can occasionally be delivered twice ([Vercel: managing cron jobs](https://vercel.com/docs/cron-jobs/manage-cron-jobs)). The jobs are written for that: each is safe to repeat and to run concurrently with itself, and each run works through what is outstanding. Find a failed run in the project's **Settings > Cron Jobs > View Logs** (cron runs are logged as function invocations); a completed run logs `job_completed` with the job name, `duration_ms` and a summary. To catch up at once, run the job by hand ([above](#scheduled-jobs)) or call its route.
+**When a job fails.** Vercel does not retry a failed cron invocation. Delivery is best effort: a run can be missed, and the same run can occasionally be delivered twice ([Vercel: managing cron jobs](https://vercel.com/docs/cron-jobs/manage-cron-jobs)). The jobs are written for that: each is safe to repeat and to run concurrently with itself, and each run works through what is outstanding. The guard refuses the second delivery of a run with 429, which is harmless. A run that the platform stopped (a timeout) holds its job for up to 15 minutes, so a call in that time returns 409: run the job from the CLI to catch up at once. Find a failed run in the project's **Settings > Cron Jobs > View Logs** (cron runs are logged as function invocations); a completed run logs `job_completed` with the job name, `duration_ms` and a summary. To catch up at once, run the job by hand ([above](#scheduled-jobs)) or call its route.
 
-The root `vercel.json` holds the schedules, and a test fails if it drifts from the registry. Schedules are daily so the configuration deploys on any Vercel plan; the Hobby plan runs a daily cron at any minute within the scheduled hour. If your plan allows it, run `drain-outbox` every few minutes. With Vercel Services (one project), crons must be in the root `vercel.json`: a service's own `vercel.json` crons are not registered.
+The root `vercel.json` holds the schedules, and a test fails if it drifts from the registry. Schedules are daily so the configuration deploys on any Vercel plan; the Hobby plan runs a daily cron at any minute within the scheduled hour. If your plan allows it, run `drain-outbox` every few minutes, and set `JOB_MIN_SPACING_SECONDS` below the interval if it is a minute or less. With Vercel Services (one project), crons must be in the root `vercel.json`: a service's own `vercel.json` crons are not registered.
 
 **Not verified until the first deployment:** Vercel Cron delivery, plan limits, and whether after-response dispatch completes before the function is frozen. If it does not complete, `drain-outbox` delivers the events at its next run. Vercel Cron calls the **production** deployment only, never a preview ([Vercel: cron jobs](https://vercel.com/docs/cron-jobs)), so verifying it needs a production deployment, which is a separately authorized remote action. On a preview, call the job routes yourself with `Authorization: Bearer <CRON_SECRET>`; that checks the routes, not the scheduler.
 
@@ -146,6 +147,25 @@ The root `vercel.json` holds the schedules, and a test fails if it drifts from t
 - **Retention:** processed events are deleted after `OUTBOX_RETENTION_DAYS`. Dead events are kept until you replay or delete them.
 - **Leases:** `OUTBOX_LEASE_SECONDS` (default 900) must stay longer than the longest a function may run (Vercel: 300 s by default, up to 800 s). If you raise the function duration past it, raise the lease too, or a slow handler can lose its lease and run twice at once.
 
+## Limits
+
+The application limits these. Counters live in PostgreSQL, so every limit holds across instances. Each setting is in the "Advanced" section of [`.env.example`](../.env.example).
+
+| What | Default | Setting | Over the limit |
+|---|---|---|---|
+| Writes (`POST`, `PUT`, `PATCH`, `DELETE`) of one signed-in user on routes with no limit of their own: projects and generated modules. One count across the personal context and every organization | 60 a minute | `WRITES_PER_USER_PER_MINUTE` | `429`, `Retry-After` |
+| Checkout sessions, portal sessions, billing re-reads, per user | 10, 20 and 30 an hour | `CHECKOUTS_PER_USER_PER_HOUR`, `PORTAL_SESSIONS_PER_USER_PER_HOUR`, `BILLING_SYNCS_PER_USER_PER_HOUR` | `429`, `Retry-After` |
+| LLM checks | 5 a minute per user; 200 a day for everyone | `LLM_CHECKS_PER_USER_PER_MINUTE`, `LLM_CHECKS_GLOBAL_PER_DAY` | `429`; the daily budget answers code `BUDGET_EXCEEDED` |
+| Integration checks | 20 a minute per user; 1,000 a day for everyone | `DIAGNOSTICS_RUNS_PER_USER_PER_MINUTE`, `DIAGNOSTICS_RUNS_GLOBAL_PER_DAY` | `429` |
+| A job started over HTTP | One run at a time; 60 s between starts | `JOB_MIN_SPACING_SECONDS` (0 keeps only the first rule) | `409` while it runs; `429`, `Retry-After` when too soon |
+| JSON request body | 1,000,000 bytes | `MAX_REQUEST_BODY_BYTES` | `413` |
+| Requests per IP | Not set by the application | The platform rule, step D7 of [deployment.md](deployment.md#set-up-vercel) | `429` from the platform |
+
+- **Windows.** A window is a fixed minute or hour of the clock, so a burst across a boundary can use up to twice the limit. A refused request counts too. Counters older than two days are deleted by `prune-expired`.
+- **Whose counter.** A write is counted for the signed-in user (by Clerk user ID), whatever its outcome. A new account has an allowance of its own, so the per-IP rule, not this limit, is what holds back a crowd of accounts.
+- **Not counted.** Reads. Checkout, the portal, the re-read, the LLM check and diagnostics have the limits above instead, so they are not counted twice. The Stripe and Clerk webhooks have no user and are authenticated by signature; the platform rule excludes them.
+- **Your own routes.** A router from `pnpm new:module` counts its writes. A write route you add to another router needs the same dependency, or a limit of its own listed in `NOT_COUNTED` in `apps/api/tests/integration/test_write_limit.py`; that test fails for any other.
+
 ## Connection pools
 
 Each API process opens up to `DATABASE_POOL_MAX_SIZE` request connections (`app_api`) and `DATABASE_WORKER_POOL_MAX_SIZE` system connections (`app_worker`: webhooks, jobs, rate limits, readiness, and event dispatch after the response). Requests use worker connections too, so the pools do not keep the two kinds of work apart; they keep a request that holds a request connection from waiting on its own pool. The request pool is 1 to 30, the worker pool 2 to 10 (billing synchronization uses all but one), and both together at most 30. Size them so that the maximum number of concurrent instances times both pool sizes fits your database pooler's client limit. With Supabase, use the Transaction pooler string.
@@ -156,7 +176,7 @@ Each API process opens up to `DATABASE_POOL_MAX_SIZE` request connections (`app_
 - bounded external work: `DATABASE_WORKER_POOL_MAX_SIZE - 1` plus `LLM_MAX_CONCURRENT_CHECKS`, `BILLING_MAX_CONCURRENT_STRIPE_CALLS` and `CLERK_MAX_CONCURRENT_READS`, plus 5 for Clerk key-set lookups while `CLERK_JWT_KEY` is empty;
 - calls waiting for a connection, which get what is left: 12 with the defaults, 17 with `CLERK_JWT_KEY` set.
 
-Startup refuses settings that leave fewer than 8 waiter places and names the variables. Past the waiter places, a request gets a `503` at once (logged as `database_waiters_exhausted`). Not counted, because no limit caps them though they hold threads while they run: operator diagnostics, cron job runs, and Clerk key-set lookups while no usable key set is cached. Keep `DATABASE_POOL_MAX_SIZE` well below 40 ([architecture](architecture.md#data-access)).
+Startup refuses settings that leave fewer than 8 waiter places and names the variables. Past the waiter places, a request gets a `503` at once (logged as `database_waiters_exhausted`). Not counted, because no limit caps them though they hold threads while they run: operator diagnostics and Clerk key-set lookups while no usable key set is cached. Cron job runs are not counted either, but each job runs at most once at a time ([Scheduled jobs](#scheduled-jobs)). Keep `DATABASE_POOL_MAX_SIZE` well below 40 ([architecture](architecture.md#data-access)).
 
 ## Integration diagnostics
 

@@ -101,7 +101,9 @@ Legend: **web** = the Next.js service, **api** = the Python service. *Baked* = f
 | `DIAGNOSTICS_ENABLED` | api | config | Unset (on) | Unset (off), or `true` temporarily |
 | `DIAGNOSTICS_OPERATOR_IDS` | api | config | Your user ID in the development instance | Your user ID in the production instance (IDs differ per instance) |
 | `CRON_SECRET` | api | secret | Optional, to call job routes by hand | Required for the crons: at least 32 characters, `openssl rand -hex 32`. Vercel sends it only from the Production scope |
-| Tuning (the "Advanced" section of `.env.example`) | api | config | Leave unset | Leave unset |
+| `WRITES_PER_USER_PER_MINUTE` | api | config | Leave unset (60) | Leave unset (60) |
+| `JOB_MIN_SPACING_SECONDS` | api | config | Leave unset (60) | Leave unset (60); lower it only for a schedule of a minute or less |
+| Other tuning (the "Advanced" section of `.env.example`) | api | config | Leave unset | Leave unset |
 
 Never in the Vercel project: `MIGRATION_DATABASE_URL` and `API_DB_PASSWORD` (the migration credential lives in a GitHub Environment secret), and the `E2E_*` variables. Set by Vercel, never by you: `VERCEL`, `VERCEL_ENV`, `VERCEL_URL`, `VERCEL_BRANCH_URL`, `VERCEL_GIT_COMMIT_SHA`, and `VERCEL_AUTOMATION_BYPASS_SECRET` when a bypass secret exists.
 
@@ -131,7 +133,23 @@ Each step is a person's; none can be automated from this repository.
 4. **[YOU D4]** Add the environment variables for Preview and for Production from the [map](#variables-which-service-reads-what), pasting values from each provider's dashboard (sandbox values in Preview, live values in Production). Generate `CRON_SECRET` with `openssl rand -hex 32` and set it in Production. Mark every secret as a secret variable. Redeploy after the last change.
 5. **[YOU D5]** Decide Deployment Protection. Check the project's Deployment Protection settings: where they cover previews, a provider cannot reach a protected preview. To let Stripe and Clerk deliver webhooks to it, create a Protection Bypass for Automation secret in the project settings and append it to the endpoint URLs ([Preview deployments](#preview-deployments)). Vercel sets `VERCEL_AUTOMATION_BYPASS_SECRET` from it, which `proofs/dec-001/proof.py probe` and `perf/` use. Production access is your decision.
 6. **[YOU D6]** Choose the plan: Pro for a commercial product (see above).
-7. **[YOU D7]** Add the platform rate-limit rule (DEC-011). In the project, open **Firewall**, select **Configure**, then **+ New Rule**: add an **If** condition that matches request paths under `/api/v1/` and excludes `/api/v1/webhooks/` and `/api/v1/jobs/`; **Then** **Rate Limit**, fixed window, key **IP**, time window 60 s, a request limit of 300 (a starting point: it is not measured, tune it to your traffic), first with the **Log** action, then the default **429**; **Save Rule**, **Review Changes**, **Publish** ([Vercel: WAF rate limiting](https://vercel.com/docs/vercel-firewall/vercel-waf/rate-limiting)). Hobby allows one such rule per project; counters are kept per region. Never put webhook or job paths behind a rate limit or challenge: Stripe and Clerk deliver from shared addresses, and throttling them causes retries. Application-level limits (checkout, portal, billing re-reads, LLM, diagnostics) use PostgreSQL counters; ordinary writes have no per-user limit ([limitations.md](limitations.md#follow-ups-in-the-code)).
+7. **[YOU D7]** Add the platform rate-limit rule (DEC-011), the coarse per-IP layer. In the project, open **Firewall**, select **Configure**, then **+ New Rule**. Add **If** conditions (all must be true): the request path starts with `/api/v1/`, does not start with `/api/v1/webhooks/`, and does not start with `/api/v1/jobs/`. **Then** **Rate Limit**, fixed window, key **IP**, time window 60 s, request limit 300 (a starting point: it is not measured, tune it to your traffic), first with the **Log** action, then the default **429**. **Save Rule**, **Review Changes**, **Publish**. The first time, Vercel asks you to review its **Rate Limiting Pricing** dialog. Hobby allows one such rule per project, and counters are kept per region ([Vercel: WAF rate limiting](https://vercel.com/docs/vercel-firewall/vercel-waf/rate-limiting), checked 2026-10-31). Never put webhook or job paths behind a rate limit or challenge: Stripe and Clerk deliver from shared addresses, and throttling them causes retries.
+
+   With your authorization an agent can stage the same rule with the Vercel CLI ([`vercel firewall`](https://vercel.com/docs/cli/firewall), checked 2026-10-31). A staged rule is a draft that changes nothing until published:
+
+   ```bash
+   vercel firewall rules add "API per-IP limit" \
+     --condition '{"type":"path","op":"pre","value":"/api/v1/"}' \
+     --condition '{"type":"path","op":"pre","value":"/api/v1/webhooks/","neg":true}' \
+     --condition '{"type":"path","op":"pre","value":"/api/v1/jobs/","neg":true}' \
+     --action rate_limit --rate-limit-window 60 --rate-limit-requests 300 --rate-limit-keys ip \
+     --rate-limit-action log --yes
+   vercel firewall diff
+   ```
+
+   Read the diff, then publish it yourself (`vercel firewall publish --yes`), watch the logged traffic, and switch the rule to refusing with `vercel firewall rules edit "API per-IP limit" --rate-limit-action rate_limit --yes`, `vercel firewall diff`, and another `publish`. `vercel firewall discard --yes` drops a draft. The pinned `vercel@65.2.0` lists these flags in its `--help` (local; no account was contacted). NOT VERIFIED: the dashboard's wording for the negated path conditions, that the CLI's `rate_limit` action answers 429 as the dashboard's default does, and the rule's effect on a deployment.
+
+   The application limits per signed-in user and per job as well ([operations.md](operations.md#limits)): this rule is for floods that carry no valid session.
 
 ## Set up GitHub
 
