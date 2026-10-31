@@ -15,7 +15,7 @@ const devSecret = `sk_${"test"}_${"c".repeat(24)}CANARYCLERK`;
 const stripeKey = `sk_${"test"}_${"s".repeat(24)}CANARYSTRIPE`;
 const livePublishable = `pk_${"live"}_${Buffer.from("clerk.example.com$").toString("base64")}`;
 const clerk = { NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: devPublishable, CLERK_SECRET_KEY: devSecret };
-const stripe = { STRIPE_SECRET_KEY: stripeKey, STRIPE_PRICE_PRO_MONTHLY: "price_month", STRIPE_PRICE_PRO_YEARLY: "price_year" };
+const stripe = { STRIPE_SECRET_KEY: stripeKey, STRIPE_PRICE_PRO_MONTHLY: "price_month", STRIPE_PRICE_PRO_YEARLY: "price_year", STRIPE_PRODUCT_PRO: "prod_pro" };
 const database = { DATABASE_URL: "postgresql://postgres:CANARYDB@127.0.0.1:5999/app" };
 
 const probe = (overrides = {}) => ({
@@ -77,12 +77,14 @@ test("the setup check runs once anything is in sandbox mode: Clerk keys, or a sa
   }
 });
 
-test("the Stripe suite needs an unrestricted sandbox key and the Pro prices, and can be turned off", async (t) => {
+test("the Stripe suite needs an unrestricted sandbox key and the Pro prices and product, and can be turned off", async (t) => {
   const reason = async (env) => byId(await plan(t, env)).stripe.reason;
   assert.equal(byId(await plan(t, stripe)).stripe.status, undefined);
   assert.match(await reason({ ...stripe, STRIPE_SECRET_KEY: `rk_${"test"}_${"r".repeat(24)}` }), /restricted key.*unrestricted sandbox secret key/);
   assert.match(await reason({ ...stripe, STRIPE_SECRET_KEY: `sk_${"live"}_${"l".repeat(24)}` }), /not a sandbox secret key/);
-  assert.match(await reason({ ...stripe, STRIPE_PRICE_PRO_YEARLY: "" }), /STRIPE_PRICE_PRO_MONTHLY and STRIPE_PRICE_PRO_YEARLY are not set \(pnpm setup:stripe/);
+  for (const missing of [{ STRIPE_PRICE_PRO_YEARLY: "" }, { STRIPE_PRODUCT_PRO: "" }, { STRIPE_PRODUCT_PRO: "pro" }]) {
+    assert.match(await reason({ ...stripe, ...missing }), /STRIPE_PRICE_PRO_MONTHLY, STRIPE_PRICE_PRO_YEARLY and STRIPE_PRODUCT_PRO are not all set \(pnpm setup:stripe/);
+  }
   assert.equal(await reason({ ...stripe, STRIPE_SANDBOX_TESTS: "0" }), "STRIPE_SANDBOX_TESTS=0 leaves it out");
   assert.equal(await reason({ ...stripe, STRIPE_SANDBOX_TESTS: "false" }), "STRIPE_SANDBOX_TESTS=0 leaves it out");
   assert.equal(byId(await plan(t, { ...stripe, STRIPE_SANDBOX_TESTS: "1" })).stripe.status, undefined);

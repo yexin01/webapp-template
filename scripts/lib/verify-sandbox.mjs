@@ -103,7 +103,7 @@ export async function planParts({ root, env, hasDotenv, options, probe }) {
   }
   parts.push(setup);
 
-  // stripe: an unrestricted sandbox key and the Pro prices; STRIPE_SANDBOX_TESTS=0 leaves it out.
+  // stripe: an unrestricted sandbox key and the Pro prices and product; STRIPE_SANDBOX_TESTS=0 leaves it out.
   const key = env.STRIPE_SECRET_KEY?.trim() ?? "";
   const stripe = { id: "stripe", name: "Stripe sandbox suite", command: "pnpm test:stripe-sandbox --require-db", mode: "sandbox (Stripe test mode)" };
   if (options.skip.includes("stripe")) Object.assign(stripe, { status: SKIPPED, reason: "left out with --skip" });
@@ -111,8 +111,8 @@ export async function planParts({ root, env, hasDotenv, options, probe }) {
   else if (!key) Object.assign(stripe, { status: SKIPPED, need: "stripe", reason: "STRIPE_SECRET_KEY is not set (a Stripe sandbox key, sk_test_...)" });
   else if (key.startsWith("rk_test_")) Object.assign(stripe, { status: SKIPPED, need: "stripe", reason: "STRIPE_SECRET_KEY is a restricted key; the suite needs an unrestricted sandbox secret key (sk_test_...) for test clocks" });
   else if (!key.startsWith("sk_test_")) Object.assign(stripe, { status: SKIPPED, need: "stripe", reason: "STRIPE_SECRET_KEY is not a sandbox secret key (sk_test_...)" });
-  else if (!/^price_/.test(env.STRIPE_PRICE_PRO_MONTHLY ?? "") || !/^price_/.test(env.STRIPE_PRICE_PRO_YEARLY ?? "")) {
-    Object.assign(stripe, { status: SKIPPED, need: "stripe", reason: "STRIPE_PRICE_PRO_MONTHLY and STRIPE_PRICE_PRO_YEARLY are not set (pnpm setup:stripe creates the prices and prints the lines)" });
+  else if (!/^price_/.test(env.STRIPE_PRICE_PRO_MONTHLY ?? "") || !/^price_/.test(env.STRIPE_PRICE_PRO_YEARLY ?? "") || !/^prod_/.test(env.STRIPE_PRODUCT_PRO ?? "")) {
+    Object.assign(stripe, { status: SKIPPED, need: "stripe", reason: "STRIPE_PRICE_PRO_MONTHLY, STRIPE_PRICE_PRO_YEARLY and STRIPE_PRODUCT_PRO are not all set (pnpm setup:stripe creates the prices and the product and prints the lines)" });
   } else {
     const endpoint = databaseEndpoint({ root, env });
     if (endpoint.invalid || !(await probe.reachable(endpoint.host, endpoint.port))) {
