@@ -69,6 +69,23 @@ describe("next.config.ts", () => {
 });
 
 /**
+ * ADR-0004 §29: the template sends no SDK telemetry to Clerk. The root layout's `telemetry={false}` (layout.test.tsx)
+ * reaches the browser's clerk-js only. The Clerk client that the proxy creates for every request reads Clerk's own
+ * variable instead, and without it enables its collector for a development instance and prints a notice that Clerk
+ * collects telemetry (seen in a local `next dev` and `next start`). Next.js inlines the config's `env` over any value
+ * in the environment, so no deployment's settings can switch it back on.
+ */
+describe("Clerk's SDK telemetry (ADR-0004 §29)", () => {
+  it("is switched off for the proxy's Clerk client by a value fixed at build time", async () => {
+    const config = await configFor(serverEnv);
+    expect(
+      config.env?.NEXT_PUBLIC_CLERK_TELEMETRY_DISABLED,
+      "Clerk's server-side client then keeps its telemetry collector on and says so in the server console",
+    ).toBe("1");
+  });
+});
+
+/**
  * `next dev` and `next start` serve /api/v1 through a rewrite proxy that gives up after 30 s with a bare 500 unless
  * `experimental.proxyTimeout` says otherwise. The browser waits up to PROVIDER_TIMEOUT_MS for the calls that reach
  * Stripe or the LLM, so the proxy must outlast it (src/lib/api/deadlines.ts; client.test.ts pins the order).
