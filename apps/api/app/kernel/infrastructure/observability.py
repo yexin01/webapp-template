@@ -100,11 +100,17 @@ _SPAN_IDENTITY = frozenset({"trace_id", "span_id", "parent_span_id", "start_time
 _DROPPED_DATA = re.compile(r"(?:http|url)\.(?:query|fragment)|user\..+")
 # Span and breadcrumb data holding a URL or a request target.
 _URL_DATA = frozenset({"url", "http.url", "http.target", "url.full", "url.path"})
+# A path segment shaped like a provider's ID: a short lower-case prefix, then 10 or more letters and digits
+# (user_2abc..., org_..., cus_..., price_..., and cs_test_... for a Checkout Session). Any such segment goes, so
+# an ID of a kind nobody listed does not get through. The outgoing Clerk and Stripe calls carry their IDs in the path.
+_ID_SEGMENT = re.compile(r"(?<=/)[a-z]{2,6}_(?:(?:test|live)_)?[A-Za-z0-9]{10,}(?![A-Za-z0-9_])")
+# The scheme and host of an absolute URL.
+_ORIGIN = re.compile(r"[a-z][a-z0-9+.-]*://[^/]*", re.IGNORECASE)
 
 
 def _scrub_trace_text(value: str, max_length: int = MAX_TEXT_LENGTH) -> str:
-    """``value`` redacted, with each path or URL in it cut to its origin and path."""
-    return strip_url_queries(redact_text(value, max_length=max_length))
+    """``value`` redacted, with each path or URL in it cut to its origin and path, and each ID in a path replaced."""
+    return _ID_SEGMENT.sub("{id}", strip_url_queries(redact_text(value, max_length=max_length)))
 
 
 class _SpanText:
@@ -147,7 +153,16 @@ def _scrub_span(span: dict[str, Any], text: Callable[[str], str] = _scrub_trace_
             span[key] = _scrub_data(value, text) if key == "data" else redact(value, text=text)
 
 
-def _scrub_request(request: dict[str, Any]) -> None:
+def _matched_route(event: Any) -> str | None:
+    """The template of the route that handled the request (the SDK names the transaction after it), if one did."""
+    info, name = event.get("transaction_info"), event.get("transaction")
+    if isinstance(info, dict) and info.get("source") == "route" and isinstance(name, str) and name.startswith("/"):
+        return name
+    return None
+
+
+def _scrub_request(request: dict[str, Any], route: str | None) -> None:
+    """Scrubs a request in place. ``route`` is the template of the route that matched, if any."""
     headers = request.get("headers")
     if isinstance(headers, dict):
         request["headers"] = {
@@ -160,7 +175,12 @@ def _scrub_request(request: dict[str, Any]) -> None:
     for key in ("query_string", "fragment"):
         request.pop(key, None)
     if isinstance(request.get("url"), str):
-        request["url"] = redact_text(strip_query(request["url"]))
+        url = strip_query(request["url"])
+        if route is not None:
+            # The path of a matched route is its template: the IDs the caller put in the path stay out.
+            origin = _ORIGIN.match(url)
+            url = (origin[0] if origin else "") + route
+        request["url"] = _scrub_trace_text(url)
 
 
 def _scrub_common(event: Any, *, keep_trace_data: bool) -> None:
@@ -183,7 +203,7 @@ def _scrub_common(event: Any, *, keep_trace_data: bool) -> None:
         event["transaction"] = _scrub_trace_text(event["transaction"])
     request = event.get("request")
     if isinstance(request, dict):
-        _scrub_request(request)
+        _scrub_request(request, _matched_route(event))
     event.pop("user", None)
     contexts = event.get("contexts")
     trace = contexts.pop("trace", None) if isinstance(contexts, dict) else None
