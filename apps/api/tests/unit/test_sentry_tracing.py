@@ -351,7 +351,7 @@ class TestProviderIds:
             ),
         ],
     )
-    def test_a_request_no_route_matched_keeps_its_path_without_ids(
+    def test_a_request_without_a_route_template_keeps_its_path_without_ids(
         self, transaction: str, source: str, url: str, kept: str
     ) -> None:
         scrubbed = scrub_event(self.request_event(transaction, source, url), {})
