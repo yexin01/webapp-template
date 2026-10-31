@@ -83,8 +83,13 @@ def to_snapshot(sub: Any, catalog: PriceCatalog) -> SubscriptionSnapshot:
     try:
         status = SubscriptionStatus(status_raw)
     except ValueError:
-        logger.warning("stripe_unknown_subscription_status", extra={"status": status_raw})
-        status = SubscriptionStatus.INCOMPLETE  # never entitled
+        # A guess would be stored, and a guessed status can take Pro from a payer. Refuse the read as Stripe's own
+        # rejections are refused: callers keep what is stored and flag the customer, and an operator adds the status.
+        logger.error(
+            "stripe_unknown_subscription_status",
+            extra={"status": _short(status_raw), "stripe_subscription_id": _short(_get(sub, "id"))},
+        )
+        raise InvalidRequestError("The billing request was rejected.") from None
     return SubscriptionSnapshot(
         stripe_subscription_id=str(_get(sub, "id")),
         stripe_customer_id=str(_id(_get(sub, "customer"))),

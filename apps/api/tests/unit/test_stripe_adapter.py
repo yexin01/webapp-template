@@ -378,6 +378,24 @@ class TestSubscriptionReads:
             [sub] = provider(stub.url).list_customer_subscriptions("cus_1")
         assert (sub.plan_key, sub.price_id) == (expected, "price_replaced")
 
+    @pytest.mark.parametrize("read", ["list", "retrieve"])
+    def test_a_status_added_later_refuses_the_whole_read_and_names_it(
+        self, read: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """One subscription the code cannot read leaves the others unread too: nothing of the read is applied."""
+        unknown = subscription(status="paused_for_review")
+        listing = {"object": "list", "url": "/v1/subscriptions", "has_more": False, "data": [subscription(), unknown]}
+        body = listing if read == "list" else unknown
+        with (
+            stub_server(lambda req: (200, body)) as stub,
+            caplog.at_level(logging.ERROR),
+            pytest.raises(InvalidRequestError),
+        ):
+            READS[read](provider(stub.url))
+        records = [r for r in caplog.records if r.getMessage() == "stripe_unknown_subscription_status"]
+        assert len(records) == 1, "an operator is told of the status at ERROR"
+        assert (records[0].levelname, records[0].status) == ("ERROR", "paused_for_review")  # type: ignore[attr-defined]
+
     def test_a_subscription_is_read_by_id(self) -> None:
         ended = subscription(status="canceled", price="price_y", ended_at=PERIOD_END - 60)
         with stub_server(lambda req: (200, ended)) as stub:

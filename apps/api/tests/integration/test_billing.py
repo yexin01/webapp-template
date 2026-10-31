@@ -15,6 +15,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
+from urllib.parse import urlsplit
 
 import psycopg
 import pytest
@@ -23,11 +24,12 @@ from app.kernel.errors import DependencyUnavailableError, EntitlementRequiredErr
 from app.kernel.tenancy import ContextKind, TenantContext
 from app.modules.billing.adapters.fakes import InMemoryBillingProvider
 from app.modules.billing.adapters.repository import PgBillingRepository
-from app.modules.billing.adapters.stripe import to_snapshot
+from app.modules.billing.adapters.stripe import StripeBillingProvider, to_snapshot
 from app.modules.billing.domain import (
     PRO_INSIGHT,
     Plan,
     PlanKey,
+    PriceCatalog,
     SubscriptionSnapshot,
     SubscriptionStatus,
     decide,
@@ -42,6 +44,7 @@ from tests.conftest import (
     superuser_query,
 )
 from tests.lock_waits import wait_for_lock_wait
+from tests.stub_server import Recorded, stub_server
 
 pytestmark = pytest.mark.db
 
@@ -2267,6 +2270,66 @@ def test_a_subscription_stripe_does_not_return_changes_nothing(harness: Harness)
     result = send_webhook(harness, event_payload(customer))
     assert result.json()["status"] == "needs_reconciliation"
     assert harness.client.get("/api/v1/billing/status", headers=harness.login("user_a")).json()["plan"] == "pro"
+
+
+def test_a_payer_keeps_pro_when_stripe_reports_a_status_the_code_does_not_know(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Through the real adapter and a loopback Stripe. A status Stripe adds later was stored as ``incomplete``, which never
+    entitles, so the next webhook, re-read or scheduled run took Pro from a customer who was paying. Now the read is
+    refused: the stored subscription stays, the event stays flagged, and the status is named in an ERROR."""
+    new_status = {
+        "id": "sub_seeded",
+        "object": "subscription",
+        "customer": "cus_seeded",
+        "status": "paused_for_review",
+        "cancel_at_period_end": False,
+        "items": {
+            "object": "list",
+            "data": [{"id": "si_1", "object": "subscription_item", "price": {"id": PRICE_MONTHLY, "object": "price"}}],
+        },
+    }
+    listing = {"object": "list", "url": "/v1/subscriptions", "has_more": False, "data": [new_status]}
+
+    def respond(req: Recorded) -> tuple[int, Any]:
+        return 200, listing if urlsplit(req.path).path == "/v1/subscriptions" else new_status
+
+    with stub_server(respond) as stub:
+        catalog = PriceCatalog({PlanKey.PRO_MONTHLY: PRICE_MONTHLY, PlanKey.PRO_YEARLY: PRICE_YEARLY}, PRODUCT_PRO)
+        provider = StripeBillingProvider(secret_key="sk_test_" + "0" * 24, catalog=catalog, api_base=stub.url)
+        h = make_harness(billing_provider=provider)
+        headers = h.login("user_a")
+        user = user_id_of(h, headers)
+        superuser_query(
+            h.database_url,
+            "INSERT INTO app.billing_customers (user_id, stripe_customer_id, reconciled_at) VALUES (%s, 'cus_seeded', now())",
+            (user,),
+        )
+        superuser_query(
+            h.database_url,
+            "INSERT INTO app.subscriptions (stripe_subscription_id, user_id, stripe_customer_id, status, plan_key, "
+            "price_id, current_period_end) VALUES ('sub_seeded', %s, 'cus_seeded', 'active', 'pro_monthly', %s, %s)",
+            (user, PRICE_MONTHLY, FUTURE),
+        )
+
+        def plan() -> str:
+            return str(h.client.get("/api/v1/billing/status", headers=headers).json()["plan"])
+
+        assert plan() == "pro"
+
+        with caplog.at_level("ERROR"):
+            delivered = send_webhook(h, event_payload("cus_seeded"))
+            resynced = sync(h, headers)
+            report = h.container.billing.service.reconcile(user_id=None, apply=True)
+
+    assert plan() == "pro", "a status the code does not know took Pro from a customer who was paying"
+    assert delivered.json()["status"] == "needs_reconciliation"
+    assert (resynced.status_code, resynced.json()["plan"]) == (200, "pro")
+    assert (report.rejected_customers, report.divergences) == (["cus_seeded"], [])
+    assert flagged_events(h) == 1  # the scheduled run did not resolve what it could not read
+    logged = [r for r in caplog.records if r.getMessage() == "stripe_unknown_subscription_status"]
+    assert logged
+    assert {(r.levelname, r.status) for r in logged} == {("ERROR", "paused_for_review")}  # type: ignore[attr-defined]
 
 
 def test_an_active_subscription_on_an_unknown_price_is_logged(
