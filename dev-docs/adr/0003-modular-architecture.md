@@ -91,8 +91,8 @@ TanStack Query was offered and not selected.
   - integration tests;
   - a web feature with a component test;
   - typed client methods;
-  - the wiring in `bootstrap.py`, through explicit markers.
-- `pnpm test:new-module` (in CI) generates a module in a copy of the repository. It runs lint, strict types, the import contracts, the architecture tests, the generated API tests (it fails if they are skipped), the contract export, web types and lint, and the component test.
+  - the wiring in `bootstrap.py` and the module's requests in the contract sweep (`test_contract_conformance.py`), through explicit markers.
+- `pnpm test:new-module` (in CI) generates modules in a copy of the repository. It runs lint, strict types, the import contracts, migration lint, the contract export, the whole API test suite (it fails if the database tests are skipped), and the web types, lint, formatting and test suite.
 - `docs/architecture.md` documents the architecture: C4 context, containers and components, module anatomy, request lifecycle, data access, events, jobs, scaling, and fitness functions.
 
 ## Consequences

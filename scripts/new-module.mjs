@@ -6,7 +6,8 @@
  * - integration tests;
  * - a web feature with its test;
  * - typed client methods;
- * - the wiring in app/bootstrap.py.
+ * - the wiring in app/bootstrap.py;
+ * - the module's requests in the contract sweep (tests/integration/test_contract_conformance.py).
  *
  *   pnpm new:module <name> [--entity EntityName] [--dry-run]
  *
@@ -312,9 +313,11 @@ const edits = [
   ["apps/api/app/bootstrap.py", "    # new:module:build", `    ${name} = build_${name}(kernel, identity.auth)\n`],
   ["apps/api/app/bootstrap.py", "        # new:module:container", `        ${name}=${name},\n`],
   ["apps/web/src/lib/api/client.ts", "    // new:module:client", template("web/client-methods.ts.tmpl")],
+  ["apps/api/tests/integration/test_contract_conformance.py", "    # new:module:sweep", template("contract-sweep.py.tmpl")],
 ];
 const edited = new Map();
 for (const [rel, marker, insertion] of edits) {
+  if (!existsSync(path.join(root, rel))) fail(`Marker "${marker.trim()}" not found: ${rel} does not exist; was it removed?`);
   const text = edited.get(rel) ?? readFileSync(path.join(root, rel), "utf8");
   const at = text.indexOf(marker);
   if (at === -1) fail(`Marker "${marker.trim()}" not found in ${rel}; was it removed?`);
@@ -418,7 +421,8 @@ Next steps:
   3. pnpm test                   # the generated tests: tests/integration/test_${name}.py and the panel test
   4. Mount <${M}Panel /> from "@/features/${tokens.__path__}" in a page (for example the dashboard); it takes no props.
      A new page requires sign-in; only paths listed in apps/web/src/lib/page-access.ts are public.
-  5. Replace the placeholder description in ${api}/__init__.py and model your real fields.
+  5. Replace the placeholder description in ${api}/__init__.py and model your real fields; change the
+     payloads of the module's requests in apps/api/tests/integration/test_contract_conformance.py to match.
   6. For a new action, declare its Permission in domain.py and evaluate it in the use case, then add a flag
      for it to Capabilities (domain.py), service.capabilities, ${Entity}Capabilities (routes.py) and the panel.
      The panel shows actions from the list's "can", never from a role.`);

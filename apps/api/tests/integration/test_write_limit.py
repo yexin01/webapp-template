@@ -216,9 +216,14 @@ def test_every_write_route_is_counted_or_says_why_not(harness: Harness) -> None:
         for method, path, route, _ in _api_routes(list(app.routes))  # type: ignore[attr-defined]
         if _limits_writes(route.dependant)
     ]
-    assert ("POST", PROJECTS) in counted
-    assert ("DELETE", f"{PROJECTS}/{{project_id}}") in counted
-    assert len([m for m, _ in counted if m == "POST"]) == 2  # personal and organization create
+    # Not a count: every module `pnpm new:module` generates adds four counted routes of its own.
+    for route in (
+        ("POST", PROJECTS),
+        ("DELETE", f"{PROJECTS}/{{project_id}}"),
+        ("POST", "/api/v1/orgs/{org_id}/projects"),
+        ("DELETE", "/api/v1/orgs/{org_id}/projects/{project_id}"),
+    ):
+        assert route in counted
 
 
 def test_put_and_patch_count_like_post_and_delete(make_harness: Callable[..., Harness]) -> None:
@@ -251,15 +256,15 @@ def test_the_limit_runs_after_authentication_and_admission_on_every_counted_rout
     app = harness.client.app
     authenticate = harness.container.identity.auth.authenticate
     admission = harness.container.kernel.request_transaction
-    checked = 0
+    checked = []
     for method, path, route, _ in _api_routes(list(app.routes)):  # type: ignore[attr-defined]
         if method in SAFE_METHODS or not _limits_writes(route.dependant):
             continue
         calls = [d.call for d in route.dependant.dependencies]
         limit = next(i for i, call in enumerate(calls) if limits_writes(call))
         assert calls.index(authenticate) < calls.index(admission) < limit, (method, path)
-        checked += 1
-    assert checked == 4
+        checked.append((method, path))
+    assert {("POST", PROJECTS), ("POST", "/api/v1/orgs/{org_id}/projects")} <= set(checked)  # the loop saw routes
 
 
 def test_the_manifest_reports_a_write_route_that_skips_the_limit(harness: Harness) -> None:

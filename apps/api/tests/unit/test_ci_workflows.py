@@ -59,6 +59,37 @@ def test_ci_receives_no_secrets_and_never_runs_on_pull_request_target() -> None:
     assert load("ci.yml")["permissions"] == {"contents": "read"}
 
 
+@pytest.mark.parametrize("job", ["api", "web"])
+def test_the_api_and_web_jobs_run_exactly_what_pnpm_verify_runs_for_the_job(job: str) -> None:
+    """CI and `pnpm verify` share one step list. Another command, a flag that narrows the run (--skip, --only,
+    --quick, --offline, --no-db), or a step that may fail without failing the job would leave CI green on
+    checks it did not make."""
+    workflow = load("ci.yml")
+    verify = [step for step in steps(workflow, job) if "verify.mjs" in step.get("run", "")]
+    assert [step["run"].strip() for step in verify] == [f"node scripts/verify.mjs --job {job}"]
+    assert "if" not in verify[0]
+    assert not verify[0].get("continue-on-error")
+    assert not workflow["jobs"][job].get("continue-on-error")
+
+
+def test_python_dependencies_install_from_a_lock_that_must_be_current() -> None:
+    """`uv sync --frozen` (or UV_FROZEN) installs what uv.lock says after pyproject.toml has moved on, and CI
+    passes; `--locked` fails the job. Each job that installs the API's dependencies says so."""
+    installs: dict[str, set[str]] = {}
+    for path in sorted(WORKFLOWS.glob("*.yml")):
+        workflow = load(path.name)
+        assert "UV_FROZEN" not in json.dumps(workflow), f"{path.name} sets UV_FROZEN"
+        for name, job in workflow["jobs"].items():
+            for step in job.get("steps", []):
+                for line in step.get("run", "").splitlines():
+                    if "uv sync" in line:
+                        assert "--locked" in line.split(), line
+                        assert "--frozen" not in line.split(), line
+                        installs.setdefault(path.name, set()).add(name)
+    assert installs == {"ci.yml": {"api", "api-supabase", "deploy-config"}, "db-migrate.yml": {"migrate"}}
+    assert load("db-migrate.yml")["env"].get("UV_LOCKED") == "1"  # the migration's `uv run` asserts the lock too
+
+
 def test_deploy_config_runs_without_credentials_or_telemetry() -> None:
     job = load("ci.yml")["jobs"]["deploy-config"]
     assert job["env"]["VERCEL_TELEMETRY_DISABLED"] == "1"

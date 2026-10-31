@@ -1,5 +1,7 @@
 # Required checks (spec §16.1). No job in this workflow receives secrets, so
 # it is safe for pull requests from forks (CI-SEC-03).
+# It runs for every pull request and for every push to main. A push to any other
+# branch runs nothing until a pull request is opened for it.
 name: CI
 
 on:
@@ -16,7 +18,6 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  UV_FROZEN: "1"
   NEXT_TELEMETRY_DISABLED: "1"
 
 jobs:
@@ -50,7 +51,8 @@ jobs:
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version-file: .nvmrc
-      - run: uv sync --frozen
+      # --locked: a uv.lock that pyproject.toml has moved past fails the job; --frozen installs it without a word.
+      - run: uv sync --locked
       # The same command runs on a laptop (pnpm verify): lint, formatting, import boundaries, migration
       # lint (MIG-03), strict types, the tests with the database required (one of them runs the migrate
       # command twice against an empty database, MIG-03), and the locked-version audit.
@@ -77,7 +79,7 @@ jobs:
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version-file: .nvmrc
-      - run: uv sync --frozen
+      - run: uv sync --locked
         working-directory: apps/api
       - name: Migrations, privileges, login role, and database tests on the image
         run: node scripts/test-supabase-image.mjs
@@ -129,7 +131,7 @@ jobs:
   deploy-config:
     # Spec 16.1 "Deployment configuration": builds the root vercel.json with the pinned Vercel
     # CLI and checks the output. No Vercel account, token, or deployment; local packaging
-    # evidence only (docs-notes/deploy.md says what a preview deployment must still show).
+    # evidence only (docs/deployment.md#verify-the-first-preview says what a preview deployment must still show).
     name: Deployment configuration — vercel build, no deployment
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -151,7 +153,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Production dependencies import as Vercel installs them (no dev group)
         run: |
-          UV_PROJECT_ENVIRONMENT="$RUNNER_TEMP/api-prod" uv sync --project apps/api --frozen --no-dev --no-install-project
+          UV_PROJECT_ENVIRONMENT="$RUNNER_TEMP/api-prod" uv sync --project apps/api --locked --no-dev --no-install-project
           cd apps/api
           APP_ENV=test DATABASE_URL=postgresql://app:unused@127.0.0.1:1/unused \
             "$RUNNER_TEMP/api-prod/bin/python" -I -c 'import sys; sys.path.insert(0, "."); import index, app.cli'

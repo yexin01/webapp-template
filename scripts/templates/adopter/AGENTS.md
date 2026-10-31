@@ -24,7 +24,7 @@ Instructions for AI coding agents and for contributors. Add this project's own c
 
 ```bash
 pnpm db:up            # local PostgreSQL; the API tests fail without a database
-pnpm verify           # everything CI requires for the api, web, and secrets jobs, in CI's order, ending in a PASS/FAIL table
+pnpm verify           # the checks of CI's api, web, and secrets jobs, in CI's order, ending in a PASS/FAIL table (`pnpm test:vercel-build` and `pnpm test:supabase` cover the other two jobs)
 pnpm verify:quick     # while iterating: lint, format, types, and the API and web tests
 pnpm hooks:install    # once per clone: scans staged changes for secrets before each commit (Docker is enough without gitleaks)
 ```

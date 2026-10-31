@@ -15,7 +15,8 @@ const withSentryConfig = vi.hoisted(() =>
   vi.fn<(config: unknown, options?: object) => unknown>((config) => config),
 );
 vi.mock("@sentry/nextjs/config", () => ({ withSentryConfig }));
-vi.mock("./lib/env-files", () => ({ loadEnvFiles: () => [], strayEnvFiles: () => [] }));
+const loadEnvFiles = vi.hoisted(() => vi.fn<() => string[]>(() => []));
+vi.mock("./lib/env-files", () => ({ loadEnvFiles, strayEnvFiles: () => [] }));
 vi.mock("./lib/env.server", async (importOriginal) => ({
   ConfigError: class extends Error {},
   isWebVariable: () => false,
@@ -203,5 +204,29 @@ describe("the release the build creates in Sentry (ADR-0004 §25)", () => {
       options?.release?.setCommits,
       "the plugin's default is { auto: true }: set it to false, or say what is sent in docs/data-inventory.md",
     ).toBe(false);
+  });
+});
+
+/**
+ * `pnpm build:check` is the account-free build CI runs and a fresh clone can run: it must not change with the
+ * developer's .env (an API_ORIGIN there lands in the routes manifest, a PostHog host in the CSP). It sets
+ * SKIP_ROOT_ENV_FILE=1 (scripts/lib/build-check-env.mjs); every other build and server reads the file.
+ */
+describe("the repository-root .env", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it.each([
+    ["is read by default", undefined, 1],
+    ["is read when the switch is anything but 1", "0", 1],
+    ["is not read when SKIP_ROOT_ENV_FILE=1 (pnpm build:check)", "1", 0],
+  ])("%s", async (_case, switchValue, reads) => {
+    vi.stubEnv("SKIP_ROOT_ENV_FILE", switchValue);
+    vi.resetModules();
+    loadEnvFiles.mockClear();
+    await configFor(serverEnv);
+
+    expect(loadEnvFiles).toHaveBeenCalledTimes(reads);
   });
 });

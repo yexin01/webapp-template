@@ -5,7 +5,7 @@
 ## Verification
 
 - [ ] Tests added or updated
-- [ ] `pnpm verify` passes (it runs what CI requires; use `pnpm verify:quick` while iterating). First-time setup: `docs/setup.md`
+- [ ] `pnpm verify` passes (the checks of CI's api, web and secrets jobs; `pnpm test:vercel-build` and `pnpm test:supabase` cover the other two; use `pnpm verify:quick` while iterating). First-time setup: `docs/setup.md`
 - [ ] Evidence is labeled **mocked**, **sandbox**, or **live**; nothing unverified is claimed as verified
 
 ## Safety checklist

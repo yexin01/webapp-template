@@ -41,7 +41,7 @@ Tests never use your `.env`. Database tests create and drop their own database, 
 | `pnpm bootstrap` | Install JavaScript and Python dependencies from the lockfiles |
 | `pnpm dev` | Check the configuration, then run the API and web app with reload (starts the Stripe CLI listener when billing is in sandbox mode). macOS and Linux only: on Windows use WSL, or run `pnpm dev:api` and `pnpm dev:web` in separate terminals |
 | `pnpm build` | Production build of the web app; needs your Clerk publishable key |
-| `pnpm build:check` | Account-free production build plus the bundle secret scan, reading no `.env`: what CI runs |
+| `pnpm build:check` | Account-free production build (it reads no `.env`) plus the bundle secret scan: what CI runs |
 | `pnpm format` | Format the web app (Prettier) and the API and perf code (Ruff) |
 | `pnpm contracts` | Regenerate the OpenAPI document and the TypeScript API types |
 | `pnpm new:module <name>` | Scaffold a tenant-scoped feature module end to end ([docs/architecture.md](docs/architecture.md#adding-a-feature)) |
@@ -63,7 +63,7 @@ Tests never use your `.env`. Database tests create and drop their own database, 
 | `pnpm lint` / `pnpm typecheck` | ESLint, the Prettier check, Ruff (lint and format check), import contracts and migration lint / `tsc` and mypy (strict) |
 | `pnpm contracts:check` | Fail if the generated contracts are stale |
 | `pnpm check:bundle-secrets` | Fail if server-only values appear in the browser bundle (after `pnpm build`) |
-| `pnpm check:links` | Fail if a relative Markdown link does not resolve |
+| `pnpm check:links` | Fail if a relative Markdown link, its `#heading` fragment, or a `docs/…#heading` pointer in code does not resolve |
 | `pnpm test:scripts` | The tests of the scripts in `scripts/` |
 
 **Database**

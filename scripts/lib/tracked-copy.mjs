@@ -11,7 +11,7 @@
  * outside the copy from where it lives there (directly or through other
  * links), or whose target is not in the copy is refused, as is a submodule.
  */
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { cpSync, lstatSync, mkdirSync, mkdtempSync, readlinkSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -22,6 +22,32 @@ const inside = (base, target) => {
   const rel = path.relative(base, target);
   return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
 };
+
+/**
+ * Why git cannot list the files of `repo`, in words that say what to do, or null when it can. A copy of the
+ * template taken from a ZIP archive has no .git, and git's own "fatal: not a git repository" is no help to
+ * someone who has not met git before. `tracked: false` also counts files git does not track yet.
+ */
+export function gitRepositoryProblem(repo, { tracked = true, env = process.env } = {}) {
+  const listed = spawnSync("git", ["ls-files", "-z", "--cached", ...(tracked ? [] : ["--others", "--exclude-standard"])], {
+    cwd: repo,
+    env,
+    encoding: "utf8",
+  });
+  if (listed.error?.code === "ENOENT") return "this step needs git, which is not installed or not on PATH.";
+  if (listed.status !== 0) {
+    return `this step needs a git repository, because it works on a copy of the tracked files: run \`git init && git add -A\` in ${repo}, then run it again.`;
+  }
+  return listed.stdout ? null : `git lists no files in ${repo}: run \`git add -A\`, then run it again.`;
+}
+
+/** Ends the run with the problem on one line, no stack trace, when `repo` is not a git repository with files. */
+export function requireGitRepository(repo, command) {
+  const problem = gitRepositoryProblem(repo);
+  if (!problem) return;
+  console.error(`${command}: ${problem}`);
+  process.exit(1);
+}
 
 /** Copies the tracked files of `repo` into a new temporary directory and returns its path. */
 export function copyTrackedFiles(repo, prefix) {

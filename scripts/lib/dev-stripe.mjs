@@ -1,5 +1,5 @@
 /**
- * Local Stripe webhooks for `pnpm dev` and `pnpm check:setup` (docs-notes/stripe.md): with
+ * Local Stripe webhooks for `pnpm dev` and `pnpm check:setup` (docs/setup.md#stripe): with
  * BILLING_MODE=sandbox, an sk_test_ key, and the Stripe CLI installed, the CLI
  * supplies the webhook signing secret and forwards events to the API, so nothing
  * is copied by hand. The key reaches the CLI only as STRIPE_API_KEY (never on a
