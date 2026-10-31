@@ -66,9 +66,15 @@ def cmd_api_login(args: argparse.Namespace) -> int:
     print(json.dumps({"login_role": migrations.APP_LOGIN_ROLE, "login": True}))
     template = migrations.runtime_url_template(url, migrations.APP_LOGIN_ROLE)
     where = f"postgresql://{migrations.APP_LOGIN_ROLE}:<password>@<same host, port, and database>"
+    pooler = (
+        f" Port {migrations.TRANSACTION_POOLER_PORT} is Supabase's Transaction pooler, which the API needs; "
+        "the Session pooler (port 5432) is for migrations."
+        if template and migrations.is_supabase_pooler(url)
+        else ""
+    )
     print(
         f"{migrations.APP_LOGIN_ROLE} can log in. In the environment where the API runs, set DATABASE_URL to "
-        f"{template or where} (percent-encode special characters in the password). "
+        f"{template or where} (percent-encode special characters in the password).{pooler} "
         "Keep MIGRATION_DATABASE_URL out of that environment.",
         file=sys.stderr,
     )
