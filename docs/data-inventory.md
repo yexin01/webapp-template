@@ -1,6 +1,6 @@
 # Data Inventory
 
-This inventory lists every place the template stores or sends data about people, why, and for how long. It is the evidence that DEC-004 requires (spec §3.3) and reflects the code as of 2026-10-31 (commit `1729bd0`). A provider's own records are listed as far as its documentation and the code show them; the rows say where a claim is NOT VERIFIED.
+This inventory lists every place the template stores or sends data about people, why, and for how long. It is the evidence that DEC-004 requires (spec §3.3) and reflects the code as of 2026-10-31. A provider's own records are listed as far as its documentation and the code show them; the rows say where a claim is NOT VERIFIED.
 
 > **Adopter decision (DEC-004, [ADR-0002](../dev-docs/adr/0002-organization-entitlements-contacts-adopter-decisions.md)).** The template defines no retention periods and has no account deletion or export feature. The "Retention" column therefore describes **current behavior**, not policy. Each project made from the template sets its own policy with the checklist at the end of this file. Update this file whenever code changes what is stored or sent.
 
