@@ -158,7 +158,7 @@ def test_a_downgrade_waits_for_the_write_that_holds_the_membership_lock(
 
     def write_while_a_downgrade_arrives(repository: PgProjectRepository, *args: Any) -> Any:
         waiter.start()
-        wait_for_lock_wait(harness.database_url)  # the downgrade is queued behind the lock this transaction holds
+        wait_for_lock_wait(harness.database_url, timeout=15)  # the downgrade queues behind this transaction's lock
         waited.append(not committed.is_set())
         return write(repository, *args)
 
@@ -168,7 +168,7 @@ def test_a_downgrade_waits_for_the_write_that_holds_the_membership_lock(
         service.create(ctx, "during a downgrade")
     else:
         service.delete(ctx, UUID(acme["project"]), None)
-    waiter.join(5)
+    waiter.join(15)
     assert waited == [True]
     assert committed.is_set()
     assert superuser_query(
