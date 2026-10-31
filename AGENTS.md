@@ -9,7 +9,7 @@ Read it before making changes. Do not restate its requirements in other files; l
 1. **Never** push, publish, release, deploy, or modify remote repository or service state without explicit authorization from the owner. Local commits are allowed.
 2. **Never** expose, commit, print, log, or transmit secrets, credentials, or personal data.
 3. **Never** resolve an open decision (§3) on the owner's behalf or implement scope it blocks. Ask. A decision the owner delegated and an agent adopted stays `OPEN` ("adopted by delegation") until the owner confirms it: [ADR-0004](dev-docs/adr/0004-cycle-1-adopted-decisions.md).
-4. **Never** fabricate test results, measurements, security findings, or deployment evidence. Label integration evidence as `mocked`, `local`, `sandbox`, or `live` (§20), and write `NOT RUN` for a check that exists and was not run. Nothing in this repository has been run against a real provider.
+4. **Never** fabricate test results, measurements, security findings, or deployment evidence. Label integration evidence as `mocked`, `sandbox`, or `live`; a run on one machine against local services is `local` (§20). Write `NOT RUN` for a check that exists and was not run.
 5. **Never** weaken tests or disable required checks to get a passing result. Never bypass a hook (`--no-verify`).
 6. Preserve unrelated work. Ask before destructive operations.
 
