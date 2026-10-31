@@ -127,6 +127,26 @@ def test_a_request_without_a_valid_token_spends_nothing(make_harness: Callable[.
     assert write(h, "user_a") == 201
 
 
+def test_a_refused_write_never_takes_a_request_transaction(
+    make_harness: Callable[..., Harness], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The limit runs before the request-scoped transaction, so a flood of refused writes holds no admission place."""
+    h = make_harness({"writes_per_user_per_minute": 1})
+    database = h.container.kernel.database
+    begun: list[int] = []
+    original = database.begin_request_scope
+
+    def counting(*args: Any, **kwargs: Any) -> Any:
+        begun.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(database, "begin_request_scope", counting)
+    assert write(h, "user_a") == 201
+    assert len(begun) == 1
+    assert [write(h, "user_a") for _ in range(3)] == [429] * 3
+    assert len(begun) == 1
+
+
 def test_the_token_is_still_verified_once_per_request(harness: Harness, monkeypatch: pytest.MonkeyPatch) -> None:
     verified: list[str] = []
     original = harness.verifier.verify
