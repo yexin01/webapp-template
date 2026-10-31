@@ -16,7 +16,7 @@
 
 The proof never deploys. It exercises the committed template, as Vercel would package it, as far as a single machine allows:
 
-1. **Export.** `git archive HEAD` plus the candidate [`vercel.json`](../../proofs/dec-001/vercel.json): one project with Vercel Services, `web` (Next.js) and `api` (FastAPI, `index.py`), with `/api/v1/*` routed to `api`.
+1. **Export.** `git archive HEAD` plus the candidate `vercel.json` (a copy kept in the proof folder): one project with Vercel Services, `web` (Next.js) and `api` (FastAPI, `index.py`), with `/api/v1/*` routed to `api`. *Since 2026-10-30 that candidate is the committed repository-root [`vercel.json`](../../vercel.json), the copy in the proof folder no longer exists, and `run.sh` builds the root file as committed (it exits if `HEAD` has none).*
 2. **Build.** `vercel build` with hand-written local project settings, so no settings are pulled from an account.
 3. **Local Services.** `vercel dev -L`, then the probe suite.
 4. **Pooler.** PgBouncer in transaction mode, with prepared statements off.
@@ -52,7 +52,7 @@ The proof never deploys. It exercises the committed template, as Vercel would pa
 | 7 | Errors and timeouts | **PARTIAL.** Problem responses throughout, and no stack trace or path in any response, including the outage 503s. A hung database fails within the round-trip deadline (defect 2). Not exercised through the runtime: an unhandled exception. It is covered locally by `test_unhandled_errors_are_sanitized` | A function timeout on the platform NOT VERIFIED |
 | 8 | Stripe webhooks | **PASS with locally generated signatures.**<br>- A payload with CRLF, a tab, non-ASCII text, a no-break space, and trailing whitespace verifies byte for byte through the Services router and through the runtime shim.<br>- An altered body, a wrong secret, a stale timestamp, or a missing header returns `400`.<br>- A redelivery finds the same ledger row (1 row, 2 attempts) | Genuine Stripe deliveries and retries NOT VERIFIED |
 | 9 | Environment parity | **PASS.**<br>- No server-only value in the browser bundle (5 values checked).<br>- A bundle reads no `.env` file, even one placed beside it, so configuration comes from environment variables only.<br>- A bundle refuses to start without an explicit `APP_ENV`.<br>- The API starts with `APP_ENV=preview` | Vercel's environment scoping NOT VERIFIED |
-| 10 | Topology | **PASS (local).**<br>- One Services project builds both apps.<br>- `/api/v1/*` reaches the API (problem JSON for an unknown route), and other paths reach Next.js.<br>- In Services mode, crons are read only from the root `vercel.json`: an `apps/api/vercel.json` cron list produced `crons: []` in an exploratory build | Preview URLs and the production router NOT VERIFIED |
+| 10 | Topology | **PASS (local).**<br>- One Services project builds both apps.<br>- `/api/v1/*` reaches the API (problem JSON for an unknown route), and other paths reach Next.js.<br>- In Services mode, crons are read only from the root `vercel.json`: an `apps/api/vercel.json` cron list produced `crons: []` in an exploratory build. Since 2026-10-30 the four crons are in the committed root file and `apps/api/vercel.json` no longer exists | Preview URLs and the production router NOT VERIFIED |
 
 ### Cold starts (n = 10 each; local baseline, not a platform measurement)
 
@@ -89,18 +89,64 @@ With n = 10, p95 equals the maximum. Emulated timings depend heavily on machine 
 
 ## Topology options (input for the owner; not a decision)
 
-DEC-001 resolution requires an ADR that records the topology. The proof built and ran option B. Option A is what ADR-0001 and `docs/operations.md` describe today.
+DEC-001 resolution requires an ADR that records the topology. The proof built and ran option B. *Update 2026-10-30: B was adopted by delegation of the owner and is the committed baseline ([ADR-0004 §1](../adr/0004-cycle-1-adopted-decisions.md)); the owner has not confirmed it. The table is kept as the input the owner had, with the rows the review added.*
 
 | | A. Two projects, Next.js rewrite to `API_ORIGIN` | B. One project with Vercel Services |
 |---|---|---|
 | Deploys | Independent; web and API can be at different versions | Atomic; both ship together, and previews stay in sync |
 | Previews | The web build needs the API preview URL at **build time** (`API_ORIGIN`), so preview pairing is manual | Each preview routes `/api/v1/*` to its own API |
 | Routing | Next.js rewrite, with one extra hop through the web function | Platform route table, with no hop through Next.js |
-| Crons | `apps/api/vercel.json` (as today) | Root `vercel.json` (as in the proof) |
-| Maturity | Standard | The build output declares `experimentalServicesV2`, so check Services' support status before relying on it |
-| Verified locally | Rewrites in `pnpm dev` and e2e | Build, routing, and probes (this record) |
+| Crons | `apps/api/vercel.json`, which no longer exists: option A needs it again | Root `vercel.json` (committed) |
+| Maturity | Standard | **Beta on all plans** ([docs/services](https://vercel.com/docs/services), updated 2026-08-10). The `experimentalServicesV2` name in the build output is the CLI's name for the same feature, not a separate maturity tier (read from the CLI source by the deploy package; not re-tested) |
+| Secrets isolation (FE-02) | Each project holds its own variables: the web project holds no API secret | **Every project variable reaches both services** (see [Shared environment](#shared-environment-fe-02-at-the-environment-level)). The web service's server processes can read the API's secrets; FE-02 holds in the code, not at the environment level |
+| Protection and Firewall | Two public surfaces. A web preview that calls a protected API preview is expected to get a 401 unless a bypass is set (from Vercel's Deployment Protection documentation; not observed) | One public surface; Firewall and Deployment Protection are configured once at the top level |
+| Webhook host | The API's own host | The application's domain |
+| Rollback | Independent per project | One deployment holds web, API, and crons, so a rollback restores all three. Instant Rollback behavior with crons: NOT VERIFIED |
+| Verified locally | Rewrites in `pnpm dev` and e2e | Build, routing, and probes (this record); packaging by `pnpm test:vercel-build` and the CI job `deploy-config` |
 
-**Recommendation (for the owner to accept or reject):** B for most adopters, because previews stay paired and deploys are atomic, provided Services is generally available on the owner's plan when DEC-001 is resolved. Otherwise A.
+**Recommendation (for the owner to accept or reject):** B for most adopters, because previews stay paired and deploys are atomic, provided Services is generally available on the owner's plan when DEC-001 is resolved. Otherwise A. **That condition is not met: Services is Beta.** Adopting B accepts Beta, the shared environment, and the unverified proxy behavior below.
+
+## Services topology facts (2026-10-30)
+
+Read from Vercel's documentation by the deploy package, and the pages marked "re-read" again on 2026-10-31 for this record. Pages are dated by their own "last updated" field. None of this was observed on a deployment.
+
+| Fact | Source |
+|---|---|
+| "Services are available in Beta on all plans." The earlier `experimentalServices` model is documented separately; `services` "replaces it for new projects" | [docs/services](https://vercel.com/docs/services), updated 2026-08-10 (re-read) |
+| `services.<name>.root` is required, relative to `vercel.json`; `entrypoint`, `functions`, and the build keys are per service. A service is private unless a top-level `rewrites` entry targets it with `destination: {"service": "<name>"}`; rewrites are evaluated in order; "routing into a service is final"; the service receives the original path (`/api/v1/...`), which the API already serves | [config reference](https://vercel.com/docs/services/config-reference), updated 2026-06-30 (re-read); [routing](https://vercel.com/docs/services/routing), updated 2026-06-30 (re-read) |
+| With `services` present, `functions`, `framework`, `buildCommand`, `installCommand`, `devCommand`, `ignoreCommand`, and `outputDirectory` belong inside the service, not at the top level. `crons` stay in the **root** `vercel.json`; a service's own file is ignored for them (this record's own exploratory build found the same) | [docs/services](https://vercel.com/docs/services), "Top-level configuration in services mode" (re-read) |
+| A function region: the documentation describes a top-level `regions` and a per-function `regions` and does not say what a top-level `regions` does under Services. A local experiment (CLI 59.17.0, scratch project outside the repository): a top-level `regions` left **no** `regions` field in the service function's `.vc-config.json`; `services.api.functions["index.py"].regions = ["cdg1"]` produced `"regions": ["cdg1"]`. `vercel build` validated neither a nonexistent region code nor an unknown key. So `vercel.json` sets the per-function key (`iad1`, a placeholder for the adopter's database region), and `apps/api/tests/unit/test_vercel_config.py` forbids a top-level `regions`, checks the code against Vercel's 19 regions, and requires exactly one | Local experiment (deploy package); [regions](https://vercel.com/docs/regions), updated 2026-08-11 |
+| Without `excludeFiles`, `vercel build` shipped 71 files from `apps/api/tests/` in the API bundle. `services.api.functions["index.py"].excludeFiles` removes `tests/**`, `.venv/**`, and the pytest, mypy, and ruff caches | Local experiment: the mutation of this exclusion made `scripts/check_vercel_build.py` fail `no_test_files_or_caches` |
+| **Framework Preset = Services: NOT VERIFIED.** The review and the deploy package cite [vercel.com/kb/guide/vercel-services](https://vercel.com/kb/guide/vercel-services) for "otherwise Vercel ignores your services configuration". A re-read on 2026-10-31 (the page's own date is 2026-10-22; about 23,000 characters; no truncation) found no sentence naming a Framework Preset, Project Settings, or Build and Deployment. The proof's local project settings use `"framework": "services"`, and `vercel build` honors them. Select the preset anyway when the project is created | Re-read, 2026-10-31 |
+
+### Shared environment (FE-02 at the environment level)
+
+Services "deploy together with shared routing, environment variables, and a unique domain" ([docs/services](https://vercel.com/docs/services), re-read), and the service configuration reference lists no per-service environment option: its properties are `root`, `framework`, `runtime`, `entrypoint`, `command`, `installCommand`, `buildCommand`, `devCommand`, `ignoreCommand`, `outputDirectory`, `bindings`, `functions`, `headers`, `redirects`, `rewrites`, `routes`, `cleanUrls`, and `trailingSlash` ([config reference](https://vercel.com/docs/services/config-reference), updated 2026-06-30, re-read). So under B every project variable reaches both services. It has not been observed on the platform.
+
+| Reaches | Variables |
+|---|---|
+| The web service's server processes, from the API's set | `DATABASE_URL` (the `app_login` transaction pooler string), `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `CLERK_WEBHOOK_SIGNING_SECRET`, `LLM_API_KEY`, `CRON_SECRET` |
+| The API function, from the web build's set | `SENTRY_AUTH_TOKEN` |
+
+FE-02 ("the web app holds no server secrets") therefore holds **in the code**: the web app reads only its own variables, and `loadEnvFiles` filters the repository-root `.env`. It does not hold **at the environment level**. The comment in `apps/web/next.config.ts` used to say that API secrets never enter the web process. Since `fed5c93` it says so only for a local run and adds that on Vercel one project gives every service every variable. The docstring of `loadEnvFiles` in `apps/web/src/lib/env-files.ts` still states the guarantee without that qualification (true of the loader, not of a Vercel project). Mitigations in the repository:
+
+1. Keep API-only secrets minimal, and never put `MIGRATION_DATABASE_URL` or `API_DB_PASSWORD` in the Vercel project. The migration credential lives in a GitHub Environment secret, and the runtime role cannot own tables (DEC-008, [ADR-0004 §3](../adr/0004-cycle-1-adopted-decisions.md)).
+2. The value-based bundle scan (`scripts/check-bundle-secrets.mjs`) compares the values of server-only variables found in the process environment and the root `.env`, and also the password inside `DATABASE_URL` and `MIGRATION_DATABASE_URL` (as written and decoded) and `API_DB_PASSWORD`. In the CI job `deploy-config` the web service is built with generated canary values for every server-only variable, and `--require-values` fails the scan if nothing was compared. The `web` job's build has no secrets, so its comparison was empty. Chaining the scan into the web `build` script (`next build && node ../../scripts/check-bundle-secrets.mjs --require-values`) would run it in every Vercel build, where the real values exist. Recommended to the integrator; not done, because `apps/web` was another package's.
+3. The owner's acceptance. Adopting B departs from FE-02 at the environment level. Confirming [ADR-0004](../adr/0004-cycle-1-adopted-decisions.md) is that acceptance. It is threat T-22 in the specification.
+
+### Next.js proxy under Services: NOT VERIFIED
+
+The web app's access gate is `apps/web/src/proxy.ts` (Clerk's `clerkMiddleware`, `auth.protect()`). Whether it runs when the web app is a service is **NOT VERIFIED**. The sources disagree:
+
+| Side | Statement | Source |
+|---|---|---|
+| Not supported | "Middleware is not supported inside a service." and "The Edge runtime is not supported inside a service. A service that emits a Function with Edge Runtime is rejected at deploy." | [Build Output API: Services](https://vercel.com/docs/build-output-api/services), "Constraints", updated 2026-09-15 (re-read 2026-10-31) |
+| Emitted by the build | `vercel build` (CLI 65.2.0) emits `apps/web/src/proxy.ts` as the Node.js function `services/web/functions/_middleware.func` (`runtime` `nodejs24.x`, not Edge), and the web service's `config.json` routes carry `"middlewarePath": "/_middleware"` for the matcher's paths and for `/__clerk/(.*)`. All 17 web functions are `nodejs24.x`, so the Edge limit does not apply. A build cannot show whether the platform honors `middlewarePath` inside a service | `local`: the output of `pnpm test:vercel-build` (deploy package; not re-run for this record) |
+| Next.js | `proxy.ts` is the Next.js 16 name of Middleware and defaults to the Node.js runtime; platform support for adapters is "Platform-specific" | [Next.js: proxy.js](https://nextjs.org/docs/app/api-reference/file-conventions/proxy), updated 2026-09-04 (re-read) |
+
+**Consequences in the code.** Page protection does not rest on the proxy alone: a client-side `PageGate` in the root layout reads the same allowlist ([ADR-0004 §6](../adr/0004-cycle-1-adopted-decisions.md)). The API authorizes every operation either way (FE-05). If the proxy does not run, its `azp` check does not run either; the API still enforces `azp` on every call.
+
+**What verifies it** is the two-minute check on the first preview, which needs the owner's authorization for the deployment. The commands are in [`proofs/dec-001/README.md`](../../proofs/dec-001/README.md#first-preview-the-two-minute-check). Signed out, `curl -sI https://<preview>/dashboard`: a `307` means the proxy ran inside the service; a `200` means only the client page gate protects pages. Either is acceptable. Record which, with the date and the commit. Then sign in on the preview URL and open `/dashboard`: staying there means `VERCEL_URL` reached the web build and the derived origins match; a loop between `/sign-in` and the page means they do not, and the API logs `clerk_azp_refused` with the origin to add to `CLERK_AUTHORIZED_PARTIES`.
 
 ## Documented platform values (Vercel documentation; not observed)
 
@@ -169,8 +215,19 @@ Three independent reviews ran: one subagent on `dfadbce` and `c9618d4`, and two 
    - after-response dispatch under freezing.
 
    *Corrected 2026-10-15:* this list first named Vercel Cron. Vercel Cron invokes production deployments only, so a preview cannot show it. Verifying cron delivery needs a production deployment, which is a separate authorization.
-2. Choose the topology (A or B above), and record it in an ADR when resolving DEC-001.
+2. Confirm or reverse the topology. B was adopted by delegation on 2026-10-30 ([ADR-0004 §1](../adr/0004-cycle-1-adopted-decisions.md)); DEC-001 stays `OPEN` until the owner confirms it and the preview items pass.
+3. On the first preview, run the [two-minute check](../../proofs/dec-001/README.md#first-preview-the-two-minute-check) and record which layer protected the page.
 
 ## Correction (2026-10-15)
 
 The `bundle` step of the run recorded above measured the package but asserted nothing except that there was one API function. Row 2's figures were observed, not checked by the harness. Its count of macOS libraries came from file names, and many native libraries (abi3 builds and vendored libraries) carry no platform tag in their names, so that count could not see them. The "every one asserted by the harness" in the status line therefore did not hold for packaging. From 2026-10-15 the step fails the run on test files in the bundle, any native library whose file header is not Linux x86-64 (Mach-O counts as macOS), a bundle of 500 MB or more, crons that differ from the API's job registry, or a runtime other than `python3.12`. Packaging counts as asserted only after the proof is re-run with that harness.
+
+## Update (2026-10-30): topology B is the committed baseline
+
+What changed since this record was written, from the deploy package's notes (`local` unless stated; nothing was deployed):
+
+- The candidate configuration moved from `proofs/dec-001/vercel.json` to the repository-root [`vercel.json`](../../vercel.json). `proofs/dec-001/run.sh` builds that file as committed; its README row 1 follows. `apps/api/vercel.json` is gone.
+- Packaging is now asserted by `pnpm test:vercel-build` (the pinned `vercel@65.2.0`, no token, no telemetry) and by the CI job `deploy-config`, which has not run remotely. Its checker (`scripts/check_vercel_build.py`) asserts 13 checks: both services are declared; the first matching route sends `/api/v1/health` and `/api/v1/jobs/drain-outbox` to `api` and `/`, `/dashboard`, `/api/other` to `web`; the built crons equal the committed ones and the API's job registry; exactly one API function with runtime `python3.12`, architecture `x86_64`, and `regions` equal to the committed single region; no `tests/` or tool-cache files in it; every native library is ELF x86-64 by its header (Mach-O fails); under 500 MB; the web service built. First run: 74.5 MiB, 23 native libraries, all Linux x86-64; the bundle scan compared 11 values and found none. Its self-test plants 11 defects and fails unless each is caught. This is **local packaging evidence, not platform evidence** (TEST-04). It asserts the packaging properties that the correction above listed (test files, native library headers, size, crons against the registry, runtime) outside the proof. The proof itself was not re-run, so the packaging figures in row 2 are asserted only by this harness, not by `run.sh`.
+- The full proof, `proofs/dec-001/run.sh`, was **not re-run** after the 2026-10-15 corrections (it needs Docker Desktop, about ten minutes, and the developer's local database). The runtime step now logs in as a role of its own (`dec001_login`, a member of `app_api` and `app_worker` like `app_login`) through PgBouncer with `sslmode=disable`, because preview refuses the schema owner as login role. Only `proof.py db --login-role ...` and `bash -n run.sh` were run.
+- NOT VERIFIED until a preview or production deployment: that Vercel accepts the Services configuration on a real project (Beta); that the four crons register from the root file and call the routes on a **production** deployment (previews never run crons); that the router sends `/api/v1/*` to the API ahead of the catch-all, with raw bodies for webhooks; that `VERCEL_REGION` in the API function equals the configured region (the build output only carries the field); cold starts, duration, memory, payload limits, the 500 MB bundle limit on the platform (locally 74.5 MiB), and Instant Rollback with crons; the [proxy](#nextjs-proxy-under-services-not-verified); the [shared environment](#shared-environment-fe-02-at-the-environment-level); that Vercel's build machines install the Python dependencies like the local `uv` install.
+- Hobby is for non-commercial use and runs daily crons anywhere within the scheduled hour (the review cites [Hobby plan](https://vercel.com/docs/plans/hobby) and [cron usage and pricing](https://vercel.com/docs/cron-jobs/usage-and-pricing); not re-read for this record). "Deploys on any plan", as ADR-0003 says, is true of the configuration and incomplete as advice.

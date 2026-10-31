@@ -4,6 +4,7 @@
 - **Date:** 2026-10-14
 - **Decided by:** Repository owner. The owner selected these options; their technical design is recorded below.
 - **Relates to:** ARCH-01 to ARCH-12, DEC-007, DEC-008, DEC-011 (no new infrastructure), D-001
+- **Amended by:** [ADR-0004](0004-cycle-1-adopted-decisions.md) §1: the cron schedule lives in the repository-root `vercel.json` (decision 4 names `apps/api/vercel.json`, which no longer exists); §3: the API's database login is `app_login`
 
 ## Context
 
