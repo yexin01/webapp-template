@@ -8,17 +8,19 @@ and through a transaction pooler. The command line is not guarded.
 
 from __future__ import annotations
 
+import logging
 import queue
 import threading
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 import psycopg
 import pytest
 
 from app.kernel.application.job_guard import LEASE_SECONDS, JobGuard
+from app.kernel.infrastructure.store import PgKernelStore
 from app.kernel.jobs import Job
 from tests.conftest import Harness, superuser_query
 
@@ -224,6 +226,40 @@ def test_a_wrong_secret_an_unknown_name_and_a_disabled_endpoint_claim_nothing(
     assert call(disabled, "prune-expired").status_code == 404
     assert job_rows(cron) == []
     assert job_rows(disabled) == []
+
+
+def test_a_name_is_not_looked_up_for_a_caller_without_the_secret(cron: Harness) -> None:
+    """404 says "there is no such job", which only a caller with the secret may learn: a job that exists and one that does
+    not give the same answer to everyone else."""
+    register(cron, "known", CountingJob())
+    for headers in ({}, {"Authorization": "Bearer wrong"}, {"Authorization": f"Basic {CRON_SECRET}"}):
+        for name in ("known", "nobody"):
+            status = call(cron, name, headers).status_code
+            assert status == 401, f"{name!r} answered {status} before the secret was checked ({sorted(headers)})"
+    assert call(cron, "nobody").status_code == 404  # with the secret, the name is what is wrong
+    assert job_rows(cron) == []
+
+
+def test_a_run_whose_release_fails_still_answers_with_its_outcome(
+    cron: Harness, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The run is over when its release fails: the job ran, so the caller hears so, and the lease runs out by itself."""
+    job = CountingJob()
+    register(cron, "unreleased", job)
+
+    def broken(self: PgKernelStore, name: str, started_at: datetime, now: datetime) -> None:
+        raise RuntimeError("the release failed")
+
+    monkeypatch.setattr(PgKernelStore, "release_job_run", broken)
+    with caplog.at_level(logging.ERROR):
+        r = call(cron, "unreleased")
+
+    assert r.status_code == 200, f"the failed release changed the answer of a job that ran: {r.text}"
+    assert (r.json()["ok"], job.runs) == (True, 1)
+    [record] = [rec for rec in caplog.records if rec.getMessage() == "job_release_failed"]
+    assert record.job == "unreleased"  # type: ignore[attr-defined]
+    [(_, _, lease_until)] = job_rows(cron)
+    assert lease_until > cron.clock.now()  # nothing was released: it holds the job as after a crash
 
 
 def test_the_shipped_jobs_answer_through_the_guard(cron: Harness) -> None:
