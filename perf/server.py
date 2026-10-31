@@ -328,6 +328,9 @@ def build_app(
         # Generous limits so the LLM and write classes measure latency, not the rate limiter.
         llm_checks_per_user_per_minute=600,
         llm_checks_global_per_day=100_000,
+        # The LLM check is an operator tool, so the synthetic users are operators: the llm_check class measures
+        # the check, not a 404.
+        diagnostics_operator_ids=[user_id(i) for i in range(users)],
         writes_per_user_per_minute=600,
         log_level="WARNING",
         **pools,

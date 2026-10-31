@@ -24,10 +24,13 @@ NOT_CONFIGURED = {"ok": False, "provider": "none", "model": "", "latency_ms": 0,
 
 @pytest.fixture
 def disabled(make_harness: Callable[..., Harness]) -> Callable[..., Harness]:
-    """The composition of LLM_MODE=disabled: no provider (an explicit None overrides the harness's mock)."""
+    """The composition of LLM_MODE=disabled: no provider (an explicit None overrides the harness's mock).
+    user_a is an operator: the check is an operator tool."""
 
     def factory(settings: dict[str, Any] | None = None) -> Harness:
-        return make_harness({"llm_mode": "disabled", **(settings or {})}, llm_provider=None)
+        return make_harness(
+            {"llm_mode": "disabled", "diagnostics_operator_ids": "user_a", **(settings or {})}, llm_provider=None
+        )
 
     return factory
 
@@ -72,6 +75,14 @@ def test_the_check_answers_a_stable_not_configured_state(disabled: Callable[...,
     response = h.client.post(CHECK, headers=h.login("user_a"))
     assert response.status_code == 200
     assert response.json() == NOT_CONFIGURED
+
+
+@pytest.mark.db
+def test_a_disabled_check_is_still_an_operator_tool(disabled: Callable[..., Harness]) -> None:
+    """Who is no operator is told nothing about the configuration either: the 404 comes before the state."""
+    h = disabled()
+    response = h.client.post(CHECK, headers=h.login("user_b"))
+    assert (response.status_code, response.json()["code"]) == (404, "NOT_FOUND")
 
 
 @pytest.mark.db

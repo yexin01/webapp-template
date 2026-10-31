@@ -84,12 +84,14 @@ flowchart TB
   identity -. AuthDeps .-> diagnostics
   billing -. probe .-> diagnostics
   llm -. probe .-> diagnostics
+  diagnostics -. operator policy .-> llm
 ```
 
 Dotted arrows are contracts that the composition root passes in. No module imports another module for them:
 
 - **`AuthDeps`** (kernel contract, implemented by identity): FastAPI dependencies that authenticate the caller and resolve the personal or organization context.
 - **`IntegrationProbe`** (kernel contract): each module that owns an integration contributes a probe, and diagnostics receives the list.
+- **Operator policy:** `DiagnosticsService.may_use`, handed to the `llm` routes as a function. `POST /api/v1/llm/check` answers 404 to every caller it refuses, so the route and the Integrations page apply one policy.
 - **Events:** modules publish to the outbox and subscribe to the event types they care about.
 
 ### Module catalogue
@@ -99,7 +101,7 @@ Dotted arrows are contracts that the composition root passes in. No module impor
 | `identity` | Users, the organization-membership mirror, Clerk token and webhook verification, tenant-context resolution | `/me`, `/webhooks/clerk` | `reconcile-memberships` | — |
 | `billing` | Customers, subscriptions, the entitlement matrix, price catalog, the open Checkout Session per user, Stripe | `/entitlement`, `/billing/*` (status, checkout, portal, sync), `/pro/insight`, `/webhooks/stripe` | `reconcile-billing` | publishes `billing.entitlement_changed` |
 | `projects` | Example tenant-scoped resource; the generator's reference | `/projects`, `/orgs/{org_id}/projects` | — | publishes `projects.created` |
-| `llm` | Provider-agnostic connectivity check with cost bounds | `/llm/check` | — | — |
+| `llm` | Provider-agnostic connectivity check with cost bounds, for operators | `/llm/check` | — | — |
 | `diagnostics` | Operator-only integration report and checks, and the answer to "may I use them?" | `/diagnostics/*` (`/diagnostics/access` answers any signed-in caller) | — | — |
 | kernel | Health, readiness, outbox, rate limits | `/health`, `/ready`, `/jobs/{name}` | `drain-outbox`, `prune-expired` | dispatches all |
 

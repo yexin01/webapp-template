@@ -242,6 +242,20 @@ def test_production_still_requires_https() -> None:
     assert "APP_BASE_URL must use https in production" in refusal(PRODUCTION, app_base_url="http://app.example.com")
 
 
+@pytest.mark.parametrize("prefix", ["sk_" + "test_", "rk_" + "test_"])
+def test_live_billing_refuses_a_test_mode_stripe_key(prefix: str) -> None:
+    """ENV-04: a production deployment must not start charging through a sandbox. The reverse is in test_config.py."""
+    key = prefix + "x" * 24
+    message = refusal(PRODUCTION, stripe_secret_key=key)
+    assert "STRIPE_SECRET_KEY does not match BILLING_MODE=live" in message
+    assert key not in message
+
+
+@pytest.mark.parametrize("prefix", ["sk_" + "live_", "rk_" + "live_"])
+def test_live_billing_takes_a_secret_or_a_restricted_live_key(prefix: str) -> None:
+    assert settings(PRODUCTION, stripe_secret_key=prefix + "x" * 24).billing_mode.value == "live"
+
+
 @pytest.mark.parametrize("product", [..., "", PRICE_MONTHLY, "pro"])
 def test_live_billing_needs_the_pro_product_as_a_stripe_product_id(product: Any) -> None:
     assert "STRIPE_PRODUCT_PRO is required and must be a Stripe product ID" in refusal(

@@ -33,6 +33,8 @@ class IdentitySettings(BaseModel):
     clerk_secret_key: SecretStr | None = None
     clerk_jwt_key: SecretStr | None = None
     clerk_authorized_parties: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    # AUTH-01: when set, a token's `aud` (a string, or a list) must include it. Unset: `aud` is not checked.
+    clerk_audience: str | None = None
     clerk_webhook_signing_secret: SecretStr | None = None
     clerk_api_url: str = "https://api.clerk.com"
     # Sessions started by someone else (Clerk dashboard impersonation, actor tokens, agent tasks) carry
@@ -53,6 +55,11 @@ class IdentitySettings(BaseModel):
         if isinstance(value, str):
             return [http_origin(p.strip()) or p.strip() for p in value.split(",") if p.strip()]
         return value
+
+    @field_validator("clerk_audience")
+    @classmethod
+    def _trim_audience(cls, value: str | None) -> str | None:
+        return value.strip() if value else value
 
     @property
     def clerk_issuer(self) -> str | None:

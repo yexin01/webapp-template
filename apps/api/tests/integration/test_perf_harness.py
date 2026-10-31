@@ -152,6 +152,16 @@ def _deliver_all(perf_server: ModuleType, client: TestClient, customers: list[st
 
 
 @pytest.mark.db
+def test_the_llm_check_class_of_the_load_test_gets_its_200(
+    perf_server: ModuleType, harness: tuple[TestClient, Any]
+) -> None:
+    """INCLUDE_LLM=1 expects 200 from POST /llm/check, an operator tool: the synthetic users are operators."""
+    client, _ = harness
+    token = f"perf-token-{perf_server.user_id(1)}"
+    assert client.post("/api/v1/llm/check", headers={"Authorization": f"Bearer {token}"}).status_code == 200
+
+
+@pytest.mark.db
 def test_seeded_ids_keep_every_digit_beyond_the_padding_width(perf_server: ModuleType, db: str) -> None:
     """Indexes wider than the zero padding (10000 users, 1000 orgs) match user_id() and k6's padStart."""
     users, orgs = 10_002, 1_001

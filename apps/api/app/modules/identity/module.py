@@ -84,6 +84,7 @@ def _verifier(settings: IdentitySettings) -> IdentityVerifier:
         issuer=issuer,
         authorized_parties=settings.clerk_authorized_parties,
         jwt_public_key=normalize_pem(settings.clerk_jwt_key.get_secret_value()) if settings.clerk_jwt_key else None,
+        audience=settings.clerk_audience,
     )
 
 

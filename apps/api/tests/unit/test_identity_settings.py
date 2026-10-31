@@ -61,3 +61,11 @@ def test_a_well_formed_webhook_signing_secret_is_accepted(value: str) -> None:
     assert settings.clerk_webhook_signing_secret is not None
     # svix accepts it too, trimmed as the module passes it.
     ClerkWebhookVerifier(settings.clerk_webhook_signing_secret.get_secret_value().strip())
+
+
+def test_the_token_audience_is_optional_and_trimmed() -> None:
+    """AUTH-01: unset (or empty) means `aud` is not checked; a value pasted with spaces around it is trimmed."""
+    assert make_settings().clerk_audience is None
+    assert make_settings(clerk_audience="").clerk_audience is None
+    assert make_settings(clerk_audience="   ").clerk_audience is None
+    assert make_settings(clerk_audience="  https://api.example.com \n").clerk_audience == "https://api.example.com"

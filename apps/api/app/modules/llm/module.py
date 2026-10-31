@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
 from app.kernel.diagnostics import IntegrationInfo, IntegrationKey, IntegrationMode
 from app.kernel.http.auth import AuthDeps
 from app.kernel.infrastructure.config import Mode
+from app.kernel.tenancy import TenantContext
 from app.kernel.wiring import Contribution, Kernel, pick
 from app.modules.llm.adapters import AnthropicProvider, MockLLMProvider, OpenAIProvider
 from app.modules.llm.ports import LLMProvider
@@ -24,7 +25,15 @@ class LLMModule:
     contribution: Contribution
 
 
-def build_llm(settings: LLMSettings, kernel: Kernel, auth: AuthDeps, overrides: Mapping[str, Any]) -> LLMModule:
+def build_llm(
+    settings: LLMSettings,
+    kernel: Kernel,
+    auth: AuthDeps,
+    overrides: Mapping[str, Any],
+    may_use_operator_tools: Callable[[TenantContext], bool],
+) -> LLMModule:
+    """``may_use_operator_tools`` is the diagnostics policy, passed in by the composition root: the route is
+    refused (404) to every caller it says no to."""
     provider: LLMProvider | None = pick(overrides, "llm_provider", lambda: _provider(settings))
     service = LLMService(
         provider,
@@ -35,7 +44,7 @@ def build_llm(settings: LLMSettings, kernel: Kernel, auth: AuthDeps, overrides: 
         max_concurrent_checks=settings.llm_max_concurrent_checks,
     )
     contribution = Contribution(
-        routers=[build_router(service, auth)],
+        routers=[build_router(service, auth, may_use_operator_tools)],
         probes=[LLMProbe(describe(settings), service)],
     )
     return LLMModule(service, contribution)

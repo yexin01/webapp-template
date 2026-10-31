@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
 import logging
 import time
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
@@ -16,14 +18,17 @@ import sentry_sdk
 from sentry_sdk.envelope import Envelope
 from sentry_sdk.integrations.logging import LoggingIntegration
 from sentry_sdk.transport import Transport
+from svix.webhooks import Webhook
 
 from app.kernel.errors import InvalidRequestError, WebhookSignatureError
 from app.kernel.infrastructure.observability import scrub_event, sentry_options
 from app.kernel.infrastructure.redaction import REDACTED, redact, redact_text
 from app.modules.billing.adapters.stripe import StripeWebhookVerifier, to_snapshot
 from app.modules.billing.domain import PlanKey, PriceCatalog, SubscriptionStatus
+from app.modules.identity.adapters.clerk import ClerkWebhookVerifier
 from app.modules.llm import adapters as llm_adapters
 from app.modules.llm.adapters import AnthropicProvider, OpenAIProvider
+from app.modules.llm.module import _provider
 from tests.conftest import make_settings
 
 SECRET = "whsec_test_only_not_a_real_secret_000000"
@@ -126,6 +131,59 @@ class TestStripeWebhookVerifier:
     def test_a_signed_body_that_is_not_an_event_is_unsupported(self, body: bytes) -> None:
         with pytest.raises(InvalidRequestError, match="Snapshot"):
             StripeWebhookVerifier(SECRET).verify(body, sign(body))
+
+
+CLERK_SECRET = "whsec_" + base64.b64encode(b"test-only-clerk-signing-secret!!").decode()
+
+
+def clerk_headers(payload: bytes, *, secret: str = CLERK_SECRET, timestamp: int | None = None) -> dict[str, str]:
+    ts = int(time.time()) if timestamp is None else timestamp
+    signature = Webhook(secret).sign("msg_1", datetime.fromtimestamp(ts, UTC), payload.decode())
+    return {"svix-id": "msg_1", "svix-timestamp": str(ts), "svix-signature": signature}
+
+
+class TestClerkWebhookVerifier:
+    PAYLOAD = json.dumps({"type": "user.deleted", "data": {"id": "user_x"}, "object": "event"}).encode()
+
+    def test_valid_signature(self) -> None:
+        event = ClerkWebhookVerifier(CLERK_SECRET).verify(self.PAYLOAD, clerk_headers(self.PAYLOAD))
+        assert (event.event_id, event.event_type, event.data) == ("msg_1", "user.deleted", {"id": "user_x"})
+
+    @pytest.mark.parametrize("age", [3600, 600], ids=["an hour old", "ten minutes old"])
+    def test_a_correctly_signed_message_from_the_past_is_a_replay(self, age: int) -> None:
+        """SEC-13: the signature covers the timestamp, so a captured delivery stays valid only for svix's five minutes."""
+        headers = clerk_headers(self.PAYLOAD, timestamp=int(time.time()) - age)
+        with pytest.raises(WebhookSignatureError):
+            ClerkWebhookVerifier(CLERK_SECRET).verify(self.PAYLOAD, headers)
+
+    def test_a_message_dated_in_the_future_is_refused(self) -> None:
+        headers = clerk_headers(self.PAYLOAD, timestamp=int(time.time()) + 3600)
+        with pytest.raises(WebhookSignatureError):
+            ClerkWebhookVerifier(CLERK_SECRET).verify(self.PAYLOAD, headers)
+
+    def test_a_message_a_few_minutes_old_is_still_accepted(self) -> None:
+        """Deliveries are retried and queued: the window is minutes, not seconds."""
+        headers = clerk_headers(self.PAYLOAD, timestamp=int(time.time()) - 240)
+        assert ClerkWebhookVerifier(CLERK_SECRET).verify(self.PAYLOAD, headers).event_id == "msg_1"
+
+    @pytest.mark.parametrize(
+        "forge",
+        [
+            lambda p: clerk_headers(
+                p, secret="whsec_" + base64.b64encode(b"another-secret-0123456789abcdef!").decode()
+            ),
+            lambda p: {**clerk_headers(p), "svix-timestamp": str(int(time.time()) - 5)},  # re-dated after signing
+            lambda p: {k: v for k, v in clerk_headers(p).items() if k != "svix-signature"},
+        ],
+        ids=["another secret", "re-dated after signing", "no signature"],
+    )
+    def test_a_forged_message_is_refused(self, forge: Any) -> None:
+        with pytest.raises(WebhookSignatureError):
+            ClerkWebhookVerifier(CLERK_SECRET).verify(self.PAYLOAD, forge(self.PAYLOAD))
+
+    def test_a_body_altered_after_signing_is_refused(self) -> None:
+        with pytest.raises(WebhookSignatureError):
+            ClerkWebhookVerifier(CLERK_SECRET).verify(self.PAYLOAD + b" ", clerk_headers(self.PAYLOAD))
 
 
 class TestSubscriptionMapping:
@@ -353,6 +411,65 @@ class TestLLMProviders:
 
         assert self.make(AnthropicProvider, handler).check().error_code == "timeout"
         assert seen == 1
+
+
+LLM_KEY = "llm-key-not-real-" + "k" * 12
+
+
+@pytest.fixture
+def llm_wire(monkeypatch: pytest.MonkeyPatch) -> list[httpx.Request]:
+    """Every request a provider sends. The provider is built through its own constructor, so its real base URL and
+    headers are used; only the transport underneath is replaced, so nothing reaches the network."""
+    sent: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        return httpx.Response(200, json={"id": "model-x"})
+
+    real_client = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kwargs: real_client(**kwargs, transport=httpx.MockTransport(handler)))
+    return sent
+
+
+class TestLLMProvidersOnTheWire:
+    def test_anthropic_sends_its_key_and_api_version_to_its_own_host(self, llm_wire: list[httpx.Request]) -> None:
+        provider = AnthropicProvider(api_key=LLM_KEY, model="model-x", timeout_seconds=30.0)
+        assert provider.check().ok
+        [request] = llm_wire
+        assert (request.method, str(request.url)) == ("GET", "https://api.anthropic.com/v1/models/model-x")
+        assert request.headers["x-api-key"] == LLM_KEY
+        assert request.headers["anthropic-version"] == "2023-06-01"
+        assert "authorization" not in request.headers
+
+    def test_openai_sends_its_key_as_a_bearer_token_to_its_own_host(self, llm_wire: list[httpx.Request]) -> None:
+        provider = OpenAIProvider(api_key=LLM_KEY, model="model-x", timeout_seconds=30.0)
+        assert provider.check().ok
+        [request] = llm_wire
+        assert (request.method, str(request.url)) == ("GET", "https://api.openai.com/v1/models/model-x")
+        assert request.headers["authorization"] == f"Bearer {LLM_KEY}"
+        assert "x-api-key" not in request.headers
+        assert "anthropic-version" not in request.headers
+
+    @pytest.mark.parametrize(
+        ("provider", "host", "auth_header", "expected"),
+        [
+            ("anthropic", "api.anthropic.com", "x-api-key", LLM_KEY),
+            ("openai", "api.openai.com", "authorization", f"Bearer {LLM_KEY}"),
+        ],
+        ids=["anthropic", "openai"],
+    )
+    def test_llm_provider_chooses_the_adapter_and_the_settings_reach_the_wire(
+        self, llm_wire: list[httpx.Request], provider: str, host: str, auth_header: str, expected: str
+    ) -> None:
+        """LLM_PROVIDER, LLM_API_KEY and LLM_MODEL, from the settings to the request the provider receives."""
+        settings = make_settings(llm_mode="sandbox", llm_provider=provider, llm_api_key=LLM_KEY, llm_model="model-y")
+        chosen = _provider(settings)
+        assert chosen is not None
+        assert chosen.name == provider
+        assert chosen.check().model == "model-y"
+        [request] = llm_wire
+        assert (request.url.host, request.url.path) == (host, "/v1/models/model-y")
+        assert request.headers[auth_header] == expected
 
 
 class _EventCapture(Transport):
