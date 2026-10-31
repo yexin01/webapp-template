@@ -3,7 +3,7 @@
 | Field | Value |
 |---|---|
 | Scope | The fixes for an adversarial architecture review (cycle 1: 107 findings) made by eleven code packages (`db`, `stripe`, `apix`, `obs`, `web`, `config`, `onboard`, `deploy`, `caps`, `web2`, `test`), merged into `arch/integration` (`fed5c93`), and the documentation round that followed (this record, [ADR-0004](../adr/0004-cycle-1-adopted-decisions.md), the specification, `docs/`) |
-| Method | Each package found its findings true or false against the code first, fixed what was true with a regression test, and checked that test by **mutation**: the fix was reverted, the test was seen failing, the fix was restored. The numbers below are the ones each package's note reports (`docs-notes/<package>.md`). They were produced on the package's own branch, before the later merges, and are not comparable with each other. I re-ran none of them. What I ran on the merged tree is in [Verification of the merged tree](#verification-of-the-merged-tree) |
+| Method | Each package found its findings true or false against the code first, fixed what was true with a regression test, and checked that test by **mutation**: the fix was reverted, the test was seen failing, the fix was restored. The numbers below are the ones each package's note reports (`docs-notes/<package>.md`). They were produced on the package's own branch, before the later merges, and are not comparable with each other. None of them was re-run for this record. What was run on the merged tree is in [Verification of the merged tree](#verification-of-the-merged-tree) |
 | Environment | macOS (Darwin arm64); Node 25.8.2 (the repository pins 24 in `.nvmrc`; `engines` allows 22.12 or newer), pnpm 9.15.0, uv 0.11.1, Python 3.12.13. PostgreSQL 17.6 (`postgres:17.6-alpine`) in a shared local container for the API tests; `public.ecr.aws/supabase/postgres:17.6.1.106` for the Supabase-image runs. The machine ran at a load average of 280 to 440 for most of the work, so timings are inflated |
 | Integration mode | `mocked` (test doubles, loopback stubs, captured transports) and `local` (a command run on this machine against local services: a local database, a local container, a local build). **Nothing is `sandbox` or `live`.** No Clerk, Stripe, Supabase, Vercel, PostHog, Sentry, or LLM account was contacted |
 | Remote actions | None intended. No push, deployment, publication, or remote setting change. Package registries (npm, PyPI, the npm advisory endpoint, Docker image pulls) were used by the builds and audits. One disclosed accident (`onboard`): during a manual `scripts/dev.mjs` run the real `stripe` CLI was on `PATH`, so `stripe listen --print-secret` ran once with a synthetic, invalid `sk_test_` key. Stripe rejected it; nothing was created or changed. The committed tests never use the real CLI |
@@ -17,7 +17,7 @@
 
 ## Cycle 1 findings by disposition
 
-Counted from the disposition file of the review (`coverage.md`, 107 lines). The file has no "refuted" disposition: a finding that was found false in whole or in part is recorded under the package that checked it.
+Counted from the review's disposition file (`coverage.md`, 107 lines; it is kept with the review's working files, not in this repository). The file has no "refuted" disposition: a finding that was found false in whole or in part is recorded under the package that checked it.
 
 | Disposition | Count | Detail |
 |---|---|---|
@@ -37,7 +37,7 @@ Claims inside findings that a package found false or overstated (kept here becau
 | `clerk-personal-accounts-default-breaks-personal-workspace`, `onboarding-clerk-membership-optional-missing`, `docs-dx-clerk-personal-accounts` | Specification (DEC-006 Clerk row); the setup step is user documentation |
 | `clerk-production-instance-steps-undocumented`, `clerk-first-run-automation`, `docs-dx-accuracy-defects`, `docs-dx-manual-steps-not-automated`, `docs-dx-no-linear-setup-guide`, `onboarding-no-single-human-steps-list` | User documentation (`README.md`, `docs/setup.md`, `docs/deployment.md`, `docs/integrations.md`, `docs/operations.md`, `docs/limitations.md`); `docs/data-inventory.md` carries the privacy toggles |
 | `db-seed-reset-gaps` | `docs/architecture.md` ("keep new database objects in schema `app`"); the command-table rows are user documentation |
-| `docs-dx-github-first-push` | Specification (REPO-09, SEC-12 rows); `SECURITY.md`; the GitHub settings are user documentation |
+| `docs-dx-github-first-push` | Specification (REPO-09 and SEC-12 rows); the GitHub settings, the CodeQL licensing note, and a `CODEOWNERS` template are user documentation or follow-ups |
 | `web-arch-rendering-model-undocumented` | `docs/architecture.md` (Frontend); [ADR-0004 §6](../adr/0004-cycle-1-adopted-decisions.md) |
 | `obs-no-blocker-safe-relay` | [ADR-0004 §11](../adr/0004-cycle-1-adopted-decisions.md), `docs/data-inventory.md`; the PostHog proxy recipe is user documentation |
 | `secarch-adm02-operator-approval` | Specification (DEC-014 `OPEN`, ADM-02 row) |
@@ -296,7 +296,7 @@ Not run, and **NOT VERIFIED**: anything against Clerk, Stripe, or any provider, 
 
 ## Verification of the merged tree
 
-Only what I ran myself, on `arch/docs-maint`: the merged tree `fed5c93` plus the documentation commits. Label `local`; nothing here contacts a provider. Run from the repository root unless a directory is named, one command at a time, with the machine at a load average of about 280. The shared test PostgreSQL 17 was `127.0.0.1:54360`.
+Only what the documentation agent for the maintainer documents ran, on `arch/docs-maint`: the merged tree `fed5c93` plus the documentation commits. Label `local`; nothing here contacts a provider. Run from the repository root unless a directory is named, one command at a time, with the machine at a load average of about 280. The shared test PostgreSQL 17 was `127.0.0.1:54360`.
 
 | Command | Result |
 |---|---|

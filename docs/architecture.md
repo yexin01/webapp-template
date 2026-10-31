@@ -246,9 +246,9 @@ Entitlement comes only from synchronized billing records that originate in verif
 
 ```mermaid
 flowchart TD
-  start(["POST /api/v1/billing/checkout"]) --> block{"checkout_block(stored subscriptions)"}
-  block -- "already_pro, payment_required,<br/>subscription_exists, payment_pending" --> refuse["409 CONFLICT, no Stripe call.<br/>The page shows the reason and Manage billing"]
-  block -- "none" --> customer{"Has a Stripe customer?"}
+  start(["POST /api/v1/billing/checkout"]) --> gate{"checkout_block(stored subscriptions)"}
+  gate -- "already_pro, payment_required,<br/>subscription_exists, payment_pending" --> refuse["409 CONFLICT, no Stripe call.<br/>The page shows the reason and Manage billing"]
+  gate -- "none" --> customer{"Has a Stripe customer?"}
   customer -- "no: a first checkout" --> create
   customer -- "yes" --> expire["Expire the stored open session at Stripe.<br/>503 if it cannot be closed; the row stays"]
   expire --> reread["Re-read Stripe's own subscriptions"]
