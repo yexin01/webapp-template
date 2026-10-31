@@ -113,6 +113,34 @@ def test_a_property_with_a_personal_data_word_in_its_name_is_refused(prop: str) 
     assert registry.properties("signed_up") is None
 
 
+# What a property name may not hold, as a policy: a word taken out makes the guard accept names it refused, so it is a
+# decision to make here as well. A prefix that is no word of the policy and no sensitive key isolates the word.
+POLICY_WORDS = (
+    # who someone is, and how to reach them
+    *("email", "phone", "mobile", "name", "firstname", "lastname", "fullname", "surname", "username", "nickname"),
+    *("address", "street", "zip", "zipcode", "postcode", "postal", "ip", "ipaddress"),
+    *("birth", "birthday", "birthdate", "dob", "ssn", "passport", "iban"),
+    # credentials
+    *("password", "passwd", "secret", "token", "cookie", "jwt", "apikey"),
+    # what a user wrote
+    *("prompt", "message", "messages", "body"),
+)
+
+
+@pytest.mark.parametrize("word", POLICY_WORDS)
+def test_each_word_of_the_policy_refuses_a_property_that_holds_it(word: str) -> None:
+    prop = f"record_{word}"
+    assert prop not in SENSITIVE_KEYS
+    registry = AnalyticsEvents()
+    with pytest.raises(ValueError, match=f"property '{prop}' is named like personal data or a secret"):
+        registry.register({"signed_up": frozenset({prop})})
+    assert registry.properties("signed_up") is None
+
+
+def test_the_policy_is_these_words_and_no_others() -> None:
+    assert set(POLICY_WORDS) == PERSONAL_DATA_WORDS
+
+
 @pytest.mark.parametrize(
     "prop",
     [

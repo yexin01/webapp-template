@@ -24,7 +24,7 @@ from app.kernel.errors import InvalidRequestError, WebhookSignatureError
 from app.kernel.infrastructure.observability import scrub_event, sentry_options
 from app.kernel.infrastructure.redaction import REDACTED, redact, redact_text
 from app.modules.billing.adapters.stripe import StripeWebhookVerifier, to_snapshot
-from app.modules.billing.domain import PlanKey, PriceCatalog, SubscriptionStatus
+from app.modules.billing.domain import PlanKey, PriceCatalog
 from app.modules.identity.adapters.clerk import ClerkWebhookVerifier
 from app.modules.llm import adapters as llm_adapters
 from app.modules.llm.adapters import AnthropicProvider, OpenAIProvider
@@ -223,8 +223,22 @@ class TestSubscriptionMapping:
         raw = self.raw(items={"data": [{"price": {"id": "price_other"}, "current_period_end": 1}]})
         assert to_snapshot(raw, CATALOG).plan_key is PlanKey.UNKNOWN
 
-    def test_unknown_status_is_never_entitled(self) -> None:
-        assert to_snapshot(self.raw(status="something_new"), CATALOG).status is SubscriptionStatus.INCOMPLETE
+    @pytest.mark.parametrize("status", ["something_new", "", None], ids=["a new one", "empty", "missing"])
+    def test_a_status_the_code_does_not_know_is_refused_not_guessed(
+        self, status: str | None, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A guess is stored, and a guessed ``incomplete`` took Pro from a customer who was paying. The read is refused as
+        any other Stripe rejects, so every caller keeps what is stored, and the status is named in an ERROR
+        (ADR-0004 section 27). It replaces the earlier rule, an unknown status mapped to ``incomplete``."""
+        with caplog.at_level(logging.ERROR), pytest.raises(InvalidRequestError):
+            to_snapshot(self.raw(status=status), CATALOG)
+        records = [r for r in caplog.records if r.getMessage() == "stripe_unknown_subscription_status"]
+        assert len(records) == 1, "an operator is told of the status at ERROR"
+        assert (records[0].levelname, records[0].status, records[0].stripe_subscription_id) == (  # type: ignore[attr-defined]
+            "ERROR",
+            str(status),
+            "sub_1",
+        )
 
     @staticmethod
     def priced(

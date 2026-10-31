@@ -55,7 +55,7 @@ def stub_server(respond: Responder) -> Iterator[Stub]:
             self.end_headers()
             self.wfile.write(body)
 
-        do_GET = do_POST = _handle  # noqa: N815
+        do_GET = do_POST = do_DELETE = _handle  # noqa: N815
 
         def log_message(self, format: str, *args: Any) -> None:
             return None

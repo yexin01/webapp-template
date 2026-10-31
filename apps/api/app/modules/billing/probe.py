@@ -72,5 +72,7 @@ class BillingProbe:
         return Verdict(
             Outcome.PASSED,
             "API key accepted; Pro prices verified: " + ", ".join(found) + f". Subscriptions readable. {portal_note}."
+            " Write access to Subscriptions, which BILLING_ON_USER_DELETED needs to end a deleted user's subscription,"
+            " is not checked."
             " Webhook endpoint and signing secret: not checked (confirm with a test checkout).",
         )

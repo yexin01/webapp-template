@@ -855,6 +855,20 @@ def test_an_older_read_cannot_resurrect_a_deleted_users_memberships(make_harness
     assert h.client.get("/api/v1/orgs/org_acme/projects", headers=bob).status_code == 404
 
 
+def test_a_deletion_never_moves_the_membership_watermark_back(make_harness: Any) -> None:
+    """The mark only moves forward: a read newer than the deletion's time has been applied, and keeping its mark is what
+    refuses every read taken before it afterwards."""
+    h: Harness = make_harness(identity_webhook_verifier=ClerkWebhookVerifier(SVIX_SECRET))
+    assert h.client.get("/api/v1/me", headers=h.login("user_bob")).status_code == 200
+    later = h.clock.now() + timedelta(hours=1)
+    superuser_query(h.database_url, "UPDATE app.users SET memberships_verified_at = %s", (later,))
+
+    assert clerk_send(h, "user.deleted", {"id": "user_bob", "deleted": True}).json()["status"] == "processed"
+
+    marks = superuser_query(h.database_url, "SELECT memberships_verified_at FROM app.users")
+    assert marks == [(later,)], "the deletion moved the watermark back to its own time"
+
+
 # -- Reconciliation -----------------------------------------------------------------
 
 

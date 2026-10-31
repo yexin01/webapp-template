@@ -20,7 +20,7 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 import stripe
 from stripe.params import SubscriptionUpdateParams
-from stripe.params.checkout import SessionCreateParams
+from stripe.params.checkout import SessionCreateParams, SessionListParams
 
 from app.kernel.errors import (
     DependencyUnavailableError,
@@ -195,6 +195,25 @@ class TestRequests:
         with stub_server(lambda req: (status, body)) as stub, pytest.raises(error):
             provider(stub.url).cancel_subscription_at_period_end("sub_1")
 
+    def test_a_subscription_nothing_was_paid_for_is_cancelled_with_nothing_else_asked(self) -> None:
+        """BILL-16: Stripe's Cancel Subscription call is a DELETE of the subscription. Its defaults, no final invoice and
+        no proration, are right for one that was never paid (https://docs.stripe.com/api/subscriptions/cancel)."""
+        canceled = subscription(status="canceled", ended_at=PERIOD_END - 60)
+        with stub_server(lambda req: (200, canceled)) as stub:
+            snap = provider(stub.url).cancel_subscription_immediately("sub_1")
+        [request] = stub.requests
+        assert (request.method, request.path, request.body) == ("DELETE", "/v1/subscriptions/sub_1", b"")
+        assert snap.status is SubscriptionStatus.CANCELED
+
+    @pytest.mark.parametrize(
+        ("status", "error"),
+        [(404, InvalidRequestError), (401, ProviderRejectedError), (500, DependencyUnavailableError)],
+    )
+    def test_a_failure_to_cancel_at_once_is_mapped_like_every_other_call(self, status: int, error: type) -> None:
+        body = MISSING if status == 404 else {"error": {"type": "api_error", "message": "m"}}
+        with stub_server(lambda req: (status, body)) as stub, pytest.raises(error):
+            provider(stub.url).cancel_subscription_immediately("sub_1")
+
     def test_a_portal_session_returns_to_the_given_url(self) -> None:
         session = {
             "id": "bps_1",
@@ -236,6 +255,67 @@ class TestCheckoutSessionLifecycle:
         body = {"error": {"type": "api_error", "message": "down"}}
         with stub_server(lambda req: (500, body)) as stub, pytest.raises(DependencyUnavailableError):
             provider(stub.url).expire_checkout_session("cs_1")
+
+    @staticmethod
+    def listing(*ids: str) -> dict[str, Any]:
+        sessions = [{**TestCheckoutSessionLifecycle.OPEN, "id": session_id} for session_id in ids]
+        return {"object": "list", "url": "/v1/checkout/sessions", "has_more": False, "data": sessions}
+
+    def test_every_open_session_of_a_customer_is_listed_and_expired(self) -> None:
+        """BILL-16: a user Clerk reports as deleted leaves no session that can be paid
+        (https://docs.stripe.com/api/checkout/sessions/list: ``customer`` and ``status``)."""
+
+        def respond(req: Recorded) -> tuple[int, Any]:
+            return (
+                (200, self.listing("cs_1", "cs_2"))
+                if req.method == "GET"
+                else (200, {**self.OPEN, "status": "expired"})
+            )
+
+        with stub_server(respond) as stub:
+            provider(stub.url).expire_open_checkout_sessions("cus_1")
+        listed, *expired = stub.requests
+        assert (listed.method, urlsplit(listed.path).path) == ("GET", "/v1/checkout/sessions")
+        query = parse_qs(urlsplit(listed.path).query)
+        assert query == {"customer": ["cus_1"], "status": ["open"], "limit": ["100"]}
+        assert set(query) <= set(SessionListParams.__annotations__)
+        assert [(r.method, r.path, r.body) for r in expired] == [
+            ("POST", "/v1/checkout/sessions/cs_1/expire", b""),
+            ("POST", "/v1/checkout/sessions/cs_2/expire", b""),
+        ]
+
+    def test_a_customer_without_an_open_session_costs_one_listing(self) -> None:
+        with stub_server(lambda req: (200, self.listing())) as stub:
+            provider(stub.url).expire_open_checkout_sessions("cus_1")
+        assert [r.method for r in stub.requests] == ["GET"]
+
+    def test_a_session_completed_since_the_listing_does_not_stop_the_others_from_being_expired(self) -> None:
+        taken = {"error": {"type": "invalid_request_error", "message": "Only open sessions can be expired."}}
+
+        def respond(req: Recorded) -> tuple[int, Any]:
+            if req.method == "GET":
+                return 200, self.listing("cs_1", "cs_2")
+            return (400, taken) if "cs_1" in req.path else (200, {**self.OPEN, "status": "expired"})
+
+        with stub_server(respond) as stub:
+            provider(stub.url).expire_open_checkout_sessions("cus_1")
+        assert [r.path for r in stub.requests[1:]] == [
+            "/v1/checkout/sessions/cs_1/expire",
+            "/v1/checkout/sessions/cs_2/expire",
+        ]
+
+    def test_a_customer_stripe_rejects_is_a_rejection_and_an_outage_while_expiring_is_an_outage(self) -> None:
+        with stub_server(lambda req: (404, MISSING)) as stub, pytest.raises(InvalidRequestError):
+            provider(stub.url).expire_open_checkout_sessions("cus_1")
+        assert len(stub.requests) == 1  # nothing to expire
+
+        outage = {"error": {"type": "api_error", "message": "down"}}
+
+        def respond(req: Recorded) -> tuple[int, Any]:
+            return (200, self.listing("cs_1")) if req.method == "GET" else (500, outage)
+
+        with stub_server(respond) as stub, pytest.raises(DependencyUnavailableError):
+            provider(stub.url).expire_open_checkout_sessions("cus_1")
 
     def test_an_open_session_gives_its_url_and_a_closed_one_does_not(self) -> None:
         with stub_server(lambda req: (200, self.OPEN)) as stub:
@@ -297,6 +377,24 @@ class TestSubscriptionReads:
         with stub_server(lambda req: (200, listing)) as stub:
             [sub] = provider(stub.url).list_customer_subscriptions("cus_1")
         assert (sub.plan_key, sub.price_id) == (expected, "price_replaced")
+
+    @pytest.mark.parametrize("read", ["list", "retrieve"])
+    def test_a_status_added_later_refuses_the_whole_read_and_names_it(
+        self, read: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """One subscription the code cannot read leaves the others unread too: nothing of the read is applied."""
+        unknown = subscription(status="paused_for_review")
+        listing = {"object": "list", "url": "/v1/subscriptions", "has_more": False, "data": [subscription(), unknown]}
+        body = listing if read == "list" else unknown
+        with (
+            stub_server(lambda req: (200, body)) as stub,
+            caplog.at_level(logging.ERROR),
+            pytest.raises(InvalidRequestError),
+        ):
+            READS[read](provider(stub.url))
+        records = [r for r in caplog.records if r.getMessage() == "stripe_unknown_subscription_status"]
+        assert len(records) == 1, "an operator is told of the status at ERROR"
+        assert (records[0].levelname, records[0].status) == ("ERROR", "paused_for_review")  # type: ignore[attr-defined]
 
     def test_a_subscription_is_read_by_id(self) -> None:
         ended = subscription(status="canceled", price="price_y", ended_at=PERIOD_END - 60)

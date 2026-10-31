@@ -15,22 +15,26 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
+from urllib.parse import urlsplit
 
+import psycopg
 import pytest
 
 from app.kernel.errors import DependencyUnavailableError, EntitlementRequiredError, InvalidRequestError
 from app.kernel.tenancy import ContextKind, TenantContext
 from app.modules.billing.adapters.fakes import InMemoryBillingProvider
 from app.modules.billing.adapters.repository import PgBillingRepository
-from app.modules.billing.adapters.stripe import to_snapshot
+from app.modules.billing.adapters.stripe import StripeBillingProvider, to_snapshot
 from app.modules.billing.domain import (
     PRO_INSIGHT,
     Plan,
     PlanKey,
+    PriceCatalog,
     SubscriptionSnapshot,
     SubscriptionStatus,
     decide,
 )
+from app.modules.billing.ports import OpenCheckout
 from tests.conftest import (
     PRICE_MONTHLY,
     PRICE_YEARLY,
@@ -40,6 +44,7 @@ from tests.conftest import (
     superuser_query,
 )
 from tests.lock_waits import wait_for_lock_wait
+from tests.stub_server import Recorded, stub_server
 
 pytestmark = pytest.mark.db
 
@@ -390,6 +395,10 @@ def user_id_of(h: Harness, headers: dict[str, str]) -> uuid.UUID:
     return uuid.UUID(h.client.get("/api/v1/me", headers=headers).json()["user_id"])
 
 
+def personal(user: uuid.UUID) -> TenantContext:
+    return TenantContext(user, "user_a", ContextKind.PERSONAL)
+
+
 def stored_session(h: Harness, user: uuid.UUID) -> str | None:
     rows = superuser_query(
         h.database_url, "SELECT stripe_session_id FROM app.billing_checkout_sessions WHERE user_id = %s", (user,)
@@ -620,6 +629,32 @@ def test_two_requests_saving_at_once_leave_only_the_later_session_open(
     mine = session_of(checkout_url(start_checkout(harness, headers, plan="pro_yearly")))
     assert harness.billing.open_sessions(user) == [mine]
     assert stored_session(harness, user) == mine
+
+
+def test_closing_a_session_keeps_a_newer_one_the_user_saved_meanwhile(harness: Harness) -> None:
+    """A late close of the first session (its expiry finished after another tab saved a newer one) removes only its own row."""
+    headers = harness.login("user_a")
+    first = session_of(checkout_url(start_checkout(harness, headers)))
+    user = user_id_of(harness, headers)
+    newer = OpenCheckout("cs_newer", "key-newer-12345", None)
+    with harness.container.kernel.transactions(PgBillingRepository).as_tenant(personal(user)) as t:
+        t.repo.delete_open_checkout(user, first)
+        assert t.repo.save_open_checkout(user, newer) is None
+        t.repo.delete_open_checkout(user, first)  # the late close
+        assert t.repo.get_open_checkout(user) == newer, "closing the first session removed the newer one"
+
+
+def test_saving_the_session_the_row_already_holds_replaces_nothing(harness: Harness) -> None:
+    """A repeat of a save is not a second session: reporting it as replaced would have the caller expire it."""
+    headers = harness.login("user_a")
+    start_checkout(harness, headers)
+    user = user_id_of(harness, headers)
+    with harness.container.kernel.transactions(PgBillingRepository).as_tenant(personal(user)) as t:
+        held = t.repo.get_open_checkout(user)
+        assert held is not None
+        assert t.repo.save_open_checkout(user, held) is None, "a repeat of the save was reported as a replacement"
+        other = OpenCheckout("cs_other", "key-other-12345", None)
+        assert t.repo.save_open_checkout(user, other) == held.stripe_session_id  # a different one replaces it
 
 
 # -- Re-reading Stripe on request ---------------------------------------------
@@ -924,18 +959,28 @@ def flagged_events(h: Harness) -> int:
     return int(rows[0][0])
 
 
-def test_a_user_whose_stripe_customer_was_deleted_gets_a_new_one_at_the_next_checkout(harness: Harness) -> None:
+def test_a_user_whose_stripe_customer_was_deleted_gets_a_new_one_at_the_next_checkout(
+    harness: Harness, caplog: pytest.LogCaptureFixture
+) -> None:
     """Before: every checkout was rejected (400), for good: the stored customer could not be replaced."""
     headers, old = customer_gone(harness)
     user = user_id_of(harness, headers)
     assert send_webhook(harness, event_payload(old, event_id="evt_before")).json()["status"] == "needs_reconciliation"
     assert flagged_events(harness) == 1
 
-    r = start_checkout(harness, headers, plan="pro_yearly")
+    with caplog.at_level("WARNING"):
+        r = start_checkout(harness, headers, plan="pro_yearly")
 
     assert r.status_code == 200, r.text
     new = customer_of(harness, "user_a")
     assert new != old
+    logged = [rec for rec in caplog.records if rec.getMessage() == "billing_customer_relinked"]
+    assert len(logged) == 1, "the operations guide promises a warning with both IDs when a customer is replaced"
+    assert (logged[0].levelname, logged[0].stripe_customer_id, logged[0].replaced_customer_id) == (  # type: ignore[attr-defined]
+        "WARNING",
+        new,
+        old,
+    )
     assert harness.billing.customer_requests[-1] == {"user_id": user, "replaces": old}
     assert harness.billing.checkout_requests[-1]["customer_id"] == new  # the session is the new customer's
     assert r.json()["url"] in {
@@ -949,6 +994,107 @@ def test_a_user_whose_stripe_customer_was_deleted_gets_a_new_one_at_the_next_che
     harness.billing.set_subscriptions(new, [snapshot(new, SubscriptionStatus.ACTIVE)])
     assert send_webhook(harness, event_payload(new)).json()["status"] == "processed"
     assert harness.client.get("/api/v1/billing/status", headers=headers).json()["plan"] == "pro"
+
+
+def listing_is_empty(customer_id: str) -> list[SubscriptionSnapshot]:
+    return []
+
+
+def spy_on_session_attempts(monkeypatch: pytest.MonkeyPatch, *, reject: bool = False) -> list[tuple[str, str]]:
+    """The customer and idempotency key of each Checkout Session request, including the ones Stripe rejects."""
+    attempts: list[tuple[str, str]] = []
+    original = InMemoryBillingProvider.create_checkout_session
+
+    def spy(self: InMemoryBillingProvider, **kw: Any) -> Any:
+        attempts.append((kw["customer_id"], kw["idempotency_key"]))
+        if reject:
+            raise InvalidRequestError("The billing request was rejected.")
+        return original(self, **kw)
+
+    monkeypatch.setattr(InMemoryBillingProvider, "create_checkout_session", spy)
+    return attempts
+
+
+def test_a_deleted_customer_whose_listing_still_answers_is_replaced_when_the_session_is_rejected(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stripe documents only that a deleted customer takes no further operation. If listing its subscriptions answers
+    an empty list instead of a rejection, creating the session is what Stripe rejects, and the user must not be stuck."""
+    headers, old = customer_gone(harness)
+    user = user_id_of(harness, headers)
+    harness.billing.list_customer_subscriptions = listing_is_empty  # type: ignore[method-assign]
+    attempts = spy_on_session_attempts(monkeypatch)
+    key = "relink-key-0001"
+
+    r = harness.client.post(
+        "/api/v1/billing/checkout", json={"plan": "pro_monthly"}, headers={**headers, "Idempotency-Key": key}
+    )
+
+    assert r.status_code == 200, r.text
+    new = customer_of(harness, "user_a")
+    assert new != old
+    assert harness.billing.customer_requests[-1] == {"user_id": user, "replaces": old}
+    assert [customer for customer, _ in attempts] == [old, new]  # rejected once, then retried for the new customer
+    rejected_key, retried_key = (key_ for _, key_ in attempts)
+    assert retried_key != rejected_key  # Stripe may replay what it answered for the first key
+    assert retried_key.startswith(f"checkout-{user}-pro_monthly-{key}")
+    assert retried_key.endswith(f"-{new}")
+    assert harness.billing.open_sessions(user) == [session_of(r.json()["url"])]
+    assert stored_session(harness, user) == session_of(r.json()["url"])
+
+
+def test_a_session_rejected_for_a_customer_stripe_still_has_stays_a_rejection(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    headers = harness.login("user_a")
+    assert start_checkout(harness, headers).status_code == 200
+    old = customer_of(harness, "user_a")
+    attempts = spy_on_session_attempts(monkeypatch, reject=True)
+
+    r = start_checkout(harness, headers)
+
+    assert (r.status_code, r.json()["code"]) == (400, "INVALID_REQUEST")
+    assert customer_of(harness, "user_a") == old
+    assert len(harness.billing.customer_requests) == 1  # only the first checkout made a customer
+    assert [customer for customer, _ in attempts] == [old]  # not retried
+
+
+def test_a_session_rejected_again_for_the_replacement_is_not_retried_again(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Even when the replacement is gone too, which a retry that asked Stripe again would replace once more."""
+    headers, old = customer_gone(harness)
+    harness.billing.list_customer_subscriptions = listing_is_empty  # type: ignore[method-assign]
+    attempts = spy_on_session_attempts(monkeypatch)
+    original = InMemoryBillingProvider.create_customer
+
+    def create_a_customer_that_is_gone_at_once(
+        self: InMemoryBillingProvider, user_id: uuid.UUID, *, replaces: str | None = None
+    ) -> str:
+        created = original(self, user_id, replaces=replaces)
+        self.delete_customer(created)
+        return created
+
+    harness.billing.create_customer = create_a_customer_that_is_gone_at_once.__get__(harness.billing)  # type: ignore[method-assign]
+
+    r = start_checkout(harness, headers)
+
+    assert (r.status_code, r.json()["code"]) == (400, "INVALID_REQUEST")
+    new = customer_of(harness, "user_a")
+    assert new != old  # the link stays on the replacement, which the next checkout uses
+    assert [customer for customer, _ in attempts] == [old, new]
+
+
+def test_a_customer_made_for_this_request_is_not_replaced_when_its_session_is_rejected(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    attempts = spy_on_session_attempts(monkeypatch, reject=True)
+
+    r = start_checkout(harness, harness.login("user_a"))
+
+    assert (r.status_code, r.json()["code"]) == (400, "INVALID_REQUEST")
+    assert len(harness.billing.customer_requests) == 1
+    assert len(attempts) == 1
 
 
 def test_the_subscriptions_that_ended_under_the_deleted_customer_stay_as_history(harness: Harness) -> None:
@@ -1081,6 +1227,37 @@ def test_a_subscription_that_lands_while_the_customer_is_replaced_stops_the_repl
     assert customer_of(harness, "user_a") == old
     [record] = [rec for rec in caplog.records if rec.getMessage() == "billing_customer_gone_with_subscription"]
     assert record.stripe_subscription_ids == "sub_landed"  # type: ignore[attr-defined]
+
+
+def test_a_replacement_waits_for_a_synchronization_of_the_customer_it_replaces(harness: Harness) -> None:
+    """A webhook stores under the customer's lock. The replacement reads the stored subscriptions under the same lock, so
+    one that is being stored is seen: without it the replacement reads before the commit, relinks, and the subscription
+    lands under a customer nobody uses."""
+    headers, old = customer_gone(harness)
+    user = user_id_of(harness, headers)
+    answered: list[Any] = []
+    done = threading.Event()
+
+    def checkout() -> None:
+        answered.append(start_checkout(harness, headers))
+        done.set()
+
+    with psycopg.connect(harness.database_url) as webhook:  # the synchronization: commits when this block ends
+        webhook.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (old,))
+        webhook.execute(
+            "INSERT INTO app.subscriptions (stripe_subscription_id, user_id, stripe_customer_id, status, plan_key) "
+            "VALUES ('sub_storing', %s, %s, 'active', 'pro_monthly')",
+            (user, old),
+        )
+        thread = threading.Thread(target=checkout)
+        thread.start()
+        wait_for_lock_wait(harness.database_url, timeout=60, or_until=done)  # queued behind the webhook, or done
+        assert not done.is_set(), "the replacement did not wait for the customer's lock"
+    thread.join(60)
+
+    [r] = answered
+    assert (r.status_code, r.json()["code"]) == (409, "CONFLICT")
+    assert customer_of(harness, "user_a") == old
 
 
 def test_the_portal_of_a_customer_stripe_deleted_says_there_is_nothing_to_manage(harness: Harness) -> None:
@@ -1865,6 +2042,38 @@ def test_new_customers_join_the_back_of_the_rotation(harness: Harness) -> None:
     assert set(old) <= set(checked)
 
 
+def test_a_customer_never_checked_is_first_in_the_rotation(harness: Harness) -> None:
+    """A link made before the date existed has none: it has never been checked, which is longer ago than any date."""
+    old, never, newer = (make_pro(harness, f"user_{name}") for name in ("old", "never", "newer"))
+    for customer, date in ((old, "2026-01-01"), (newer, "2026-03-01")):
+        superuser_query(
+            harness.database_url,
+            "UPDATE app.billing_customers SET reconciled_at = %s WHERE stripe_customer_id = %s",
+            (date, customer),
+        )
+    superuser_query(
+        harness.database_url,
+        "UPDATE app.billing_customers SET reconciled_at = NULL WHERE stripe_customer_id = %s",
+        (never,),
+    )
+    with harness.container.kernel.transactions(PgBillingRepository).as_system() as t:
+        assert t.repo.list_least_recently_reconciled(10) == [never, old, newer], (
+            "a customer never checked was not first"
+        )
+
+
+def test_a_stored_subscription_is_never_taken_over_by_another_user(harness: Harness) -> None:
+    """The subscription ID is the key. A synchronization for another user (a customer adopted wrongly, a replayed
+    event) must not rewrite the row of the user it belongs to."""
+    customer = make_pro(harness, "user_a")
+    owner = user_id_of(harness, harness.login("user_a"))
+    other = user_id_of(harness, harness.login("user_b"))
+    with harness.container.kernel.transactions(PgBillingRepository).as_system() as t:
+        t.repo.upsert_subscription(other, snapshot(customer, SubscriptionStatus.CANCELED))  # the same subscription ID
+    rows = superuser_query(harness.database_url, "SELECT user_id, status FROM app.subscriptions")
+    assert rows == [(owner, "active")], "a write for another user changed the subscription"
+
+
 def _slow_stripe(h: Harness, monkeypatch: pytest.MonkeyPatch, seconds: float = 0.2) -> list[str]:
     """Each Stripe read takes ``seconds`` on the job's clock. Returns the customers whose subscriptions are read."""
     import app.modules.billing.service as billing_service
@@ -2061,6 +2270,66 @@ def test_a_subscription_stripe_does_not_return_changes_nothing(harness: Harness)
     result = send_webhook(harness, event_payload(customer))
     assert result.json()["status"] == "needs_reconciliation"
     assert harness.client.get("/api/v1/billing/status", headers=harness.login("user_a")).json()["plan"] == "pro"
+
+
+def test_a_payer_keeps_pro_when_stripe_reports_a_status_the_code_does_not_know(
+    make_harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Through the real adapter and a loopback Stripe. A status Stripe adds later was stored as ``incomplete``, which never
+    entitles, so the next webhook, re-read or scheduled run took Pro from a customer who was paying. Now the read is
+    refused: the stored subscription stays, the event stays flagged, and the status is named in an ERROR."""
+    new_status = {
+        "id": "sub_seeded",
+        "object": "subscription",
+        "customer": "cus_seeded",
+        "status": "paused_for_review",
+        "cancel_at_period_end": False,
+        "items": {
+            "object": "list",
+            "data": [{"id": "si_1", "object": "subscription_item", "price": {"id": PRICE_MONTHLY, "object": "price"}}],
+        },
+    }
+    listing = {"object": "list", "url": "/v1/subscriptions", "has_more": False, "data": [new_status]}
+
+    def respond(req: Recorded) -> tuple[int, Any]:
+        return 200, listing if urlsplit(req.path).path == "/v1/subscriptions" else new_status
+
+    with stub_server(respond) as stub:
+        catalog = PriceCatalog({PlanKey.PRO_MONTHLY: PRICE_MONTHLY, PlanKey.PRO_YEARLY: PRICE_YEARLY}, PRODUCT_PRO)
+        provider = StripeBillingProvider(secret_key="sk_test_" + "0" * 24, catalog=catalog, api_base=stub.url)
+        h = make_harness(billing_provider=provider)
+        headers = h.login("user_a")
+        user = user_id_of(h, headers)
+        superuser_query(
+            h.database_url,
+            "INSERT INTO app.billing_customers (user_id, stripe_customer_id, reconciled_at) VALUES (%s, 'cus_seeded', now())",
+            (user,),
+        )
+        superuser_query(
+            h.database_url,
+            "INSERT INTO app.subscriptions (stripe_subscription_id, user_id, stripe_customer_id, status, plan_key, "
+            "price_id, current_period_end) VALUES ('sub_seeded', %s, 'cus_seeded', 'active', 'pro_monthly', %s, %s)",
+            (user, PRICE_MONTHLY, FUTURE),
+        )
+
+        def plan() -> str:
+            return str(h.client.get("/api/v1/billing/status", headers=headers).json()["plan"])
+
+        assert plan() == "pro"
+
+        with caplog.at_level("ERROR"):
+            delivered = send_webhook(h, event_payload("cus_seeded"))
+            resynced = sync(h, headers)
+            report = h.container.billing.service.reconcile(user_id=None, apply=True)
+
+    assert plan() == "pro", "a status the code does not know took Pro from a customer who was paying"
+    assert delivered.json()["status"] == "needs_reconciliation"
+    assert (resynced.status_code, resynced.json()["plan"]) == (200, "pro")
+    assert (report.rejected_customers, report.divergences) == (["cus_seeded"], [])
+    assert flagged_events(h) == 1  # the scheduled run did not resolve what it could not read
+    logged = [r for r in caplog.records if r.getMessage() == "stripe_unknown_subscription_status"]
+    assert logged
+    assert {(r.levelname, r.status) for r in logged} == {("ERROR", "paused_for_review")}  # type: ignore[attr-defined]
 
 
 def test_an_active_subscription_on_an_unknown_price_is_logged(

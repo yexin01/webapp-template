@@ -57,6 +57,7 @@ from app.modules.billing.ports import (
     BillingRepository,
     BillingWebhookEvent,
     BillingWebhookVerifier,
+    CheckoutSession,
     OpenCheckout,
 )
 
@@ -208,7 +209,9 @@ class BillingService:
         first, so two tabs can never both buy a subscription. If Stripe cannot
         expire it, no second session is created and the request fails with a
         retryable 503. Stripe's own subscriptions are read after that, because the
-        webhook for a session that was just completed may not have landed.
+        webhook for a session that was just completed may not have landed. A stored
+        customer that Stripe deleted is replaced, whether the listing or the
+        creation of the session is what Stripe rejects.
         """
         authorize(ctx, BILLING_MANAGE)
         if not _IDEMPOTENCY_KEY.fullmatch(idempotency_key):
@@ -247,19 +250,33 @@ class BillingService:
             # Stripe replays the session an earlier request created with the same key, even if it was closed
             # since. Tying the key to the session just closed makes a replay of this request return the new
             # session, and a request made after a newer session was saved never return a dead one.
-            session = provider.create_checkout_session(
-                customer_id=customer_id,
-                price_id=price_id,
-                user_id=ctx.user_id,
-                success_url=self._urls.checkout_success,
-                cancel_url=self._urls.checkout_cancel,
-                idempotency_key=stripe_key
+            session_key = (
+                stripe_key
                 if open_checkout is None
-                else f"{stripe_key}-{hashlib.sha256(open_checkout.stripe_session_id.encode()).hexdigest()[:16]}",
+                else f"{stripe_key}-{hashlib.sha256(open_checkout.stripe_session_id.encode()).hexdigest()[:16]}"
             )
+            try:
+                session = self._create_session(provider, ctx, customer_id, price_id, session_key)
+            except InvalidRequestError as rejected:
+                # Stripe documents only that a deleted customer takes no further operation: its subscriptions may list
+                # as empty, and the rejection is here. The retry has a key of its own, as Stripe may replay the first.
+                customer_id = self._replace_deleted_customer(provider, ctx, customer_id, rejected)
+                session = self._create_session(provider, ctx, customer_id, price_id, f"{session_key}-{customer_id}")
             self._remember_checkout(provider, ctx, OpenCheckout(session.session_id, stripe_key, session.expires_at))
         self._analytics.capture(ctx.user_id, "checkout_started", {"plan": plan_key.value})
         return session.url
+
+    def _create_session(
+        self, provider: BillingProvider, ctx: TenantContext, customer_id: str, price_id: str, idempotency_key: str
+    ) -> CheckoutSession:
+        return provider.create_checkout_session(
+            customer_id=customer_id,
+            price_id=price_id,
+            user_id=ctx.user_id,
+            success_url=self._urls.checkout_success,
+            cancel_url=self._urls.checkout_cancel,
+            idempotency_key=idempotency_key,
+        )
 
     def _refuse_checkout(self, subscriptions: Sequence[SubscriptionSnapshot]) -> None:
         block = checkout_block(subscriptions, self._clock.now())
@@ -691,9 +708,11 @@ class BillingService:
         reach the Customer Portal, and the subscription would renew until an operator noticed.
 
         Asks Stripe to end each subscription of the user's customer that is not over at the end of its period, so
-        what the user paid for runs out and nothing more is charged. A repeat finds them scheduled and does
-        nothing. Without ``cancel_on_user_deleted`` it only names them. A subscription that cannot be ended is
-        an ERROR naming the customer, for an operator, and the handler raises, so the outbox retries.
+        what the user paid for runs out and nothing more is charged, and to cancel one still awaiting its first
+        payment at once. First it expires the customer's open Checkout Sessions: one paid after the deletion would
+        start a subscription nobody ends. A repeat finds them closed or scheduled and does nothing. Without
+        ``cancel_on_user_deleted`` it only names them. Whatever cannot be done is an ERROR naming the customer, for
+        an operator, and the handler raises, so the outbox retries.
         """
         user_id = UUID(str(event.payload["user_id"]))
         with self._tx.as_system() as t:
@@ -708,6 +727,9 @@ class BillingService:
             return
         provider = self._require_provider()
         try:
+            # Before the subscriptions are read, so one paid meanwhile is among them. The stored session row stays:
+            # its user cannot sign in, and the worker role has no grant on it.
+            provider.expire_open_checkout_sessions(customer_id)
             listed = provider.list_customer_subscriptions(customer_id)
         except InvalidRequestError:
             if provider.customer_exists(customer_id):
@@ -719,11 +741,16 @@ class BillingService:
             raise
         failed: list[SubscriptionSnapshot] = []
         for sub in listed:
-            if sub.status in _ENDABLE_STATUSES and not _scheduled_to_end(sub):
-                try:
-                    provider.cancel_subscription_at_period_end(sub.stripe_subscription_id)
-                except DomainError:
-                    failed.append(sub)
+            if sub.status is SubscriptionStatus.INCOMPLETE:
+                end = provider.cancel_subscription_immediately
+            elif sub.status in _ENDABLE_STATUSES and not _scheduled_to_end(sub):
+                end = provider.cancel_subscription_at_period_end
+            else:
+                continue
+            try:
+                end(sub.stripe_subscription_id)
+            except DomainError:
+                failed.append(sub)
         if failed:
             self._alert_deleted_users_subscription(customer_id, failed)
             raise DependencyUnavailableError("A deleted user's subscription could not be ended.")
@@ -806,7 +833,8 @@ class _Slots:
             self._slots.release()
 
 
-# The subscriptions that charge, or will: an incomplete one expires by itself, within a day, without a charge.
+# The subscriptions that charge, or will, and are ended at the period's end. An incomplete one has paid nothing and
+# is cancelled at once; the over ones are left alone.
 _ENDABLE_STATUSES = frozenset(
     {
         SubscriptionStatus.ACTIVE,

@@ -18,7 +18,14 @@ from app.modules.billing.adapters.fakes import InMemoryBillingProvider
 from app.modules.billing.domain import SubscriptionSnapshot, SubscriptionStatus
 from app.modules.identity.adapters.clerk import ClerkWebhookVerifier
 from tests.conftest import Harness, superuser_query
-from tests.integration.test_billing import customer_of, event_payload, make_pro, send_webhook, snapshot
+from tests.integration.test_billing import (
+    customer_of,
+    event_payload,
+    make_pro,
+    send_webhook,
+    snapshot,
+    start_checkout,
+)
 from tests.integration.test_platform import SVIX_SECRET, clerk_send
 
 pytestmark = pytest.mark.db
@@ -119,7 +126,13 @@ def test_only_a_subscription_that_is_not_over_is_ended(make_harness: Make) -> No
 
 
 @pytest.mark.parametrize(
-    "status", [SubscriptionStatus.PAST_DUE, SubscriptionStatus.TRIALING, SubscriptionStatus.UNPAID]
+    "status",
+    [
+        SubscriptionStatus.PAST_DUE,
+        SubscriptionStatus.TRIALING,
+        SubscriptionStatus.UNPAID,
+        SubscriptionStatus.PAUSED,
+    ],
 )
 def test_a_subscription_that_still_bills_or_will_is_ended_in_any_such_state(
     make_harness: Make, status: SubscriptionStatus
@@ -128,6 +141,74 @@ def test_a_subscription_that_still_bills_or_will_is_ended_in_any_such_state(
     customer = make_pro(h, "user_a", status)
     delete_user(h)
     assert h.billing.cancellations == [f"sub_{customer[4:]}"]
+
+
+def test_a_subscription_still_awaiting_its_first_payment_is_cancelled_at_once(make_harness: Make) -> None:
+    """Nothing was paid, and a payment made after the deletion would start a subscription nobody can end (BILL-16)."""
+    h = world(make_harness)
+    customer = make_pro(h, "user_a", SubscriptionStatus.INCOMPLETE)
+    sub = f"sub_{customer[4:]}"
+
+    assert delete_user(h).json()["status"] == "processed"
+
+    assert (h.billing.immediate_cancellations, h.billing.cancellations) == ([sub], [])
+    assert [s.status for s in h.billing.list_customer_subscriptions(customer)] == [SubscriptionStatus.CANCELED]
+    delete_user(h, msg_id="msg_again")  # a repeat finds it over
+    assert h.billing.immediate_cancellations == [sub]
+
+
+def test_an_open_checkout_session_is_expired_before_the_subscriptions_are_read(make_harness: Make) -> None:
+    """The page left open in another tab: Stripe keeps a session payable for up to 24 hours, and a payment made
+    after the deletion would otherwise start a subscription that renews for good."""
+    h = world(make_harness)
+    assert start_checkout(h, h.login("user_a")).status_code == 200
+    assert len(h.billing.open_sessions()) == 1
+
+    assert delete_user(h).json()["status"] == "processed"
+
+    assert h.billing.open_sessions() == []
+    calls = h.billing.calls
+    # Expired first: a session paid in between would leave a subscription that nothing ended.
+    assert calls.index("expire_open_checkout_sessions") < calls.index("list_customer_subscriptions")
+    assert events(h)[0][1:] == ("processed", 1)
+
+
+def test_a_session_paid_before_the_handler_ran_is_found_at_stripe_and_ended(make_harness: Make) -> None:
+    """The webhook for the payment may not have landed: the handler asks Stripe, not the stored records."""
+    h = world(make_harness)
+    assert start_checkout(h, h.login("user_a")).status_code == 200
+    customer = customer_of(h, "user_a")
+    [session] = h.billing.open_sessions()
+    h.billing.complete_session(session, snapshot(customer, SubscriptionStatus.ACTIVE))
+
+    delete_user(h)
+
+    assert h.billing.cancellations == [f"sub_{customer[4:]}"]
+
+
+def test_a_failure_to_close_the_open_session_is_an_error_naming_the_customer_and_the_event_is_retried(
+    make_harness: Make, caplog: pytest.LogCaptureFixture
+) -> None:
+    h = world(make_harness)
+    assert start_checkout(h, h.login("user_a")).status_code == 200
+    customer = customer_of(h, "user_a")
+    original = InMemoryBillingProvider.expire_open_checkout_sessions
+
+    def refuse(self: InMemoryBillingProvider, customer_id: str) -> None:
+        raise DependencyUnavailableError("Billing is temporarily unavailable.")
+
+    h.billing.expire_open_checkout_sessions = refuse.__get__(h.billing)  # type: ignore[method-assign]
+    with caplog.at_level("ERROR"):
+        assert delete_user(h).json()["status"] == "processed"  # the webhook is answered; the work is retried
+
+    assert [r.stripe_customer_id for r in errors(caplog)] == [customer]  # type: ignore[attr-defined]
+    assert events(h)[0][1:] == ("pending", 1)
+    assert len(h.billing.open_sessions()) == 1
+
+    h.billing.expire_open_checkout_sessions = original.__get__(h.billing)  # type: ignore[method-assign]
+    h.clock.advance(seconds=2)
+    assert h.container.kernel.outbox.drain().processed == 1
+    assert h.billing.open_sessions() == []
 
 
 def test_a_failure_to_end_it_is_an_error_naming_the_customer_and_the_event_is_retried(
