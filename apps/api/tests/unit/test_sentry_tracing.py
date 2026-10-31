@@ -304,13 +304,22 @@ class TestProviderIds:
         assert scrubbed_span["description"] == f"GET {scrubbed}"
         assert scrubbed_span["data"]["url"] == scrubbed
 
-    def test_the_url_of_a_matched_route_is_its_template(self) -> None:
-        url = f"https://api.example.com/api/v1/orgs/{CLERK_ORG}/projects?limit=5&cursor=abc"
+    @pytest.mark.parametrize(
+        "origin",
+        [
+            pytest.param("https://api.example.com", id="a host"),
+            pytest.param("http://127.0.0.1:8000", id="a port"),
+            # The SDK builds the URL from the Host header, which a caller sets: it must not stop the report.
+            pytest.param("http://[::1", id="a malformed host, which urllib.parse refuses"),
+        ],
+    )
+    def test_the_url_of_a_matched_route_is_its_template(self, origin: str) -> None:
+        url = f"{origin}/api/v1/orgs/{CLERK_ORG}/projects?limit=5&cursor=abc"
         for scrub, extra in ((scrub_transaction, {"type": "transaction"}), (scrub_event, {})):
             event = self.request_event(self.ROUTE, "route", url, **extra)
             scrubbed = scrub(event, {})
             assert_clean(scrubbed)
-            assert scrubbed["request"]["url"] == "https://api.example.com/api/v1/orgs/{org_id}/projects"
+            assert scrubbed["request"]["url"] == f"{origin}/api/v1/orgs/{{org_id}}/projects"
             assert scrubbed["transaction"] == self.ROUTE
 
     @pytest.mark.parametrize(
