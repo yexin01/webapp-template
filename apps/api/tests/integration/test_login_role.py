@@ -13,7 +13,7 @@ import logging
 import secrets
 import uuid
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlparse, urlunparse
@@ -38,6 +38,8 @@ pytestmark = pytest.mark.db
 CREATE = migrations.repository_file("supabase", "migrations", "20261030000010_app_login_role.sql")
 CHECK = migrations.repository_file("supabase", "migrations", "20261030000011_assert_login_role.sql")
 PREFIX = "unsafe login role: "
+CAN_CREATE_ROLES = "the login role can create roles"
+MEMBER_OF_PRIVILEGED = "the login role is a member of a superuser, BYPASSRLS, or CREATEROLE role"
 ALICE = "00000000-0000-4000-8000-00000000a11c"
 
 
@@ -204,8 +206,10 @@ def test_a_login_role_with_privileges_of_its_own_in_app_is_refused(db: str) -> N
             run_sql(db, sql_for(CHECK, role))
 
 
-def test_a_login_role_that_is_a_member_of_another_role_is_refused(db: str) -> None:
-    with login_role(db, enabled=False) as (role, _), scratch_role(db) as other:
+@pytest.mark.parametrize("attributes", ["", "CREATEROLE", "BYPASSRLS"], ids=["plain", "CREATEROLE", "BYPASSRLS"])
+def test_a_login_role_that_is_a_member_of_another_role_is_refused(db: str, attributes: str) -> None:
+    """Any other role, so the roles the API's own check refuses at runtime are refused here too."""
+    with login_role(db, enabled=False) as (role, _), scratch_role(db, attributes) as other:
         superuser_query(db, f"GRANT {other} TO {role}")
         with pytest.raises(psycopg.errors.RaiseException) as raised:
             run_sql(db, sql_for(CHECK, role))
@@ -316,6 +320,55 @@ def test_a_login_role_with_bypassrls_is_refused(db: str) -> None:
                 pytest.fail("a transaction ran as an unsafe login role")
         finally:
             pool.close()
+
+
+@pytest.mark.parametrize(
+    ("attributes", "via", "nested", "problem"),
+    [
+        ("CREATEROLE", None, False, CAN_CREATE_ROLES),
+        ("", "BYPASSRLS", False, MEMBER_OF_PRIVILEGED),
+        ("", "BYPASSRLS", True, MEMBER_OF_PRIVILEGED),
+        # Before PostgreSQL 16, CREATEROLE can add its members to any role that is not a superuser.
+        ("", "CREATEROLE", False, MEMBER_OF_PRIVILEGED),
+        ("", None, False, None),
+    ],
+    ids=[
+        "can create roles",
+        "member of a BYPASSRLS role",
+        "member of a BYPASSRLS role through another role",
+        "member of a CREATEROLE role",
+        "member of the runtime roles only",
+    ],
+)
+def test_a_login_role_is_refused_for_creating_roles_or_for_membership_in_a_privileged_role(
+    db: str, caplog: pytest.LogCaptureFixture, attributes: str, via: str | None, nested: bool, problem: str | None
+) -> None:
+    """The last case is the control: the same construction without the property under test is accepted."""
+    password = secrets.token_urlsafe(24)
+    with ExitStack() as roles:
+        granted = ["app_api", "app_worker"]
+        if via:
+            privileged = roles.enter_context(scratch_role(db, via))
+            if nested:
+                between = roles.enter_context(scratch_role(db))
+                superuser_query(db, f"GRANT {privileged} TO {between}")
+                privileged = between
+            granted.append(privileged)
+        role = roles.enter_context(scratch_role(db, attributes, password=password))
+        superuser_query(db, f"GRANT {', '.join(granted)} TO {role}")
+        pool = database(login_url(db, role, password), enforce=True)
+        try:
+            with caplog.at_level(logging.ERROR):
+                if problem is None:
+                    with pool.transaction("app_api", {}) as conn:
+                        assert conn.execute("SELECT current_user::text").fetchone() == ("app_api",)
+                else:
+                    with pytest.raises(UnsafeLoginRoleError), pool.transaction("app_api", {}):
+                        pytest.fail("a transaction ran as an unsafe login role")
+        finally:
+            pool.close()
+    logged = [r.__dict__["problems"] for r in caplog.records if r.getMessage() == "unsafe_database_login_role"]
+    assert logged == ([] if problem is None else [problem])
 
 
 def test_a_login_role_that_can_become_the_table_owner_is_refused(db: str) -> None:

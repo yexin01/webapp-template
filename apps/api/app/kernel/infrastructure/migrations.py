@@ -29,6 +29,9 @@ APP_LOGIN_ROLE = "app_login"
 LOGIN_PASSWORD_MIN_LENGTH = 16
 # Supabase's shared pooler routes by "<role>.<project ref>", so the runtime login needs the same suffix.
 _POOLER_HOST_SUFFIX = ".pooler.supabase.com"
+# The pooler's transaction mode, which the API needs. Port 5432 there is the session mode (for migrations): it pins
+# a server connection to each client and runs out of them under concurrency.
+TRANSACTION_POOLER_PORT = 6543
 
 LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "host.docker.internal"})
 _LOCAL_ADDRESSES = frozenset({"127.0.0.1", "::1"})
@@ -255,12 +258,23 @@ def enable_api_login(url: str, password: str, role: str = APP_LOGIN_ROLE) -> Non
         conn.execute(sql.SQL("ALTER ROLE {} LOGIN PASSWORD {}").format(sql.Identifier(role), sql.Literal(verifier)))
 
 
+def is_supabase_pooler(url: str) -> bool:
+    """True if ``url`` names Supabase's shared pooler (``*.pooler.supabase.com``)."""
+    return str(conninfo_to_dict(url).get("host") or "").endswith(_POOLER_HOST_SUFFIX)
+
+
 def runtime_url_template(url: str, role: str = APP_LOGIN_ROLE) -> str | None:
-    """Where the runtime ``DATABASE_URL`` goes: ``url``'s server and database, ``role``, and no password."""
+    """Where the runtime ``DATABASE_URL`` goes: ``url``'s server and database, ``role``, and no password.
+
+    On Supabase's shared pooler the port is the transaction mode's, whatever port ``url`` used: the owner
+    connects to the session mode, and a runtime URL copied from it would pin a server connection per client.
+    """
     params = conninfo_to_dict(url)
     host = str(params.get("host") or "")
     if not host or "," in host or host.startswith("/"):
         return None
-    ref = str(params.get("user") or "").partition(".")[2] if host.endswith(_POOLER_HOST_SUFFIX) else ""
-    port = f":{params['port']}" if params.get("port") else ""
+    pooled = host.endswith(_POOLER_HOST_SUFFIX)
+    ref = str(params.get("user") or "").partition(".")[2] if pooled else ""
+    number = TRANSACTION_POOLER_PORT if pooled else params.get("port")
+    port = f":{number}" if number else ""
     return f"postgresql://{role}{'.' + ref if ref else ''}:<password>@{host}{port}/{params.get('dbname') or ''}"

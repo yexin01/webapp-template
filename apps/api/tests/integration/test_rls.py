@@ -14,6 +14,7 @@ import psycopg
 import pytest
 
 from app.kernel.infrastructure import migrations
+from tests.conftest import superuser_query
 
 pytestmark = pytest.mark.db
 
@@ -22,6 +23,7 @@ BOB = "00000000-0000-4000-8000-0000000000b0"
 ACME = "00000000-0000-4000-8000-0000000a0001"  # alice admin, bob member
 GLOBEX = "00000000-0000-4000-8000-0000000a0002"  # bob admin only
 ACME_ROADMAP = "00000000-0000-4000-8000-000000000201"  # created by alice, in acme
+GLOBEX_PLAN = "00000000-0000-4000-8000-000000000301"  # created by bob, in globex
 ALICE_PERSONAL = "00000000-0000-4000-8000-000000000101"
 EDIT_GRANT = "GRANT UPDATE (name, org_id, owner_user_id) ON app.projects TO app_api"
 
@@ -51,6 +53,16 @@ def billed(seeded: str) -> str:
 @contextmanager
 def as_role(url: str, role: str, **ctx: str) -> Iterator[psycopg.Connection]:
     with psycopg.connect(url) as conn, conn.transaction():
+        conn.execute(f"SET LOCAL ROLE {role}")
+        for key, value in ctx.items():
+            conn.execute("SELECT set_config(%s, %s, true)", (f"app.{key}", value))
+        yield conn
+
+
+@contextmanager
+def as_role_rolled_back(url: str, role: str, **ctx: str) -> Iterator[psycopg.Connection]:
+    """``as_role`` with everything rolled back, for statements that change rows."""
+    with psycopg.connect(url) as conn, conn.transaction(force_rollback=True):
         conn.execute(f"SET LOCAL ROLE {role}")
         for key, value in ctx.items():
             conn.execute("SELECT set_config(%s, %s, true)", (f"app.{key}", value))
@@ -143,6 +155,16 @@ def test_cannot_insert_rows_created_by_someone_else(seeded: str) -> None:
         conn.execute("INSERT INTO app.projects (org_id, created_by, name) VALUES (%s, %s, 'x')", (ACME, BOB))
 
 
+def test_an_insert_cannot_name_another_organization_of_the_same_user(seeded: str) -> None:
+    """DB-07: Bob belongs to both organizations. With Acme's context he may not write a Globex row, so the
+    policy compares the row's organization with the context, not only with the caller's memberships."""
+    with (
+        pytest.raises(psycopg.errors.InsufficientPrivilege),
+        as_role(seeded, "app_api", user_id=BOB, org_id=ACME) as conn,
+    ):
+        conn.execute("INSERT INTO app.projects (org_id, created_by, name) VALUES (%s, %s, 'x')", (GLOBEX, BOB))
+
+
 def test_a_member_may_update_a_row_another_member_created(seeded: str) -> None:
     """The creator is checked on INSERT only: a FOR ALL policy would have refused Bob here."""
     with as_role_with_edit_grant(seeded, "app_api", user_id=BOB, org_id=ACME) as conn:
@@ -184,13 +206,21 @@ def test_an_update_cannot_move_a_row_out_of_the_callers_tenant(
 @pytest.mark.parametrize(
     ("context", "project"),
     [
-        ({"user_id": ALICE, "org_id": GLOBEX}, ACME_ROADMAP),  # not a member of that organization
+        ({"user_id": ALICE, "org_id": GLOBEX}, ACME_ROADMAP),  # a context that is not the row's organization
+        ({"user_id": ALICE, "org_id": GLOBEX}, GLOBEX_PLAN),  # the row's organization, but not a member of it
         ({"user_id": ALICE}, ACME_ROADMAP),  # an organization row in the personal context
         ({"user_id": BOB, "org_id": ACME}, ALICE_PERSONAL),  # a personal row in an organization context
         ({"user_id": BOB}, ALICE_PERSONAL),  # someone else's personal row
         ({}, ACME_ROADMAP),  # no context
     ],
-    ids=["not a member", "wrong context kind", "personal row in organization", "other user", "no context"],
+    ids=[
+        "other organization",
+        "not a member",
+        "wrong context kind",
+        "personal row in organization",
+        "other user",
+        "no context",
+    ],
 )
 def test_an_update_matches_nothing_outside_the_callers_tenant(
     seeded: str, context: dict[str, str], project: str
@@ -214,6 +244,43 @@ def test_cannot_delete_other_tenant_rows(seeded: str) -> None:
         assert deleted == 0
     with as_role(seeded, "app_api", user_id=BOB) as conn:
         assert names(conn) == ["Bob personal project"]
+
+
+# What an UPDATE or DELETE with no WHERE clause reaches, per caller: the seed has one personal project for each of
+# Alice and Bob, one for Acme and one for Globex. With no column in the statement, only the UPDATE or DELETE
+# policy applies. A `WHERE id = ...` also brings the SELECT policy in, which makes the same checks and would hide a
+# check missing from the other policy.
+UNFILTERED_REACH = [
+    pytest.param({"user_id": ALICE, "org_id": GLOBEX}, 0, id="names an organization she is not a member of"),
+    pytest.param({"user_id": ALICE, "org_id": ACME}, 1, id="a member: the organization's row"),
+    pytest.param({"user_id": BOB, "org_id": ACME}, 1, id="a member of both: the named organization's row only"),
+    pytest.param({"user_id": BOB, "org_id": GLOBEX}, 1, id="a member of both: the other organization's row only"),
+    pytest.param({"user_id": ALICE}, 1, id="personal context: the personal row only"),
+    pytest.param({}, 0, id="no context"),
+]
+
+
+@pytest.mark.parametrize(("context", "reached"), UNFILTERED_REACH)
+def test_an_update_without_a_filter_reaches_only_the_callers_tenant(
+    seeded: str, context: dict[str, str], reached: int
+) -> None:
+    with as_role_with_edit_grant(seeded, "app_api", **context) as conn:
+        assert conn.execute("UPDATE app.projects SET name = 'renamed'").rowcount == reached
+
+
+@pytest.mark.parametrize(("context", "reached"), UNFILTERED_REACH)
+def test_a_delete_without_a_filter_reaches_only_the_callers_tenant(
+    seeded: str, context: dict[str, str], reached: int
+) -> None:
+    with as_role_rolled_back(seeded, "app_api", **context) as conn:
+        assert conn.execute("DELETE FROM app.projects").rowcount == reached
+
+
+def test_a_member_may_delete_a_row_of_their_organization_by_id(seeded: str) -> None:
+    """The permitted case in the shape the adapter uses, next to the denials above."""
+    with as_role_rolled_back(seeded, "app_api", user_id=ALICE, org_id=ACME) as conn:
+        deleted = conn.execute("DELETE FROM app.projects WHERE id = %s AND org_id = %s", (ACME_ROADMAP, ACME))
+        assert deleted.rowcount == 1
 
 
 def test_api_role_cannot_modify_memberships_or_subscriptions(seeded: str) -> None:
@@ -422,3 +489,87 @@ def test_insert_policies_reject_missing_context(seeded: str) -> None:
     ):
         with pytest.raises(psycopg.errors.InsufficientPrivilege), as_role(seeded, "app_api") as conn:
             conn.execute(sql, params)
+
+
+# -- Privileges ---------------------------------------------------------------------------------------------------
+# Row-level security filters rows; it does not decide what a role may do to a table. These read the privileges from
+# the catalog, so a later migration that widens one fails here.
+
+RUNTIME_ROLES = ("app_api", "app_worker")
+PRIVILEGES = ("SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER")
+
+
+def held(url: str, role: str, table: str) -> set[str]:
+    """The privileges ``role`` holds on ``app.<table>``, a column-level grant included."""
+    rows = superuser_query(
+        url,
+        """
+        SELECT p FROM unnest(%s::text[]) AS p
+        WHERE CASE WHEN p IN ('SELECT', 'INSERT', 'UPDATE', 'REFERENCES')
+                   THEN has_any_column_privilege(%s, %s::regclass, p)
+                   ELSE has_table_privilege(%s, %s::regclass, p) END
+        """,
+        (list(PRIVILEGES), role, f"app.{table}", role, f"app.{table}"),
+    )
+    return {privilege for (privilege,) in rows}
+
+
+def test_the_runtime_roles_hold_no_privilege_that_row_level_security_does_not_filter(db: str) -> None:
+    """TRUNCATE ignores row-level security, so a request role that holds it empties every tenant's rows. TRIGGER lets
+    a role run code as whoever writes the table. REFERENCES lets it test for keys it cannot read, because foreign key
+    checks skip row security. No table in app grants any of them to a runtime role (DB-06, DB-07)."""
+    assert "SELECT" in held(db, "app_api", "projects")  # the catalog functions below do see grants
+    offending = superuser_query(
+        db,
+        """
+        SELECT r.rolname::text, c.relname::text, p.privilege
+        FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        CROSS JOIN unnest(%s::text[]) AS r(rolname)
+        CROSS JOIN unnest(ARRAY['TRUNCATE', 'TRIGGER', 'REFERENCES']) AS p(privilege)
+        WHERE n.nspname = 'app' AND c.relkind IN ('r', 'p')
+          AND CASE WHEN p.privilege = 'REFERENCES' THEN has_any_column_privilege(r.rolname, c.oid, p.privilege)
+                   ELSE has_table_privilege(r.rolname, c.oid, p.privilege) END
+        ORDER BY 1, 2, 3
+        """,
+        (list(RUNTIME_ROLES),),
+    )
+    assert offending == []
+
+
+def test_public_holds_nothing_in_app(db: str) -> None:
+    """Granted to PUBLIC, a privilege reaches every role on the server, the client roles of a hosted project among
+    them. The schema grants PUBLIC nothing either, which keeps its functions out of reach."""
+    granted = superuser_query(
+        db,
+        """
+        SELECT 'relation app.' || c.relname::text, a.privilege_type
+        FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        CROSS JOIN LATERAL aclexplode(c.relacl) a
+        WHERE n.nspname = 'app' AND a.grantee = 0
+        UNION ALL
+        SELECT 'schema app', a.privilege_type
+        FROM pg_namespace n CROSS JOIN LATERAL aclexplode(n.nspacl) a
+        WHERE n.nspname = 'app' AND a.grantee = 0
+        ORDER BY 1, 2
+        """,
+    )
+    assert granted == []
+
+
+@pytest.mark.parametrize(
+    ("role", "table", "allowed"),
+    [
+        # The audit trail is append-only for the application: requests write, the worker also reads, nobody rewrites.
+        ("app_api", "audit_log", {"INSERT"}),
+        ("app_worker", "audit_log", {"SELECT", "INSERT"}),
+        # Requests append events and never read, change, or delete them; the worker dispatches them.
+        ("app_api", "outbox", {"INSERT"}),
+        ("app_worker", "outbox", {"SELECT", "INSERT", "UPDATE", "DELETE"}),
+    ],
+    ids=["api on audit_log", "worker on audit_log", "api on outbox", "worker on outbox"],
+)
+def test_the_audit_trail_and_the_outbox_grant_exactly_what_the_design_needs(
+    db: str, role: str, table: str, allowed: set[str]
+) -> None:
+    """The worker's policies let every row through, so for these tables the grant is the only limit."""
+    assert held(db, role, table) == allowed

@@ -11,3 +11,5 @@ The database files. This is not a Supabase CLI project (there is no `config.toml
 Never run `supabase db push` or `supabase db reset`, and do not connect Supabase Branching to this repository. They keep a second ledger (`supabase_migrations.schema_migrations`) and re-apply every file, which bypasses the runner's checksums, lock timeout and ledger. A hosted database also needs `--allow-remote` and the owner's authorization: [setup.md](../docs/setup.md#supabase-optional-hosted-database), [operations.md](../docs/operations.md#migrations).
 
 A merged migration is never edited: add a new one, numbered after the latest. Keep new objects in schema `app`.
+
+Migrations stay on LF line endings: the ledger's checksum is over the file's bytes, and `.gitattributes` keeps them LF in every checkout. An editor or a tool that rewrites them as CRLF makes the runner refuse the file as modified.

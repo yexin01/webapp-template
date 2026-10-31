@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from app import bootstrap
+from app import bootstrap, cli
 from app.kernel.infrastructure import migrations
 from app.kernel.infrastructure.config import (
     AppEnv,
@@ -69,14 +69,33 @@ def test_the_running_api_never_reads_the_migration_url(monkeypatch: pytest.Monke
 # -- Where the runtime URL goes -----------------------------------------------------
 
 
+POOLER_RUNTIME_URL = "postgresql://app_login.abcdefgh:<password>@aws-0-eu-west-1.pooler.supabase.com:6543/postgres"
+
+
 @pytest.mark.parametrize(
     ("url", "expected"),
     [
         ("postgresql://postgres:postgres@127.0.0.1:5432/app", "postgresql://app_login:<password>@127.0.0.1:5432/app"),
-        # Supabase's pooler routes by "<role>.<project ref>".
+        # Supabase's pooler routes by "<role>.<project ref>", and the running API needs its transaction mode
+        # (port 6543), whichever mode or port the owner connected with: the session mode (5432) pins a server
+        # connection to every client and runs out of them under concurrency.
         (
             "postgresql://postgres.abcdefgh:p%40ss@aws-0-eu-west-1.pooler.supabase.com:5432/postgres",
-            "postgresql://app_login.abcdefgh:<password>@aws-0-eu-west-1.pooler.supabase.com:5432/postgres",
+            POOLER_RUNTIME_URL,
+        ),
+        (REMOTE, POOLER_RUNTIME_URL),
+        (
+            "postgresql://postgres.abcdefgh:p%40ss@aws-0-eu-west-1.pooler.supabase.com/postgres",
+            POOLER_RUNTIME_URL,
+        ),
+        # Other servers keep the port they were given, or none.
+        (
+            "postgresql://postgres:x@db.abcdefgh.supabase.co:5432/postgres",
+            "postgresql://app_login:<password>@db.abcdefgh.supabase.co:5432/postgres",
+        ),
+        (
+            "postgresql://my.owner:x@db.example.com:6432/app",
+            "postgresql://app_login:<password>@db.example.com:6432/app",
         ),
         # A dot in a plain server's role name says nothing about a project.
         ("postgresql://my.owner:x@db.example.com/app", "postgresql://app_login:<password>@db.example.com/app"),
@@ -93,6 +112,37 @@ def test_the_template_never_carries_the_owners_password() -> None:
     assert template is not None
     assert "p%40ss" not in template
     assert "p@ss" not in template
+
+
+@pytest.mark.parametrize(
+    ("owner_url", "runtime_url", "names_the_pooler"),
+    [
+        (REMOTE.replace(":6543/", ":5432/"), POOLER_RUNTIME_URL, True),
+        (
+            "postgresql://owner:x@db.example.com:5432/app",
+            "postgresql://app_login:<password>@db.example.com:5432/app",
+            False,
+        ),
+    ],
+    ids=["Supabase session pooler", "other server"],
+)
+def test_api_login_says_which_url_the_api_needs(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    owner_url: str,
+    runtime_url: str,
+    names_the_pooler: bool,
+) -> None:
+    """The owner runs it with the session pooler string; the line it prints must send the API to port 6543."""
+    monkeypatch.setenv("MIGRATION_DATABASE_URL", owner_url)
+    monkeypatch.setenv("API_DB_PASSWORD", "a-new-password-of-length")
+    monkeypatch.setattr(migrations, "enable_api_login", lambda *args, **kwargs: None)  # there is no server here
+    assert cli.main(["api-login", "--allow-remote"]) == 0
+    hint = capsys.readouterr().err
+    assert f"set DATABASE_URL to {runtime_url} " in hint
+    assert ("Transaction pooler" in hint) is names_the_pooler
+    assert "a-new-password" not in hint
+    assert "p%40ss" not in hint
 
 
 # -- Which environments need the restricted login ----------------------------------

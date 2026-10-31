@@ -160,7 +160,7 @@ UNSAFE_LOGINS = [
     (LoginRole(superuser=True), "the login role is a superuser"),
     (LoginRole(bypass_rls=True), "the login role has BYPASSRLS"),
     (LoginRole(create_role=True), "the login role can create roles"),
-    (LoginRole(privileged_membership=True), "the login role is a member of a superuser or BYPASSRLS role"),
+    (LoginRole(privileged_membership=True), "the login role is a member of a superuser, BYPASSRLS, or CREATEROLE role"),
     (
         LoginRole(owned_tables=("projects", "outbox")),
         "the login role owns, or can act as the owner of, projects, outbox",

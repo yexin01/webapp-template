@@ -737,6 +737,54 @@ def test_org_deleted_revokes_all_memberships(clerk_harness: Harness) -> None:
     assert h.client.get("/api/v1/orgs/org_gone/projects", headers=headers).status_code == 404
 
 
+def test_a_refresh_that_read_the_directory_before_the_deletion_cannot_bring_the_organization_back(
+    clerk_harness: Harness,
+) -> None:
+    """A refresh whose provider read predates organization.deleted still lists the organization. The soft delete
+    stays, so the refresh adds no membership; otherwise the organization is readable again until the staleness
+    bound."""
+    h = clerk_harness
+    headers = h.login("user_m")
+    h.directory.set("user_m", [ExternalMembership("org_gone", Role.ADMIN)])
+    assert h.client.get("/api/v1/orgs/org_gone/projects", headers=headers).status_code == 200
+    clerk_send(h, "organization.deleted", {"id": "org_gone", "deleted": True})
+    assert h.client.get("/api/v1/orgs/org_gone/projects", headers=headers).status_code == 404
+    user_id = superuser_query(h.database_url, "SELECT id FROM app.users WHERE clerk_user_id = 'user_m'")[0][0]
+    h.clock.advance(seconds=1)  # a read at least as recent as the last one applied
+    h.container.identity.resolver.refresh_memberships(user_id, "user_m")  # the directory still lists the organization
+    assert superuser_query(h.database_url, "SELECT count(*) FROM app.organization_memberships") == [(0,)]
+    assert h.client.get("/api/v1/orgs/org_gone/projects", headers=headers).status_code == 404
+
+
+def test_a_membership_row_left_in_a_deleted_organization_grants_nothing(clerk_harness: Harness) -> None:
+    """A refresh that began before organization.deleted can commit its membership after the webhook removed the
+    others. The row is there and the organization is deleted: the lookup ignores it (TEN-05)."""
+    h = clerk_harness
+    headers = h.login("user_m")
+    h.directory.set("user_m", [ExternalMembership("org_gone", Role.ADMIN)])
+    assert h.client.get("/api/v1/orgs/org_gone/projects", headers=headers).status_code == 200
+    superuser_query(h.database_url, "UPDATE app.organizations SET deleted_at = now() WHERE clerk_org_id = 'org_gone'")
+    assert superuser_query(h.database_url, "SELECT count(*) FROM app.organization_memberships") == [(1,)]
+    assert h.client.get("/api/v1/orgs/org_gone/projects", headers=headers).status_code == 404
+
+
+@pytest.mark.parametrize(
+    "org", ["org_", "org_" + "a" * 65, "org_a-b", "org_abc.def", "ORG_abc", "organization"], ids=lambda v: v[:12]
+)
+def test_a_malformed_organization_identifier_is_not_found_without_asking_the_provider(
+    harness: Harness, org: str
+) -> None:
+    """TEN-05: malformed identifiers are answered like unknown ones, and none of them costs a provider read."""
+    headers = harness.login("user_m")
+    assert harness.client.get("/api/v1/projects", headers=headers).status_code == 200  # the user exists
+    calls = harness.directory.calls
+    assert harness.client.get(f"/api/v1/orgs/{org}/projects", headers=headers).status_code == 404
+    assert harness.directory.calls == calls
+    # A well-formed organization the user is not in does ask, so the count above can move.
+    assert harness.client.get("/api/v1/orgs/org_unknown/projects", headers=headers).status_code == 404
+    assert harness.directory.calls == calls + 1
+
+
 def test_clerk_webhook_forgery_and_duplicates(clerk_harness: Harness) -> None:
     h = clerk_harness
     payload = json.dumps({"type": "user.deleted", "data": {"id": "user_x"}}).encode()

@@ -1,0 +1,6 @@
+# Line endings that must not depend on the platform that checks the repository out. A migration's checksum is
+# computed over its bytes (apps/api/app/kernel/infrastructure/migrations.py): a checkout that turned LF into CRLF
+# would make the runner refuse an applied migration as modified. Shell scripts do not run with CRLF line endings.
+supabase/** text eol=lf
+*.sh text eol=lf
+scripts/git-hooks/* text eol=lf
