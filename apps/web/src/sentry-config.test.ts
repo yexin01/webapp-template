@@ -248,7 +248,9 @@ describe.each([
  */
 describe.each([
   ["browser", "./instrumentation-client", {}],
-  ["server", "./sentry.server.config", { tracesSampleRate: 0 }],
+  // The server sends no trace header to anyone it calls (ADR-0004 §25); the browser keeps the SDK default, so its own
+  // API requests carry the trace and the API makes the sampling decision.
+  ["server", "./sentry.server.config", { tracesSampleRate: 0, tracePropagationTargets: [] }],
 ])("%s Sentry options (OBS-02)", (_name, module, only) => {
   it("collects nothing personal or request-derived, and sets only the options listed here", async () => {
     const options = await optionsOf(module);
