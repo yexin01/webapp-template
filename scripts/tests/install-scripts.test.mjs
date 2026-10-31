@@ -16,11 +16,11 @@ const store = path.join(repo, "node_modules", ".pnpm");
 const ALLOWED = {};
 // Dependencies that declare an install script and run none, with why nothing needs it.
 const BLOCKED = {
-  "core-js": "posthog-js depends on it; the script only prints a funding notice.",
+  "core-js": "posthog-js depends on it; the script prints a funding notice and writes a small file in the temporary folder so that it shows once.",
   esbuild:
-    "Reached through the Vercel CLI (tsx, @vercel/node). The script puts the native binary in place of the JavaScript launcher, a speed-up; the package finds the binary of its platform package without it.",
+    "Reached through the Vercel CLI (tsx, @vercel/node). The script puts the native binary in place of the JavaScript launcher, a speed-up, and fetches the binary from npm when its platform package is missing; the lockfile installs that package.",
   "unrs-resolver":
-    "Reached through eslint-config-next's import resolver. The script checks that the native binding package of the platform is installed, which the lockfile does; `pnpm --filter web lint` passes without it.",
+    "Reached through eslint-config-next's import resolver. The script checks that the native binding package of the platform is installed, and fetches it if not; the lockfile installs it, and `pnpm --filter web lint` passes without the script.",
 };
 
 /** The `name@version` of every package under a pnpm store that has a preinstall, install or postinstall script, or a binding.gyp. */
