@@ -12,8 +12,9 @@ from anyio.lowlevel import RunVar
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from app.kernel.application.job_guard import JobGuard
 from app.kernel.errors import AuthenticationError, DependencyUnavailableError, NotFoundError
-from app.kernel.http.schemas import Health, Readiness
+from app.kernel.http.schemas import Health, Readiness, errors
 from app.kernel.jobs import JobRegistry
 from app.kernel.ports import KernelStore, Transactions
 
@@ -87,15 +88,20 @@ def build_health_router(tx: Transactions[KernelStore]) -> APIRouter:
     return router
 
 
-def build_jobs_router(registry: JobRegistry, cron_secret: str | None) -> APIRouter:
+def build_jobs_router(registry: JobRegistry, cron_secret: str | None, guard: JobGuard) -> APIRouter:
     """``GET /jobs/<name>``, called by Vercel Cron with ``Authorization: Bearer <CRON_SECRET>``.
 
     Off (404) unless ``CRON_SECRET`` is set. Not part of the public API
     contract, so it is excluded from the OpenAPI document.
+
+    A job registered here runs once at a time across all instances and no sooner than
+    ``JOB_MIN_SPACING_SECONDS`` after the previous start (SEC-09): a call that finds it running is
+    refused with 409, one that comes too soon with 429 and ``Retry-After``. Only a known job name
+    reaches the guard, after the secret is checked.
     """
     router = APIRouter(tags=["jobs"], include_in_schema=False)
 
-    @router.get("/jobs/{name}")
+    @router.get("/jobs/{name}", responses=errors(401, 404, 409, 429, 503))
     def run_job(name: str, request: Request) -> dict[str, Any]:
         if not cron_secret:
             raise NotFoundError()
@@ -105,9 +111,10 @@ def build_jobs_router(registry: JobRegistry, cron_secret: str | None) -> APIRout
         job = registry.get(name)
         if job is None:
             raise NotFoundError()
-        started = time.monotonic()
-        summary = dict(job.run())
-        duration_ms = int((time.monotonic() - started) * 1000)
+        with guard.exclusive(name):
+            started = time.monotonic()
+            summary = dict(job.run())
+            duration_ms = int((time.monotonic() - started) * 1000)
         logger.info("job_completed", extra={"job": name, "duration_ms": duration_ms, "job_summary": summary})
         return {"job": name, "ok": True, "duration_ms": duration_ms, "summary": summary}
 

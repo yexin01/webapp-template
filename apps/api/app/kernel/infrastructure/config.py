@@ -207,6 +207,8 @@ class CoreSettings(BaseSettings):
 
     # Jobs and the outbox (ADR-0003). Without CRON_SECRET the job endpoint is off.
     cron_secret: SecretStr | None = None
+    # The least time between the starts of two runs of one job through the job endpoint (SEC-09); 0 turns it off.
+    job_min_spacing_seconds: int = Field(default=60, ge=0, le=3_600)
     outbox_max_attempts: int = Field(default=10, ge=1, le=100)
     # Longer than any function may run (Vercel: 300 s by default, up to 800 s),
     # so a lease expires only once its worker is gone.

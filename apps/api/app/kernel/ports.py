@@ -31,6 +31,14 @@ class AuditEntry:
 
 
 @dataclass(frozen=True, slots=True)
+class JobRun:
+    """The last run of a job started over HTTP: when it started, and until when it holds the job."""
+
+    started_at: datetime
+    lease_until: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class LoginRole:
     """The role the connection logged in as (``session_user``), which no ``SET ROLE`` changes (DB-06, DEC-008)."""
 
@@ -122,7 +130,7 @@ class Transactions(Protocol[R_co]):
 
 
 class KernelStore(Protocol):
-    """The kernel's own persistence: health, rate-limit counters, and the outbox."""
+    """The kernel's own persistence: health, rate-limit counters, the outbox, and job runs."""
 
     def ping(self) -> None: ...
     def describe_connection(self) -> ConnectionDescription: ...
@@ -155,6 +163,19 @@ class KernelStore(Protocol):
     def prune_outbox(self, processed_before: datetime, limit: int) -> int:
         """Delete up to ``limit`` processed events; returns how many were deleted."""
         ...
+
+    def claim_job_run(self, name: str, *, now: datetime, lease_until: datetime, spaced_before: datetime) -> bool:
+        """Start a run of ``name`` at ``now``, holding it until ``lease_until``.
+
+        Refused (False) while the previous run holds the job, or if it started after ``spaced_before``.
+        """
+        ...
+
+    def release_job_run(self, name: str, started_at: datetime, now: datetime) -> None:
+        """End the run that started at ``started_at``, unless its lease already ran out and another run began."""
+        ...
+
+    def job_run(self, name: str) -> JobRun | None: ...
 
 
 # ---------------------------------------------------------------------------

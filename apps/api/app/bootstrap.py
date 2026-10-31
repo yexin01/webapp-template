@@ -18,6 +18,7 @@ from typing import Any
 from fastapi import FastAPI
 from starlette.middleware import Middleware
 
+from app.kernel.application.job_guard import JobGuard
 from app.kernel.application.outbox import OutboxDispatcher
 from app.kernel.application.probes import AnalyticsProbe, DatabaseProbe, ErrorReportingProbe
 from app.kernel.application.rate_limit import RateLimiter
@@ -198,7 +199,8 @@ def create_app(container: Container) -> FastAPI:
     routers = [build_health_router(kernel.store)]
     for contribution in container.contributions():
         routers += contribution.routers
-    routers.append(build_jobs_router(kernel.jobs, cron_secret.get_secret_value() if cron_secret else None))
+    guard = JobGuard(kernel.store, kernel.clock, min_spacing_seconds=container.settings.job_min_spacing_seconds)
+    routers.append(build_jobs_router(kernel.jobs, cron_secret.get_secret_value() if cron_secret else None, guard))
     if cron_secret is None and container.settings.app_env is AppEnv.PRODUCTION:
         # Not an error: jobs can also run from the CLI. But nothing schedules them otherwise.
         logger.warning(
