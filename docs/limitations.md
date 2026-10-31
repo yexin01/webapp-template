@@ -100,7 +100,7 @@ Ten findings from the architecture review were deferred, with the reason. What t
 
 - `pnpm dev` is macOS and Linux only (WSL on Windows). Its API health probe is fixed to `127.0.0.1:8000` with a 60 s limit (`API_START_TIMEOUT_MS` in `scripts/dev.mjs`).
 - `pnpm check:setup` does not detect a Clerk publishable key and secret key from two instances, and does not check webhook endpoints.
-- `CLERK_JWT_KEY` is an API setting. The web app validates its format but uses nothing from it: `@clerk/nextjs` 7.9.15 does not read it.
+- `@clerk/nextjs` 7.9.15 reads no `CLERK_JWT_KEY`, so `next.config.ts` passes it to the proxy as `clerkMiddleware`'s `jwtKey` option. The SDK builds the verification key from the PEM by string surgery, so only a 2048-bit RSA key (what Clerk issues) verifies there. The API accepts any RSA key: another size would verify in the API and fail every token in the proxy.
 - `scripts/templates/adopter/AGENTS.md` can drift from `AGENTS.md`; keep them in step.
 
 **CI**
@@ -125,7 +125,6 @@ Found while writing these documents or listed in the package notes, and not done
 - A second, worker-only login role and pool; detection of `supabase_migrations.schema_migrations` in the runner; a no-transaction migration mode for `CREATE INDEX CONCURRENTLY`.
 - Naming unmatched transactions `unmatched` and dropping `request.url` for them (OBS-07).
 - An `ErrorCode` enum with exhaustive web typing; coverage tooling (TEST-03); the "migrate twice" check as a pytest test.
-- A web-side `CLERK_JWT_KEY` wired into the proxy (it needs a path through `next.config.ts`, because `proxy.ts` may not read `CLERK_*` variables).
 
 ## What the template deliberately does not do
 

@@ -535,6 +535,31 @@ describe("source-map upload to Sentry", () => {
   });
 });
 
+describe("the Clerk instance's public key (CLERK_JWT_KEY)", () => {
+  const pem =
+    "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0B\nAQEFAAOCAQ8AMIIBCgKC\n-----END PUBLIC KEY-----";
+  const key = (env: Record<string, string | undefined>) => loadServerEnv(env, serving).clerkJwtKey;
+
+  it("is empty when unset or blank, so the proxy fetches Clerk's key set", () => {
+    expect(key(base)).toBe("");
+    expect(key({ ...base, CLERK_JWT_KEY: " " })).toBe("");
+  });
+
+  it("is the PEM as given, and a one-line value's \\n escapes become line breaks, as in the API", () => {
+    expect(key({ ...base, CLERK_JWT_KEY: pem })).toBe(pem);
+    expect(key({ ...base, CLERK_JWT_KEY: pem.replaceAll("\n", "\\n") })).toBe(pem);
+  });
+
+  it("ends at the last armor line: a trailing line break, real or escaped, is dropped", () => {
+    expect(key({ ...base, CLERK_JWT_KEY: `${pem}\n` })).toBe(pem);
+    expect(key({ ...base, CLERK_JWT_KEY: `${pem.replaceAll("\n", "\\n")}\\n` })).toBe(pem);
+  });
+
+  it("is read from the repository .env", () => {
+    expect(isWebVariable("CLERK_JWT_KEY")).toBe(true);
+  });
+});
+
 describe("the origins sessions are accepted from (ENV-03, SEC-14)", () => {
   const PREVIEW = {
     ...base,

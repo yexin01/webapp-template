@@ -75,6 +75,8 @@ function nextConfig(phase: string): NextConfig {
       NEXT_PUBLIC_STRIPE_CUSTOM_DOMAIN: env.stripeCustomDomain ?? "",
       // Origins, not secrets: src/proxy.ts reads them where it may not read the server-only variables they come from.
       NEXT_PUBLIC_CLERK_AUTHORIZED_PARTIES: env.clerkAuthorizedParties.join(","),
+      // Clerk's public key, read by src/proxy.ts for the same reason. Only the proxy references it, so no browser bundle has it.
+      NEXT_PUBLIC_CLERK_JWT_KEY: env.clerkJwtKey,
     },
     async rewrites() {
       // The browser calls the Python API same-origin; no CORS and no API secrets in the web app.

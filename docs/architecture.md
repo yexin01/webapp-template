@@ -293,7 +293,7 @@ How a configuration is validated (ENV-09):
 - The API reads the repository-root `.env` and the process environment. `Settings` runs the core rules (`APP_ENV` bound to `VERCEL_ENV`, explicit integration modes in preview and production, `APP_BASE_URL`, the authorized origins), then each module's `*_problems` function. A deployed bundle reads no `.env` and requires an explicit `APP_ENV`.
 - The web app validates the same variables in `apps/web/src/lib/env.server.ts`, called from `next.config.ts` at `next build`, `next dev`, and `next start`. It loads only the variables the web app reads from the root `.env`, refuses stray `.env*` files, and inlines the public values, including the authorized origins that the proxy checks, so a change to `APP_BASE_URL` or `CLERK_AUTHORIZED_PARTIES` needs a new build.
 - The two validators are held to one fixture, `packages/contracts/config-cases.json`, run by `apps/api/tests/unit/test_config_cases.py` and `apps/web/src/lib/env-cases.test.ts`.
-- `CLERK_JWT_KEY` is an API setting. The web app only checks its format; nothing in it uses the value.
+- `CLERK_JWT_KEY` is read by both apps. The API's token verifier uses it. The web app validates it, and `next.config.ts` hands it to the proxy as `NEXT_PUBLIC_CLERK_JWT_KEY` (`proxy.ts` may not read `CLERK_*` variables, ENV-07), which passes it to `clerkMiddleware` as `jwtKey`: with it the proxy verifies session tokens without fetching Clerk's key set. Only the proxy reads the derived value, so a change needs a new build and the browser bundle does not hold it.
 - `pnpm check:setup` runs both validators and the integration probes without signing in, and `pnpm dev` runs them before it starts a server.
 
 ## Frontend

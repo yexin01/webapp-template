@@ -5,6 +5,9 @@ import { isPublicPage } from "@/lib/page-access";
 // The origins a session token may have been issued for (its azp claim), derived by next.config.ts from
 // CLERK_AUTHORIZED_PARTIES and APP_BASE_URL with the API's rules. Empty only under APP_ENV=test.
 const authorizedParties = (process.env.NEXT_PUBLIC_CLERK_AUTHORIZED_PARTIES ?? "").split(",").filter(Boolean);
+// The instance's PEM public key from CLERK_JWT_KEY, derived by next.config.ts. Set, the proxy verifies session
+// tokens with it and never fetches Clerk's key set. Empty: it fetches the set, as before.
+const jwtKey = process.env.NEXT_PUBLIC_CLERK_JWT_KEY ?? "";
 
 /**
  * Page access for presentation only (FE-05): a signed-out visitor is sent to
@@ -24,6 +27,7 @@ export default clerkMiddleware(
     signInUrl: "/sign-in",
     signUpUrl: "/sign-up",
     authorizedParties: authorizedParties.length > 0 ? authorizedParties : undefined,
+    jwtKey: jwtKey || undefined,
   },
 );
 
