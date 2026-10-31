@@ -1,6 +1,6 @@
 # Operations
 
-Day-two procedures for adopters: health checks, provider outages, routine tasks, key rotation, database operations, scheduled jobs, incidents, and backups. How to deploy, which variable goes where, and rollback are in [deployment.md](deployment.md). Items that depend on unresolved decisions, or on decisions each adopter makes, are marked. Do not treat them as verified: nothing here has been run on a deployed platform ([limitations.md](limitations.md)).
+Day-two procedures for adopters: health checks, provider outages, routine tasks, key rotation, database operations, scheduled jobs, limits, incidents, and backups. How to deploy, which variable goes where, and rollback are in [deployment.md](deployment.md). Items that depend on unresolved decisions, or on decisions each adopter makes, are marked. Do not treat them as verified: nothing here has been run on a deployed platform ([limitations.md](limitations.md)).
 
 ## Health and readiness
 
@@ -161,7 +161,7 @@ The application limits these. Counters live in PostgreSQL, so every limit holds 
 | JSON request body | 1,000,000 bytes | `MAX_REQUEST_BODY_BYTES` | `413` |
 | Requests per IP | Not set by the application | The platform rule, step D7 of [deployment.md](deployment.md#set-up-vercel) | `429` from the platform |
 
-- **Windows.** A window is a fixed minute or hour of the clock, so a burst across a boundary can use up to twice the limit. A refused request counts too. Counters older than two days are deleted by `prune-expired`.
+- **Windows.** A window is a fixed minute, hour or day of the clock, so a burst across a boundary can use up to twice the limit. A refused request counts too. Counters older than two days are deleted by `prune-expired`.
 - **Whose counter.** A write is counted for the signed-in user (by Clerk user ID), whatever its outcome. A new account has an allowance of its own, so the per-IP rule, not this limit, is what holds back a crowd of accounts.
 - **Not counted.** Reads. Checkout, the portal, the re-read, the LLM check and diagnostics have the limits above instead, so they are not counted twice. The Stripe and Clerk webhooks have no user and are authenticated by signature; the platform rule excludes them.
 - **Your own routes.** A router from `pnpm new:module` counts its writes. A write route you add to another router needs the same dependency, or a limit of its own listed in `NOT_COUNTED` in `apps/api/tests/integration/test_write_limit.py`; that test fails for any other.
