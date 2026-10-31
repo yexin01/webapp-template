@@ -306,7 +306,7 @@ A connectivity check only (`POST /api/v1/llm/check`): API `apps/api/app/modules/
 
 The check retrieves the model's metadata and generates no tokens. With `LLM_MODE=disabled` it answers `200 {"ok": false, "provider": "none", "error_code": "not_configured"}` without touching a rate limiter, and the web card says the check is turned off.
 
-It is an operator tool, like the Integrations page, and for the same reason: every account would spend one daily budget (`LLM_CHECKS_GLOBAL_PER_DAY`). `POST /api/v1/llm/check` follows the [diagnostics policy](#the-integrations-page): a caller who may not use diagnostics gets `404`, as for a missing route, and the refused call uses no limit. That includes every caller in production while `DIAGNOSTICS_ENABLED` is not `true`. The dashboard card appears for the same callers.
+It is an operator tool, like the Integrations page, and for the same reason: every account would spend one daily budget (`LLM_CHECKS_GLOBAL_PER_DAY`). `POST /api/v1/llm/check` follows the [diagnostics policy](#the-integrations-page): a caller who may not use diagnostics gets the `404` the diagnostics routes give, and the refused call uses no limit. That includes every caller in production while `DIAGNOSTICS_ENABLED` is not `true`. The dashboard card appears for the same callers.
 
 ## Callback URL summary
 

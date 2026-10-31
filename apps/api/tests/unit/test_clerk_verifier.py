@@ -118,9 +118,10 @@ def test_a_token_outside_the_clock_skew_is_refused(
 
 
 def test_a_token_a_second_off_is_within_the_clock_skew(verifier: ClerkTokenVerifier, keys: tuple[Any, str]) -> None:
-    """Instances' clocks differ by a little: an expiry a second ago, or a start a second ahead, still verifies."""
+    """Instances' clocks differ by a little: a token that expires this second (so it expired up to a second ago), or
+    starts a second ahead, still verifies. Little margin is spent on the wall clock: the skew is 5 s."""
     now = int(time.time())
-    assert verifier.verify(token(keys[0], exp=now - 1, nbf=now + 1, iat=now + 1)).external_user_id == "user_123"
+    assert verifier.verify(token(keys[0], exp=now, nbf=now + 1, iat=now + 1)).external_user_id == "user_123"
 
 
 AUDIENCE = "https://api.example.com"

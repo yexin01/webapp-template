@@ -37,8 +37,8 @@ def build_router(llm: LLMService, auth: AuthDeps, may_use_operator_tools: Callab
         dependencies=[requires(LLM_CHECK)],
     )
     def llm_check(ctx: Personal) -> LLMCheck:
-        # Every account shares the daily budget, so only operators may spend it. Anyone else gets the answer a
-        # missing route gets, before a limit is touched.
+        # Every account shares the daily budget, so only operators may spend it. Anyone else gets the 404 the
+        # diagnostics routes give, before a limit is touched.
         if not may_use_operator_tools(ctx):
             raise NotFoundError()
         result = llm.check(ctx)

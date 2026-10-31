@@ -1,7 +1,7 @@
 """POST /llm/check follows the diagnostics operator policy (spec section 10, LLM-06; ADR-0004 section 23).
 
 The check spends a daily budget that every account shares, so it is an operator tool like the Integrations page:
-whoever may not use diagnostics gets the 404 a missing route gets, and a refused call spends neither that
+whoever may not use diagnostics gets the 404 the diagnostics routes give, and a refused call spends neither that
 person's limit nor the shared budget. The policy itself is tests/unit/test_diagnostics_access.py; here it is
 shown to be the same one.
 """
@@ -35,12 +35,12 @@ def test_an_operator_runs_the_check(make_harness: Callable[..., Harness]) -> Non
     }
 
 
-def test_anyone_else_signed_in_gets_the_answer_of_a_missing_route(make_harness: Callable[..., Harness]) -> None:
+def test_anyone_else_signed_in_gets_the_404_the_diagnostics_routes_give(make_harness: Callable[..., Harness]) -> None:
     h = make_harness(OPERATORS)
     refused = h.client.post(CHECK, headers=h.login("user_a"))
     assert refused.status_code == 404
     assert refused.headers["content-type"] == "application/problem+json"
-    # The same answer as the diagnostics routes give: nothing tells an outsider this route exists.
+    # The same problem as the diagnostics routes answer, apart from the request ID.
     diagnostics = h.client.get(INTEGRATIONS, headers=h.login("user_a"))
     drop = {"request_id"}
     assert {k: v for k, v in refused.json().items() if k not in drop} == {
