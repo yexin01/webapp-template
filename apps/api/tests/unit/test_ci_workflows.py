@@ -59,6 +59,19 @@ def test_ci_receives_no_secrets_and_never_runs_on_pull_request_target() -> None:
     assert load("ci.yml")["permissions"] == {"contents": "read"}
 
 
+@pytest.mark.parametrize("job", ["api", "web"])
+def test_the_api_and_web_jobs_run_exactly_what_pnpm_verify_runs_for_the_job(job: str) -> None:
+    """CI and `pnpm verify` share one step list. Another command, a flag that narrows the run (--skip, --only,
+    --quick, --offline, --no-db), or a step that may fail without failing the job would leave CI green on
+    checks it did not make."""
+    workflow = load("ci.yml")
+    verify = [step for step in steps(workflow, job) if "verify.mjs" in step.get("run", "")]
+    assert [step["run"].strip() for step in verify] == [f"node scripts/verify.mjs --job {job}"]
+    assert "if" not in verify[0]
+    assert not verify[0].get("continue-on-error")
+    assert not workflow["jobs"][job].get("continue-on-error")
+
+
 def test_deploy_config_runs_without_credentials_or_telemetry() -> None:
     job = load("ci.yml")["jobs"]["deploy-config"]
     assert job["env"]["VERCEL_TELEMETRY_DISABLED"] == "1"
