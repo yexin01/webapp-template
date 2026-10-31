@@ -293,6 +293,7 @@ How a configuration is validated (ENV-09):
 - The API reads the repository-root `.env` and the process environment. `Settings` runs the core rules (`APP_ENV` bound to `VERCEL_ENV`, explicit integration modes in preview and production, `APP_BASE_URL`, the authorized origins), then each module's `*_problems` function. A deployed bundle reads no `.env` and requires an explicit `APP_ENV`.
 - The web app validates the same variables in `apps/web/src/lib/env.server.ts`, called from `next.config.ts` at `next build`, `next dev`, and `next start`. It loads only the variables the web app reads from the root `.env`, refuses stray `.env*` files, and inlines the public values, including the authorized origins that the proxy checks, so a change to `APP_BASE_URL` or `CLERK_AUTHORIZED_PARTIES` needs a new build.
 - The two validators are held to one fixture, `packages/contracts/config-cases.json`, run by `apps/api/tests/unit/test_config_cases.py` and `apps/web/src/lib/env-cases.test.ts`.
+- `.env.example` is pinned to the code: `apps/api/tests/unit/test_env_example.py` ties it to the API's settings (aliases included) and to `SERVER_ONLY_NAMES`, and `apps/web/src/lib/env-example-parity.test.ts` to the web app's variables and to what `next.config.ts` fixes at build time (the `baked` tag). A failure names the variable and what to change.
 - `CLERK_JWT_KEY` is read by both apps. The API's token verifier uses it. The web app validates it, and `next.config.ts` hands it to the proxy as `NEXT_PUBLIC_CLERK_JWT_KEY` (`proxy.ts` may not read `CLERK_*` variables, ENV-07), which passes it to `clerkMiddleware` as `jwtKey`: with it the proxy verifies session tokens without fetching Clerk's key set. Only the proxy reads the derived value, so a change needs a new build and the browser bundle does not hold it.
 - `pnpm check:setup` runs both validators and the integration probes without signing in, and `pnpm dev` runs them before it starts a server.
 
@@ -356,7 +357,7 @@ Only mechanisms that exist today:
 5. Routes: `dependencies=[requires(PERMISSION)]`, a `Permission` in `domain.py`, and `authorize()` in the use case.
 6. Analytics events: `Contribution(analytics_events=...)`, and `docs/data-inventory.md`.
 7. Inbound webhooks: follow identity's pattern. Read the raw body, verify the signature before any database work, keep a per-provider ledger keyed by the provider's event ID with `EventStatus`, and add a migration.
-8. `.env.example` and `docs/integrations.md`: the setup and the callback-URL table.
+8. `.env.example` and `docs/integrations.md`: the setup and the callback-URL table. Every setting needs a line in `.env.example` with a tag line above it (`# > apps=api kind=config need=optional scopes=all`; the legend is at the top of the file), and a secret also goes into `SERVER_ONLY_NAMES` in `scripts/check-bundle-secrets.mjs`. `tests/unit/test_env_example.py` fails, naming the variable and the fix, until both are done.
 
 ### Adding an analytics event
 

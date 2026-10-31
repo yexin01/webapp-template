@@ -114,7 +114,7 @@ Ten findings from the architecture review were deferred, with the reason. What t
 
 Found while writing these documents or listed in the package notes, and not done. They need a code change:
 
-- Run `check-bundle-secrets.mjs --require-values` inside every Vercel build (chain it into the web `build` script), so the web service is checked with the real values. Today it runs in `pnpm test:vercel-build` with canary values.
+- Run `check-bundle-secrets.mjs --require-values` inside every Vercel build (chain `&& node ../../scripts/check-bundle-secrets.mjs --require-values` onto the web `build` script), so the web service is checked with the real values. Today it runs in `pnpm test:vercel-build` with canary values. Not built: the local `vercel build` runs that script with the repository around `apps/web` and `VERCEL=1` (checked), but the platform's service build is unverified, and a chain that cannot find `scripts/` fails every deployment. Add it once the first preview shows `scripts/` in the web build ([ADR-0004 §18](../dev-docs/adr/0004-cycle-1-adopted-decisions.md)).
 - A per-user limit on ordinary writes (creating and deleting projects, and every generated module), and a guard against concurrent or repeated runs of a job through `GET /api/v1/jobs/{name}`: a leaked `CRON_SECRET` can start `reconcile-billing` repeatedly, at up to `BILLING_RECONCILE_BATCH_SIZE` Stripe calls a run. Until then: the WAF rule (step D7) and rotating `CRON_SECRET`.
 - Wire `apps/web/eslint.guards.mjs` into `eslint.config.mjs` (a lint-config edit that an owner applies).
 - A `supabase/seed.sql` header that says the seed is "for performance tests": the performance server seeds its own data; the seed serves the restore drill and the hosted restore test.

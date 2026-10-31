@@ -2,9 +2,10 @@
 validated together (ENV-02 to ENV-05).
 
 To add a module's settings, inherit its settings class here and add its
-``*_problems`` function to ``_validate``. A module whose calls hold request
-threads until a provider answers must add its concurrency bound to
-``reserved_request_threads``.
+``*_problems`` function to ``_validate``. Give every setting a tagged line in
+``.env.example``: tests/unit/test_env_example.py names what is missing. A module
+whose calls hold request threads until a provider answers must add its
+concurrency bound to ``reserved_request_threads``.
 """
 
 from __future__ import annotations
