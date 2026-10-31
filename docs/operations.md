@@ -70,7 +70,7 @@ Rotate immediately after any suspected exposure, and periodically otherwise. For
 | `DATABASE_URL` (the `app_login` password) | Vercel (API) | `/api/v1/ready`; the PostgreSQL check | Re-run `pnpm db:api-login --allow-remote`. The old password stops working at once, so requests fail until the redeploy finishes. The `postgres` password is rotated separately in the Supabase Dashboard |
 | `MIGRATION_DATABASE_URL` | GitHub Environment secrets (`preview`, `production`) | Run **Database migrate** | Rotate the `postgres` password in Supabase |
 | `LLM_API_KEY` | Vercel (API) | The LLM check | Revoke at the provider |
-| `CRON_SECRET` | Vercel, Production scope | Call a job route with the new value | `openssl rand -hex 32`, at least 32 characters. Vercel Cron sends the value of the deployment it runs |
+| `CRON_SECRET` | Vercel, Production scope | Call a job route with the new value; the old one answers `401` | `openssl rand -hex 32`, at least 32 characters. Vercel sends the project's `CRON_SECRET` as the `Authorization` header of each cron call ([Vercel: securing cron jobs](https://vercel.com/docs/cron-jobs/manage-cron-jobs#securing-cron-jobs)) |
 | `NEXT_PUBLIC_POSTHOG_KEY`, `NEXT_PUBLIC_SENTRY_DSN` | Vercel (web, and the API for the PostHog key) | Events arrive | Baked: a rotated key stays in already-built browser bundles until you redeploy |
 | `SENTRY_DSN` | Vercel (API) | `pnpm check:setup --send-test-events` | |
 | `SENTRY_AUTH_TOKEN` | Vercel (web build) | The build log shows the upload | Revoke at Sentry |
