@@ -55,9 +55,10 @@ import {
   isValidName,
   isValidSlug,
 } from "./lib/template.mjs";
-import { copyTrackedFiles as copyTracked } from "./lib/tracked-copy.mjs";
+import { copyTrackedFiles as copyTracked, requireGitRepository } from "./lib/tracked-copy.mjs";
 
 const repo = path.resolve(import.meta.dirname, "..");
+requireGitRepository(repo, "test:init-template");
 const NAME = "Acme Cloud";
 const SLUG = "acme-cloud";
 const PORT = "55432";

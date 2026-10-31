@@ -48,9 +48,10 @@ import { devNull } from "node:os";
 import path from "node:path";
 
 import { ORIGINAL_SLUG } from "./lib/template.mjs";
-import { copyTrackedFiles, untrackedFiles } from "./lib/tracked-copy.mjs";
+import { copyTrackedFiles, requireGitRepository, untrackedFiles } from "./lib/tracked-copy.mjs";
 
 const repo = path.resolve(import.meta.dirname, "..");
+requireGitRepository(repo, "test:new-module");
 const failures = [];
 const check = (ok, message) => ok || failures.push(message);
 

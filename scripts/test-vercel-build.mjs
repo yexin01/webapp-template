@@ -35,6 +35,8 @@ import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, wr
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import { gitRepositoryProblem } from "./lib/tracked-copy.mjs";
+
 const root = path.resolve(import.meta.dirname, "..");
 const keep = process.argv.includes("--keep");
 const cli = path.join(root, "node_modules", ".bin", "vercel");
@@ -54,6 +56,8 @@ function run(command, args, options) {
 
 /** Tracked files, plus untracked files git does not ignore, as they are in the working tree now. */
 function workingTreeFiles() {
+  const problem = gitRepositoryProblem(root, { tracked: false });
+  if (problem) fail(problem);
   const listed = run("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard"], { cwd: root });
   if (listed.status !== 0) fail(`git ls-files failed: ${listed.stderr}`);
   return listed.stdout.split("\0").filter(Boolean);
