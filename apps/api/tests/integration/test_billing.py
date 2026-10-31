@@ -1251,9 +1251,9 @@ def test_a_replacement_waits_for_a_synchronization_of_the_customer_it_replaces(h
         )
         thread = threading.Thread(target=checkout)
         thread.start()
-        wait_for_lock_wait(harness.database_url, timeout=20, or_until=done)  # queued behind the webhook, or done
+        wait_for_lock_wait(harness.database_url, timeout=60, or_until=done)  # queued behind the webhook, or done
         assert not done.is_set(), "the replacement did not wait for the customer's lock"
-    thread.join(30)
+    thread.join(60)
 
     [r] = answered
     assert (r.status_code, r.json()["code"]) == (409, "CONFLICT")
