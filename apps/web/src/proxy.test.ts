@@ -84,6 +84,9 @@ describe("proxy page access", () => {
       const response = await visit(pathname);
       expect(response.status).toBe(307);
       const location = new URL(response.headers.get("location") ?? "");
+      // The app's own sign-in page: without `signInUrl` Clerk sends the visitor to its hosted Account Portal,
+      // which has the same path on another host.
+      expect(location.origin).toBe("http://localhost:3000");
       expect(location.pathname).toBe("/sign-in");
       expect(location.searchParams.get("redirect_url")).toContain(pathname);
     },
@@ -150,7 +153,9 @@ describe("proxy authorized parties", () => {
     ]) {
       const response = await open(proxy, sessionToken(azp));
       expect(response.status, azp).toBe(307);
-      expect(new URL(response.headers.get("location") ?? "").pathname, azp).toBe("/sign-in");
+      const location = new URL(response.headers.get("location") ?? "");
+      expect(location.origin, azp).toBe("https://app.example.com");
+      expect(location.pathname, azp).toBe("/sign-in");
     }
   });
 
@@ -196,7 +201,9 @@ describe("proxy signing key", () => {
       const { default: proxy } = await loadProxy(PAGE, publicPem(keys));
       const response = await open(proxy, sessionToken(PAGE, other, "ins_other"));
       expect(response.status).toBe(307);
-      expect(new URL(response.headers.get("location") ?? "").pathname).toBe("/sign-in");
+      const location = new URL(response.headers.get("location") ?? "");
+      expect(location.origin).toBe(PAGE);
+      expect(location.pathname).toBe("/sign-in");
       expect(fetchKeySet).not.toHaveBeenCalled();
     },
   );
