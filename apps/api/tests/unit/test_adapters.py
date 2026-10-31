@@ -27,7 +27,8 @@ from app.modules.llm.adapters import AnthropicProvider, OpenAIProvider
 from tests.conftest import make_settings
 
 SECRET = "whsec_test_only_not_a_real_secret_000000"
-CATALOG = PriceCatalog({PlanKey.PRO_MONTHLY: "price_m", PlanKey.PRO_YEARLY: "price_y"})
+PRODUCT = "prod_pro"
+CATALOG = PriceCatalog({PlanKey.PRO_MONTHLY: "price_m", PlanKey.PRO_YEARLY: "price_y"}, PRODUCT)
 
 
 def sign(payload: bytes, secret: str = SECRET, timestamp: int | None = None) -> str:
@@ -154,12 +155,58 @@ class TestSubscriptionMapping:
     def test_unknown_status_is_never_entitled(self) -> None:
         assert to_snapshot(self.raw(status="something_new"), CATALOG).status is SubscriptionStatus.INCOMPLETE
 
-    def test_a_retained_price_keeps_its_plan_but_is_not_sold(self) -> None:
-        catalog = PriceCatalog(CATALOG.prices, {"price_old": PlanKey.PRO_MONTHLY})
-        raw = self.raw(items={"data": [{"price": {"id": "price_old"}, "current_period_end": 1}]})
-        assert to_snapshot(raw, catalog).plan_key is PlanKey.PRO_MONTHLY
-        assert to_snapshot(raw, CATALOG).plan_key is PlanKey.UNKNOWN  # without it, a price change drops Pro
-        assert catalog.price_for(PlanKey.PRO_MONTHLY) == "price_m"  # checkout still sells only the current price
+    @staticmethod
+    def priced(
+        price_id: str, product: str | dict[str, Any] | None = PRODUCT, interval: str = "month", count: int | None = 1
+    ) -> dict[str, Any]:
+        """A subscription item as Stripe returns it: the full price, with its product and recurring terms."""
+        recurring = {"interval": interval} if count is None else {"interval": interval, "interval_count": count}
+        price = {"id": price_id, "product": product, "recurring": recurring}
+        return {"data": [{"price": price, "current_period_end": 1}]}
+
+    def test_an_older_price_of_the_pro_product_keeps_its_plan_but_is_not_sold(self) -> None:
+        monthly = self.raw(items=self.priced("price_old"))
+        yearly = self.raw(items=self.priced("price_old_y", interval="year"))
+        assert to_snapshot(monthly, CATALOG).plan_key is PlanKey.PRO_MONTHLY
+        assert to_snapshot(yearly, CATALOG).plan_key is PlanKey.PRO_YEARLY
+        assert to_snapshot(monthly, CATALOG).price_id == "price_old"
+        assert CATALOG.price_for(PlanKey.PRO_MONTHLY) == "price_m"  # checkout still sells only the current price
+        # Without the product a price change drops Pro, which is what the product setting prevents.
+        assert to_snapshot(monthly, PriceCatalog(CATALOG.prices)).plan_key is PlanKey.UNKNOWN
+
+    def test_the_product_may_come_expanded(self) -> None:
+        raw = self.raw(items=self.priced("price_old", product={"id": PRODUCT, "object": "product"}))
+        assert to_snapshot(raw, CATALOG).plan_key is PlanKey.PRO_MONTHLY
+
+    @pytest.mark.parametrize(
+        ("product", "interval", "count"),
+        [
+            ("prod_other", "month", 1),  # another product
+            (None, "month", 1),
+            (PRODUCT, "week", 1),
+            (PRODUCT, "month", 3),  # every three months
+            (PRODUCT, "year", 2),
+            (PRODUCT, "month", None),  # no interval count: not assumed to be one
+        ],
+    )
+    def test_any_other_price_is_unknown(self, product: str | None, interval: str, count: int | None) -> None:
+        raw = self.raw(items=self.priced("price_old", product, interval, count))
+        assert to_snapshot(raw, CATALOG).plan_key is PlanKey.UNKNOWN
+
+    def test_a_price_with_no_recurring_terms_is_unknown(self) -> None:
+        one_time = {"data": [{"price": {"id": "price_once", "product": PRODUCT, "recurring": None}}]}
+        assert to_snapshot(self.raw(items=one_time), CATALOG).plan_key is PlanKey.UNKNOWN
+
+    def test_the_plan_comes_from_the_item_of_the_pro_product(self) -> None:
+        addon = {"price": {"id": "price_addon", "product": "prod_addon", "recurring": {"interval": "month"}}}
+        older = {
+            "price": {"id": "price_old", "product": PRODUCT, "recurring": {"interval": "year", "interval_count": 1}},
+            "current_period_end": 1_790_000_000,
+        }
+        snap = to_snapshot(self.raw(items={"data": [addon, older]}), CATALOG)
+        assert (snap.plan_key, snap.price_id) == (PlanKey.PRO_YEARLY, "price_old")
+        assert snap.current_period_end is not None
+        assert int(snap.current_period_end.timestamp()) == 1_790_000_000
 
     def test_the_plan_comes_from_the_item_with_a_known_price(self) -> None:
         raw = self.raw(

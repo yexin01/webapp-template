@@ -8,7 +8,7 @@ renders its output and never re-derives it.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from typing import ClassVar
@@ -213,28 +213,40 @@ def summarize(
     return BillingSummary(Plan.FREE, BillingState.NONE, None, None, None, block)
 
 
+# How often each purchasable plan bills.
+PLAN_INTERVALS: Mapping[PlanKey, str] = {PlanKey.PRO_MONTHLY: "month", PlanKey.PRO_YEARLY: "year"}
+
+
 @dataclass(frozen=True, slots=True)
 class PriceCatalog:
-    """Server-side allowlist of purchasable prices (BILL-03).
+    """Server-side allowlist of purchasable prices (BILL-03), and the product that grants Pro.
 
-    ``retained`` maps prices that are no longer sold to their plan key, so
-    subscribers who still pay a replaced price keep Pro. Stripe prices cannot
-    be edited: changing a price creates a new price ID.
+    Checkout sells only ``prices``. A subscription has a plan when its price is one of
+    them, or when it is any other price of ``product`` that bills every month or every
+    year: Stripe prices cannot be edited, so changing a price creates a new price ID,
+    and whoever still pays the old one keeps Pro. Without a ``product`` (mock mode), only
+    the configured prices have a plan.
     """
 
     prices: Mapping[PlanKey, str]
-    retained: Mapping[str, PlanKey] = field(default_factory=dict)
+    product: str | None = None
 
     def price_for(self, key: PlanKey) -> str | None:
         return self.prices.get(key)
 
-    def key_for(self, price_id: str | None) -> PlanKey:
+    def key_for(
+        self,
+        price_id: str | None,
+        product_id: str | None = None,
+        interval: str | None = None,
+        interval_count: int | None = None,
+    ) -> PlanKey:
         for key, value in self.prices.items():
             if value == price_id:
                 return key
-        if price_id is None:
+        if price_id is None or not self.product or product_id != self.product or interval_count != 1:
             return PlanKey.UNKNOWN
-        return self.retained.get(price_id, PlanKey.UNKNOWN)
+        return next((key for key, every in PLAN_INTERVALS.items() if every == interval), PlanKey.UNKNOWN)
 
 
 @dataclass(frozen=True, slots=True)
@@ -284,15 +296,7 @@ def portal_problems(portal: PortalConfiguration | None, catalog: PriceCatalog) -
         if price is not None and price not in portal.switch_prices:
             problems.append(f"the portal cannot switch to the {key.value} price {price}")
     for price in sorted(portal.switch_prices - {p for p in wanted.values() if p}):
-        known = catalog.key_for(price)
-        problems.append(
-            f"the portal also offers {price}, "
-            + (
-                f"a replaced {known.value} price that is no longer sold"
-                if known is not PlanKey.UNKNOWN
-                else "a price outside the catalog that grants no Pro"
-            )
-        )
+        problems.append(f"the portal also offers {price}, which checkout does not sell")
     return problems
 
 

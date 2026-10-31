@@ -336,7 +336,7 @@ def test_billing_check_passes_with_the_portal_verified_and_the_webhook_not_check
         (_portal(switch_prices=frozenset({PRICE_MONTHLY})), f"cannot switch to the pro_yearly price {PRICE_YEARLY}"),
         (
             _portal(switch_prices=frozenset({PRICE_MONTHLY, PRICE_YEARLY, "price_extra"})),
-            "also offers price_extra, a price outside the catalog",
+            "also offers price_extra, which checkout does not sell",
         ),
     ],
 )
@@ -349,14 +349,6 @@ def test_billing_check_flags_a_portal_that_departs_from_the_policy(
     assert body["outcome"] == "failed"
     assert body["error_code"] == "portal_mismatch"
     assert expected in body["summary"]
-
-
-def test_billing_check_names_a_retained_price_the_portal_still_offers(sandbox: Callable[..., Harness]) -> None:
-    h = sandbox({"stripe_price_pro_monthly_retained": "price_old"})
-    h.billing.set_portal(_portal(switch_prices=frozenset({PRICE_MONTHLY, PRICE_YEARLY, "price_old"})))
-    body = check(h, "billing")
-    assert body["error_code"] == "portal_mismatch"
-    assert "price_old, a replaced pro_monthly price that is no longer sold" in body["summary"]
 
 
 def test_billing_check_reports_prices_and_portal_together(sandbox: Callable[..., Harness]) -> None:

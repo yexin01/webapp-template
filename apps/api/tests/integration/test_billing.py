@@ -30,7 +30,14 @@ from app.modules.billing.domain import (
     SubscriptionStatus,
     decide,
 )
-from tests.conftest import PRICE_MONTHLY, PRICE_YEARLY, TEST_STRIPE_WEBHOOK_SECRET, Harness, superuser_query
+from tests.conftest import (
+    PRICE_MONTHLY,
+    PRICE_YEARLY,
+    PRODUCT_PRO,
+    TEST_STRIPE_WEBHOOK_SECRET,
+    Harness,
+    superuser_query,
+)
 from tests.lock_waits import wait_for_lock_wait
 
 pytestmark = pytest.mark.db
@@ -1184,6 +1191,47 @@ def test_reconciliation_apply_records_the_plan_change(harness: Harness) -> None:
         "SELECT payload->>'plan' FROM app.outbox WHERE event_type = 'billing.entitlement_changed' ORDER BY occurred_at",
     )
     assert rows[-1] == ("free",)
+
+
+def test_reconciliation_gives_pro_back_to_a_subscriber_a_price_change_dropped(harness: Harness) -> None:
+    """Stored as unknown while the replaced price had no plan; with the Pro product set, the next apply restores it."""
+    customer = make_pro(harness, "user_a")
+    dropped = snapshot(customer, SubscriptionStatus.ACTIVE, plan_key=PlanKey.UNKNOWN, price_id="price_replaced")
+    harness.billing.set_subscriptions(customer, [dropped])
+    send_webhook(harness, event_payload(customer))
+    headers = harness.login("user_a")
+    assert harness.client.get("/api/v1/billing/status", headers=headers).json()["plan"] == "free"
+
+    # What Stripe holds for the same subscription: the replaced price, still a monthly price of the Pro product.
+    stripe_subscription = {
+        "id": dropped.stripe_subscription_id,
+        "customer": customer,
+        "status": "active",
+        "cancel_at_period_end": False,
+        "items": {
+            "data": [
+                {
+                    "price": {
+                        "id": "price_replaced",
+                        "product": PRODUCT_PRO,
+                        "recurring": {"interval": "month", "interval_count": 1},
+                    },
+                    "current_period_end": int(FUTURE.timestamp()),
+                }
+            ]
+        },
+    }
+    harness.billing.set_subscriptions(customer, [to_snapshot(stripe_subscription, harness.container.billing.catalog)])
+    service = harness.container.billing.service
+    assert [d.kind for d in service.reconcile(user_id=None, apply=False).divergences] == ["differs"]
+    assert (
+        harness.client.get("/api/v1/billing/status", headers=headers).json()["plan"] == "free"
+    )  # a dry run changes nothing
+
+    service.reconcile(user_id=None, apply=True)
+    status = harness.client.get("/api/v1/billing/status", headers=headers).json()
+    assert (status["plan"], status["plan_key"]) == ("pro", "pro_monthly")
+    assert harness.client.get("/api/v1/pro/insight", headers=headers).status_code == 200
 
 
 def test_reconciliation_links_flagged_customers_and_resolves_their_events(harness: Harness) -> None:

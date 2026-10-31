@@ -39,6 +39,7 @@ DEFAULT_TEST_DATABASE_URL = "postgresql://postgres:postgres@127.0.0.1:54329/app"
 TEST_STRIPE_WEBHOOK_SECRET = "whsec_test_only_not_a_real_secret_000000"
 PRICE_MONTHLY = "price_test_monthly"
 PRICE_YEARLY = "price_test_yearly"
+PRODUCT_PRO = "prod_test_pro"
 
 _ENV_PREFIXES = (
     "APP_",
@@ -290,6 +291,7 @@ def make_settings(**overrides: Any) -> Settings:
         "billing_mode": "mock",
         "stripe_price_pro_monthly": PRICE_MONTHLY,
         "stripe_price_pro_yearly": PRICE_YEARLY,
+        "stripe_product_pro": PRODUCT_PRO,
         "stripe_webhook_secret": TEST_STRIPE_WEBHOOK_SECRET,
         "llm_mode": "mock",
         "analytics_mode": "disabled",
