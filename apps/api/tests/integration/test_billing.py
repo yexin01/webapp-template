@@ -951,6 +951,107 @@ def test_a_user_whose_stripe_customer_was_deleted_gets_a_new_one_at_the_next_che
     assert harness.client.get("/api/v1/billing/status", headers=headers).json()["plan"] == "pro"
 
 
+def listing_is_empty(customer_id: str) -> list[SubscriptionSnapshot]:
+    return []
+
+
+def spy_on_session_attempts(monkeypatch: pytest.MonkeyPatch, *, reject: bool = False) -> list[tuple[str, str]]:
+    """The customer and idempotency key of each Checkout Session request, including the ones Stripe rejects."""
+    attempts: list[tuple[str, str]] = []
+    original = InMemoryBillingProvider.create_checkout_session
+
+    def spy(self: InMemoryBillingProvider, **kw: Any) -> Any:
+        attempts.append((kw["customer_id"], kw["idempotency_key"]))
+        if reject:
+            raise InvalidRequestError("The billing request was rejected.")
+        return original(self, **kw)
+
+    monkeypatch.setattr(InMemoryBillingProvider, "create_checkout_session", spy)
+    return attempts
+
+
+def test_a_deleted_customer_whose_listing_still_answers_is_replaced_when_the_session_is_rejected(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stripe documents only that a deleted customer takes no further operation. If listing its subscriptions answers
+    an empty list instead of a rejection, creating the session is what Stripe rejects, and the user must not be stuck."""
+    headers, old = customer_gone(harness)
+    user = user_id_of(harness, headers)
+    harness.billing.list_customer_subscriptions = listing_is_empty  # type: ignore[method-assign]
+    attempts = spy_on_session_attempts(monkeypatch)
+    key = "relink-key-0001"
+
+    r = harness.client.post(
+        "/api/v1/billing/checkout", json={"plan": "pro_monthly"}, headers={**headers, "Idempotency-Key": key}
+    )
+
+    assert r.status_code == 200, r.text
+    new = customer_of(harness, "user_a")
+    assert new != old
+    assert harness.billing.customer_requests[-1] == {"user_id": user, "replaces": old}
+    assert [customer for customer, _ in attempts] == [old, new]  # rejected once, then retried for the new customer
+    rejected_key, retried_key = (key_ for _, key_ in attempts)
+    assert retried_key != rejected_key  # Stripe may replay what it answered for the first key
+    assert retried_key.startswith(f"checkout-{user}-pro_monthly-{key}")
+    assert retried_key.endswith(f"-{new}")
+    assert harness.billing.open_sessions(user) == [session_of(r.json()["url"])]
+    assert stored_session(harness, user) == session_of(r.json()["url"])
+
+
+def test_a_session_rejected_for_a_customer_stripe_still_has_stays_a_rejection(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    headers = harness.login("user_a")
+    assert start_checkout(harness, headers).status_code == 200
+    old = customer_of(harness, "user_a")
+    attempts = spy_on_session_attempts(monkeypatch, reject=True)
+
+    r = start_checkout(harness, headers)
+
+    assert (r.status_code, r.json()["code"]) == (400, "INVALID_REQUEST")
+    assert customer_of(harness, "user_a") == old
+    assert len(harness.billing.customer_requests) == 1  # only the first checkout made a customer
+    assert [customer for customer, _ in attempts] == [old]  # not retried
+
+
+def test_a_session_rejected_again_for_the_replacement_is_not_retried_again(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Even when the replacement is gone too, which a retry that asked Stripe again would replace once more."""
+    headers, old = customer_gone(harness)
+    harness.billing.list_customer_subscriptions = listing_is_empty  # type: ignore[method-assign]
+    attempts = spy_on_session_attempts(monkeypatch)
+    original = InMemoryBillingProvider.create_customer
+
+    def create_a_customer_that_is_gone_at_once(
+        self: InMemoryBillingProvider, user_id: uuid.UUID, *, replaces: str | None = None
+    ) -> str:
+        created = original(self, user_id, replaces=replaces)
+        self.delete_customer(created)
+        return created
+
+    harness.billing.create_customer = create_a_customer_that_is_gone_at_once.__get__(harness.billing)  # type: ignore[method-assign]
+
+    r = start_checkout(harness, headers)
+
+    assert (r.status_code, r.json()["code"]) == (400, "INVALID_REQUEST")
+    new = customer_of(harness, "user_a")
+    assert new != old  # the link stays on the replacement, which the next checkout uses
+    assert [customer for customer, _ in attempts] == [old, new]
+
+
+def test_a_customer_made_for_this_request_is_not_replaced_when_its_session_is_rejected(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    attempts = spy_on_session_attempts(monkeypatch, reject=True)
+
+    r = start_checkout(harness, harness.login("user_a"))
+
+    assert (r.status_code, r.json()["code"]) == (400, "INVALID_REQUEST")
+    assert len(harness.billing.customer_requests) == 1
+    assert len(attempts) == 1
+
+
 def test_the_subscriptions_that_ended_under_the_deleted_customer_stay_as_history(harness: Harness) -> None:
     headers = harness.login("user_a")
     old = make_pro(harness, "user_a")
