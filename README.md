@@ -39,6 +39,7 @@ Tests never use your `.env`. Database tests create and drop their own database, 
 | Command | Purpose |
 |---|---|
 | `pnpm bootstrap` | Install JavaScript and Python dependencies from the lockfiles |
+| `pnpm api:lock` | Update `apps/api/uv.lock` after you edit a Python dependency (`pnpm install` updates the JavaScript lockfile) |
 | `pnpm dev` | Check the configuration, then run the API and web app with reload (starts the Stripe CLI listener when billing is in sandbox mode). macOS and Linux only: on Windows use WSL, or run `pnpm dev:api` and `pnpm dev:web` in separate terminals |
 | `pnpm build` | Production build of the web app; needs your Clerk publishable key |
 | `pnpm build:check` | Account-free production build (it gets a minimal environment, not your shell's, and reads no `.env`; the scan reads both, to look for their values) plus the bundle secret scan: what CI runs |
