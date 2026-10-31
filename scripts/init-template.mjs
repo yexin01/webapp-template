@@ -31,6 +31,7 @@
  * turns links to the removed files into plain text. A copy that has finished
  * initializing is not touched again, so the adopter's later edits stay.
  */
+import { spawnSync } from "node:child_process";
 import {
   accessSync,
   constants,
@@ -266,12 +267,16 @@ if (!dryRun) {
   // a finished one (see the identity check above).
   const rank = (rel) => (rel === "apps/api/app/bootstrap.py" ? 0 : rel === "package.json" ? 2 : 1);
   const order = [...pending.keys()].sort((a, b) => rank(a) - rank(b));
+  const added = order.filter((rel) => !existsSync(path.join(root, rel)));
   for (const rel of removals) rmSync(path.join(root, rel), { recursive: true, force: true });
   for (const rel of order) {
     mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
     writeFileSync(path.join(root, rel), pending.get(rel));
   }
   if (envCreated) copyFileSync(path.join(root, ".env.example"), envFile);
+  // A new file is staged, so the first `pnpm verify` (its generator check works on the files git tracks) does not stop
+  // at it. Outside a git repository there is nothing to stage and git's refusal is ignored.
+  if (added.length) spawnSync("git", ["add", "--", ...added], { cwd: root, stdio: "ignore" });
 }
 
 const changes = new Set(pending.keys());

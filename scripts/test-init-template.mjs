@@ -562,6 +562,23 @@ try {
       `test:init-template failed in an initialized copy with ${label} (exit ${self.status}):\n${self.stdout}${self.stderr}`,
     );
   }
+
+  // In a git repository the one file the rename creates is staged, so the first `pnpm verify` does not stop at it.
+  const staged = copyTrackedFiles();
+  dirs.push(staged);
+  const stagedGit = (...args) => execFileSync("git", args, { cwd: staged, env: isolatedGit, encoding: "utf8" });
+  stagedGit("init", "-q");
+  stagedGit("add", "-A");
+  stagedGit("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "-m", "template");
+  check(init(staged, ["--name", NAME, "--slug", SLUG, ...CONTACTS]).status === 0, "init failed in the git copy");
+  const untracked = stagedGit("status", "--porcelain", "--untracked-files=all")
+    .split("\n")
+    .filter((line) => line.startsWith("?? "));
+  check(untracked.length === 0, `init-template left files git does not track: ${untracked.join(", ")}`);
+  check(
+    stagedGit("ls-files", "--", "dev-docs/evidence/README.md").trim() === "dev-docs/evidence/README.md",
+    "init-template did not stage dev-docs/evidence/README.md",
+  );
 } finally {
   for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
 }
