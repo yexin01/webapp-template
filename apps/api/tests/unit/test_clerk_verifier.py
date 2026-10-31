@@ -28,6 +28,9 @@ from app.kernel.errors import AuthenticationError, DependencyUnavailableError
 from app.kernel.infrastructure.db import REQUEST_THREADS
 from app.modules.identity.adapters import clerk
 from app.modules.identity.adapters.clerk import ClerkTokenVerifier, JwksKeySet
+from app.modules.identity.module import _verifier
+from tests.conftest import make_settings
+from tests.unit.test_config import pk
 
 ISSUER = "https://example-app.clerk.accounts.dev"
 ORIGIN = "http://localhost:3000"
@@ -118,6 +121,86 @@ def test_a_token_a_second_off_is_within_the_clock_skew(verifier: ClerkTokenVerif
     """Instances' clocks differ by a little: an expiry a second ago, or a start a second ahead, still verifies."""
     now = int(time.time())
     assert verifier.verify(token(keys[0], exp=now - 1, nbf=now + 1, iat=now + 1)).external_user_id == "user_123"
+
+
+AUDIENCE = "https://api.example.com"
+
+
+@pytest.fixture
+def audience_verifier(keys: tuple[Any, str]) -> ClerkTokenVerifier:
+    return ClerkTokenVerifier(issuer=ISSUER, authorized_parties=[ORIGIN], jwt_public_key=keys[1], audience=AUDIENCE)
+
+
+@pytest.mark.parametrize(
+    "aud",
+    [AUDIENCE, [AUDIENCE], ["https://other.example", AUDIENCE]],
+    ids=["a string", "a list of one", "a list that includes it"],
+)
+def test_a_token_for_the_configured_audience_verifies(
+    audience_verifier: ClerkTokenVerifier, keys: tuple[Any, str], aud: Any
+) -> None:
+    """AUTH-01: `aud` matches where configured, as a string or as a member of a list."""
+    assert audience_verifier.verify(token(keys[0], aud=aud)).external_user_id == "user_123"
+
+
+@pytest.mark.parametrize(
+    "aud",
+    [
+        None,  # no aud claim at all
+        "https://other.example",
+        ["https://other.example"],
+        [],
+        "",
+        AUDIENCE + "/",  # an exact match, not a prefix or a normalized form
+        7,
+        {"id": AUDIENCE},
+        [7, None],
+    ],
+    ids=[
+        "missing",
+        "another",
+        "another in a list",
+        "empty list",
+        "empty",
+        "with a slash",
+        "a number",
+        "an object",
+        "junk",
+    ],
+)
+def test_a_token_for_another_audience_or_none_is_refused_when_one_is_configured(
+    audience_verifier: ClerkTokenVerifier, keys: tuple[Any, str], aud: Any
+) -> None:
+    with pytest.raises(AuthenticationError) as raised:
+        audience_verifier.verify(token(keys[0], aud=aud))
+    assert raised.value.public_message == AuthenticationError.default_message  # the reason is not revealed (AUTH-03)
+
+
+@pytest.mark.parametrize(
+    "aud", [None, "https://anything.example", ["a", "b"], []], ids=["none", "string", "list", "empty"]
+)
+def test_without_a_configured_audience_the_aud_claim_is_not_checked(
+    verifier: ClerkTokenVerifier, keys: tuple[Any, str], aud: Any
+) -> None:
+    """Unset (the default) changes nothing: tokens of a JWT template that carry an `aud` are as welcome as before."""
+    assert verifier.verify(token(keys[0], aud=aud)).external_user_id == "user_123"
+
+
+def test_the_configured_audience_reaches_the_verifier(keys: tuple[Any, str]) -> None:
+    """CLERK_AUDIENCE, through the settings and the module's wiring, is what the verifier enforces."""
+    settings = make_settings(
+        clerk_publishable_key=pk("example-app.clerk.accounts.dev"),
+        clerk_authorized_parties=ORIGIN,
+        clerk_jwt_key=keys[1],
+        clerk_audience=AUDIENCE,
+    )
+    configured = _verifier(settings)
+    assert configured.verify(token(keys[0], aud=AUDIENCE)).external_user_id == "user_123"
+    for aud in (None, "https://other.example"):
+        with pytest.raises(AuthenticationError):
+            configured.verify(token(keys[0], aud=aud))
+    unset = _verifier(settings.model_copy(update={"clerk_audience": None}))
+    assert unset.verify(token(keys[0], aud="https://other.example")).external_user_id == "user_123"
 
 
 def azp_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:

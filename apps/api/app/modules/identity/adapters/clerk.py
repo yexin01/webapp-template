@@ -253,10 +253,12 @@ class ClerkTokenVerifier:
         authorized_parties: Sequence[str],
         jwt_public_key: str | None = None,
         key_set: JwksKeySet | None = None,
+        audience: str | None = None,
     ) -> None:
         if not authorized_parties:
             raise ValueError("at least one authorized party is required")
         self._issuer = issuer
+        self._audience = audience
         self._authorized_parties = frozenset(p.rstrip("/") for p in authorized_parties)
         self._public_key = jwt_public_key
         self._key_set = key_set or JwksKeySet(f"{issuer}/.well-known/jwks.json")
@@ -279,8 +281,10 @@ class ClerkTokenVerifier:
                 key=key,
                 algorithms=_ALGORITHMS,
                 issuer=self._issuer,
+                audience=self._audience,
                 leeway=_CLOCK_SKEW_SECONDS,
-                options={"require": ["exp", "iat", "sub", "iss"], "verify_aud": False},
+                # Clerk's default session token has no `aud`, and PyJWT refuses one it was not asked to check.
+                options={"require": ["exp", "iat", "sub", "iss"], "verify_aud": self._audience is not None},
             )
         except jwt.PyJWTError as exc:
             raise AuthenticationError() from exc
