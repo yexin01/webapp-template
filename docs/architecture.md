@@ -403,6 +403,8 @@ API: keep personal data out of exception messages and log arguments (patterns ar
 | The API and web configuration validators agree | `apps/api/tests/unit/test_config_cases.py`, `apps/web/src/lib/env-cases.test.ts` |
 | Telemetry leaks no canary value | `tests/integration/test_telemetry_wire.py` |
 | No first-party telemetry relay: Sentry's `tunnelRoute` is not set | `apps/web/src/next-config.test.ts` |
+| The security headers are exactly these, and the CSP is exactly this policy, token by token | `apps/web/src/lib/csp.test.ts`, `apps/web/src/next-config.test.ts`, `apps/web/e2e/http.spec.ts` |
+| Every browser spec that opens a page runs under the guard against an uncaught error, a CSP violation, and a failing request of the app's own | `apps/web/src/e2e-support.test.ts` |
 | Bounded statements per request; one transaction for request-scoped routes | query-count and request-scope tests |
 | Commit before response; rollback on block error; no context leaks | `tests/integration/test_request_scope.py` |
 | Outbox recording, dispatch, retries, dead letters, leases, retention | `tests/integration/test_outbox_jobs.py` |
