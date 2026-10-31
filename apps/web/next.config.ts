@@ -56,7 +56,8 @@ function nextConfig(phase: string): NextConfig {
     { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
     { key: "X-Frame-Options", value: "DENY" },
     { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
-    ...(isDev ? [] : [{ key: "Strict-Transport-Security", value: "max-age=63072000; includeSubDomains" }]),
+    // This host only (ADR-0004 §24): includeSubDomains would break plain-HTTP sibling subdomains for two years.
+    ...(isDev ? [] : [{ key: "Strict-Transport-Security", value: "max-age=63072000" }]),
   ];
 
   return {

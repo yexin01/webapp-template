@@ -2,23 +2,38 @@ import { expect, test } from "@playwright/test";
 
 /** Request-level checks that need no external accounts (mocked integrations). */
 
+/**
+ * The redirect a signed-out visitor gets: this app's own sign-in page, and back to `path` afterwards. Without
+ * `signInUrl` (src/proxy.ts) Clerk sends the visitor to its hosted Account Portal, which has the same path on
+ * another host, so the host is part of the check.
+ */
+function expectSignInRedirect(location: string | undefined, baseURL: string | undefined, path: string) {
+  const app = new URL(baseURL ?? "");
+  const target = new URL(location ?? "", app);
+  expect(target.origin).toBe(app.origin);
+  expect(target.pathname).toBe("/sign-in");
+  const returnTo = new URL(target.searchParams.get("redirect_url") ?? "", app);
+  expect(returnTo.origin).toBe(app.origin);
+  expect(returnTo.pathname).toBe(path);
+}
+
 for (const path of ["/dashboard", "/billing", "/pro", "/billing/success", "/integrations"]) {
-  test(`protected page ${path} redirects signed-out visitors to sign-in`, async ({ request }) => {
+  test(`protected page ${path} redirects signed-out visitors to sign-in`, async ({ request, baseURL }) => {
     const response = await request.get(path, { maxRedirects: 0, headers: { Accept: "application/json" } });
     expect(response.status()).toBe(307);
-    expect(response.headers().location).toMatch(/^(https?:\/\/[^/]+)?\/sign-in\?redirect_url=/);
+    expectSignInRedirect(response.headers().location, baseURL, path);
   });
 }
 
 // Default deny (src/lib/page-access.ts): a page is public only when listed there. The proxy cannot tell
 // a page from a typo, so any other path asks a signed-out visitor to sign in.
-test("a page that is not listed as public requires sign-in", async ({ request }) => {
+test("a page that is not listed as public requires sign-in", async ({ request, baseURL }) => {
   const response = await request.get("/definitely-not-a-page", {
     maxRedirects: 0,
     headers: { Accept: "application/json" },
   });
   expect(response.status()).toBe(307);
-  expect(response.headers().location).toMatch(/^(https?:\/\/[^/]+)?\/sign-in\?redirect_url=/);
+  expectSignInRedirect(response.headers().location, baseURL, "/definitely-not-a-page");
 });
 
 for (const path of ["/", "/sign-in", "/sign-up"]) {
@@ -28,12 +43,22 @@ for (const path of ["/", "/sign-in", "/sign-up"]) {
   });
 }
 
+// SEC-02, on the production build this suite serves. The policy's exact content is csp.test.ts and the header set
+// is next-config.test.ts; this proves they reach a response.
 test("security headers are set", async ({ request }) => {
   const response = await request.get("/", { headers: { Accept: "application/json" } });
   const headers = response.headers();
-  expect(headers["content-security-policy"]).toContain("frame-ancestors 'none'");
+  const policy = headers["content-security-policy"] ?? "";
+  expect(policy).toContain("frame-ancestors 'none'");
+  expect(policy).toContain("default-src 'self'");
+  expect(policy).toContain("upgrade-insecure-requests");
+  expect(policy).not.toContain("'unsafe-eval'");
   expect(headers["x-frame-options"]).toBe("DENY");
   expect(headers["x-content-type-options"]).toBe("nosniff");
+  expect(headers["referrer-policy"]).toBe("strict-origin-when-cross-origin");
+  expect(headers["permissions-policy"]).toBe("camera=(), microphone=(), geolocation=()");
+  // For this host only: includeSubDomains would pin plain-HTTP sibling subdomains to HTTPS (ADR-0004 §24).
+  expect(headers["strict-transport-security"]).toBe("max-age=63072000");
   expect(headers["x-powered-by"]).toBeUndefined();
 });
 

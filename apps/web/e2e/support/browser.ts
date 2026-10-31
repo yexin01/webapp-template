@@ -19,7 +19,9 @@ export { expect };
  *
  * Whichever tier runs, the page must raise no uncaught error (clerk-js failing to load excepted in the
  * account-free tier), report no Content Security Policy violation, and request nothing of the app's own
- * that fails: a CSP that blocks the app's scripts or a broken asset fails these tests, not a user.
+ * that fails: a CSP that blocks the app's scripts or a broken asset fails these tests, not a user. Only
+ * the app's own pages count: a page the browser is sent to (Stripe's Checkout) has policies and scripts of
+ * its own. A test that provokes a failing response on purpose names it in `expectedFailures`.
  */
 export const ACCOUNT_FREE = !isSandboxRun(process.env);
 
@@ -31,9 +33,16 @@ const BENIGN = /ResizeObserver loop/;
 
 type CspWindow = { reportCspViolation?: (detail: string) => void };
 
-export const test = base.extend<{ guard: void }>({
+export const test = base.extend<{ guard: void; expectedFailures: string[] }>({
+  // Same-origin responses a test provokes on purpose, as "<status> <path>"; the test adds them before it navigates.
+  expectedFailures: [
+    async ({}, use) => {
+      await use([]);
+    },
+    { scope: "test" },
+  ],
   guard: [
-    async ({ page, context, baseURL }, use) => {
+    async ({ page, context, baseURL, expectedFailures }, use) => {
       const origin = new URL(baseURL ?? "http://127.0.0.1");
       const problems: string[] = [];
 
@@ -63,15 +72,18 @@ export const test = base.extend<{ guard: void }>({
       await page.exposeFunction("reportCspViolation", (detail: string) => {
         problems.push(`Content Security Policy violation: ${detail}`);
       });
-      await page.addInitScript(() => {
+      await page.addInitScript((appOrigin) => {
         document.addEventListener("securitypolicyviolation", (event) => {
+          // Our policy is reported on our own documents; a page the browser was sent to reports its own.
+          if (window.location.origin !== appOrigin) return;
           (window as unknown as CspWindow).reportCspViolation?.(
             `${event.violatedDirective} blocked ${event.blockedURI || "an inline resource"}`,
           );
         });
-      });
+      }, origin.origin);
       page.on("pageerror", (error) => {
         if (BENIGN.test(error.message) || (ACCOUNT_FREE && CLERK_JS_BLOCKED.test(error.message))) return;
+        if (new URL(page.url()).origin !== origin.origin) return;
         problems.push(`uncaught error: ${error.message}`);
       });
       page.on("response", (response) => {
@@ -79,6 +91,7 @@ export const test = base.extend<{ guard: void }>({
         if (hostname !== origin.hostname || response.status() < 400) return;
         // The document under test may be a 404 on purpose; the browser asks for the icon on its own.
         if (response.request().resourceType() === "document" || pathname === "/favicon.ico") return;
+        if (expectedFailures.includes(`${response.status()} ${pathname}`)) return;
         problems.push(`${response.status()} for ${pathname}`);
       });
 

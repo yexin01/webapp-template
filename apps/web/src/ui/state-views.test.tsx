@@ -5,7 +5,13 @@ import { ApiError } from "@/lib/api/errors";
 
 import { ErrorState, LoadingState } from "./state-views";
 
-vi.mock("next/navigation", () => ({ usePathname: () => "/dashboard" }));
+const navigation = vi.hoisted(() => ({ pathname: "/dashboard" }));
+vi.mock("next/navigation", () => ({ usePathname: () => navigation.pathname }));
+
+afterEach(() => {
+  navigation.pathname = "/dashboard";
+  window.history.replaceState(null, "", "/");
+});
 
 describe("state views", () => {
   it("announces loading politely", () => {
@@ -19,6 +25,29 @@ describe("state views", () => {
     expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute(
       "href",
       "/sign-in?redirect_url=%2Fdashboard",
+    );
+  });
+
+  it("sends the visitor back to the page they were on, query string included, as a relative path (SEC-14)", () => {
+    navigation.pathname = "/billing";
+    window.history.replaceState(null, "", "/billing?from=portal");
+    render(<ErrorState error={new ApiError(401, "UNAUTHENTICATED", "x", null)} />);
+    expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute(
+      "href",
+      "/sign-in?redirect_url=%2Fbilling%3Ffrom%3Dportal",
+    );
+  });
+
+  it.each([
+    ["a path that names another origin", "//evil.example.com/dashboard", "/"],
+    ["a path with a backslash", "/\\evil.example.com", "/"],
+    ["an absolute URL", "https://evil.example.com/", "/"],
+  ])("never returns the visitor to %s", (_label, pathname, returnTo) => {
+    navigation.pathname = pathname;
+    render(<ErrorState error={new ApiError(401, "UNAUTHENTICATED", "x", null)} />);
+    expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute(
+      "href",
+      `/sign-in?redirect_url=${encodeURIComponent(returnTo)}`,
     );
   });
 
@@ -52,5 +81,27 @@ describe("state views", () => {
     expect(screen.getByRole("alert")).not.toHaveTextContent("Reference");
     rerender(<ErrorState error={new Error("not an API error")} />);
     expect(screen.getByRole("alert")).not.toHaveTextContent("Reference");
+  });
+
+  it("offers the plans, and no retry, for a feature that needs Pro", () => {
+    const onRetry = vi.fn();
+    render(
+      <ErrorState
+        error={new ApiError(403, "ENTITLEMENT_REQUIRED", "This feature requires the Pro plan.", null)}
+        onRetry={onRetry}
+      />,
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent("Pro feature");
+    expect(screen.getByRole("alert")).toHaveTextContent("This feature requires the Pro plan.");
+    expect(screen.getByRole("link", { name: "See plans" })).toHaveAttribute("href", "/billing");
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Sign in" })).toBeNull();
+  });
+
+  it("offers nothing to do for a refusal that retrying or signing in cannot change", () => {
+    render(<ErrorState error={new ApiError(403, "FORBIDDEN", "No.", null)} onRetry={vi.fn()} />);
+    expect(screen.getByRole("alert")).toHaveTextContent("Not allowed");
+    expect(screen.queryByRole("link")).toBeNull();
+    expect(screen.queryByRole("button")).toBeNull();
   });
 });

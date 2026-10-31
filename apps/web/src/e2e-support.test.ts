@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 import { ensureTestUser, type UsersApi } from "../e2e/support/clerk-user";
@@ -206,5 +206,42 @@ describe("the sandbox user", () => {
     expect((error as Error).message).toMatch(
       /authentication_invalid: Invalid authentication\)\. Check that CLERK_SECRET_KEY is the secret key of the same development instance/,
     );
+  });
+});
+
+/**
+ * The browser guard (e2e/support/browser.ts) fails a page that raises an uncaught error, reports a Content Security
+ * Policy violation, or requests something of the app's own that fails. It is an automatic fixture of the `test` that
+ * file exports, so it reaches a spec only when the spec takes `test` from it: signed-in pages are guarded too, not
+ * only the public ones. A spec that opens no page (http.spec.ts) may take `test` from Playwright.
+ */
+describe("the browser guard", () => {
+  const e2e = path.resolve(import.meta.dirname, "../e2e");
+  const read = (file: string) => readFileSync(path.join(e2e, file), "utf8");
+  const specs = readdirSync(e2e).filter((file) => file.endsWith(".spec.ts"));
+
+  it("finds the specs", () => {
+    expect(specs).toEqual(expect.arrayContaining(["pages.spec.ts", "authenticated.spec.ts", "http.spec.ts"]));
+  });
+
+  it("is on for every test that takes the fixture, without being asked", () => {
+    expect(read("support/browser.ts")).toMatch(/\{ auto: true \}/);
+  });
+
+  it.each(specs)("%s takes `test` from the guard if it opens a page", (file) => {
+    const source = read(file);
+    const opensPage = /\(\{[^})]*\bpage\b[^})]*\}/.test(source);
+    const fromGuard = /import \{[^}]*\btest\b[^}]*\} from "\.\/support\/browser"/.test(source);
+    const fromPlaywright = /import \{[^}]*\btest\b[^}]*\} from "@playwright\/test"/.test(source);
+    if (opensPage) {
+      expect(fromGuard, `${file} opens a page: import { test } from "./support/browser"`).toBe(true);
+      expect(fromPlaywright, `${file} takes test from Playwright, so no guard runs`).toBe(false);
+    }
+  });
+
+  it("is checked where it matters: the specs that open a page are found", () => {
+    const opening = specs.filter((file) => /\(\{[^})]*\bpage\b[^})]*\}/.test(read(file)));
+    expect(opening).toEqual(expect.arrayContaining(["pages.spec.ts", "authenticated.spec.ts"]));
+    expect(opening).not.toContain("http.spec.ts");
   });
 });

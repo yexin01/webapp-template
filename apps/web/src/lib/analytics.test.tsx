@@ -1,6 +1,7 @@
 import { render, waitFor } from "@testing-library/react";
 
 import { AnalyticsProvider } from "./analytics-provider";
+import { SENSITIVE_QUERY_PARAMETERS } from "./redact";
 
 const posthog = vi.hoisted(() => ({
   init: vi.fn(),
@@ -34,24 +35,45 @@ beforeEach(() => {
 });
 
 describe("analytics", () => {
-  it("pins remotely controllable capture off (OBS-03)", () => {
+  // Every option the SDK is given, so that none flips to a looser value unnoticed: a changed value, an added
+  // option and a removed one all fail here. analytics.ts explains each. The SDK starts once per test file.
+  it("pins remotely controllable capture off, sends nothing personal, and bounds the volume (OBS-03, OBS-07)", () => {
     render(<AnalyticsProvider />);
     expect(posthog.init).toHaveBeenCalledOnce();
     const [key, options] = posthog.init.mock.calls[0] ?? [];
     expect(key).toBe("phc_test");
-    expect(options).toMatchObject({
+    expect(
+      options,
+      "an option given to posthog.init changed, was added, or was removed: each one pins privacy, remote capture, or volume (analytics.ts)",
+    ).toEqual({
       api_host: "https://eu.i.posthog.com",
+      advanced_disable_flags: true,
       autocapture: false,
       rageclick: false,
       capture_exceptions: false,
       capture_heatmaps: false,
       capture_dead_clicks: false,
       capture_performance: false,
+      capture_webmcp: false,
       logs: { captureConsoleLogs: false },
       disable_session_recording: true,
       disable_surveys: true,
+      disable_product_tours: true,
+      disable_conversations: true,
+      disable_web_experiments: true,
+      capture_pageview: "history_change",
+      capture_pageleave: false,
+      person_profiles: "identified_only",
+      mask_all_text: true,
+      mask_all_element_attributes: true,
+      persistence: "localStorage",
+      rate_limiting: { events_per_second: 10, events_burst_limit: 100 },
+      mask_personal_data_properties: true,
+      custom_personal_data_properties: [...SENSITIVE_QUERY_PARAMETERS],
+      disable_capture_url_hashes: true,
+      property_denylist: ["$current_url", "$referrer", "$initial_referrer"],
+      before_send: expect.any(Function),
     });
-    expect(options.before_send).toBeTypeOf("function");
   });
 
   it("identifies by internal ID and resets when the signed-in user changes", async () => {

@@ -51,7 +51,7 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("api client", () => {
-  it("sends the bearer token, never cookies, to the same-origin API", async () => {
+  it("sends the bearer token to the same-origin API, and sets no cookie header itself", async () => {
     const fetchMock = mockFetch(200, { user_id: "u1" });
     const me = await createApiClient(async () => "tok_123").me();
     const request = sentRequest(fetchMock);
@@ -62,9 +62,23 @@ describe("api client", () => {
     expect(request.headers.get("Accept")).toBe("application/json");
     expect(request.headers.get("Cookie")).toBeNull();
     expect(request.headers.get("Content-Type")).toBeNull();
-    expect(request.credentials).toBe("omit");
+    expect(request.credentials).toBe("same-origin");
     expect(request.cache).toBe("no-store");
     expect(me).toEqual({ user_id: "u1" });
+  });
+
+  it.each([
+    ["a read", (api: ApiClient) => api.billingStatus()],
+    ["a call that waits on a provider", (api: ApiClient) => api.startCheckout("pro_monthly", "key-12345678")],
+  ])("lets the browser attach the page's own cookies, and no other origin's, to %s", async (_label, call) => {
+    const fetchMock = mockFetch(200, { url: "https://checkout.stripe.com/c/pay/cs_test_1" });
+    await call(createApiClient(async () => "t"));
+    const request = sentRequest(fetchMock);
+    expect(new URL(request.url).origin).toBe(window.location.origin);
+    expect(
+      request.credentials,
+      '"omit" drops the cookie Vercel Deployment Protection needs on a protected preview; "include" would send cookies to another origin',
+    ).toBe("same-origin");
   });
 
   it("asks whether the operator tools are the user's with a plain GET that a customer gets a 200 for", async () => {
@@ -79,7 +93,7 @@ describe("api client", () => {
     const fetchMock = mockFetch(200, { user_id: "u1" });
     await createApiClient(async () => null).me();
     expect(sentRequest(fetchMock).headers.get("Authorization")).toBeNull();
-    expect(sentRequest(fetchMock).credentials).toBe("omit");
+    expect(sentRequest(fetchMock).credentials).toBe("same-origin");
   });
 
   it("scopes organization requests and encodes identifiers", async () => {
@@ -491,10 +505,20 @@ describe("redirect allowlist", () => {
   it.each([
     ["https://checkout.stripe.com/c/pay/cs_test_1", true],
     ["https://billing.stripe.com/p/session/1", true],
+    ["https://stripe.com/x", true],
+    ["https://CHECKOUT.Stripe.com/x", true],
     ["/billing", true],
+    ["http://localhost:3000/billing", true],
     ["http://checkout.stripe.com/x", false],
     ["https://stripe.com.evil.example/x", false],
+    ["https://checkout.stripe.com.evil.example/x", false],
+    // A name that only ends in "stripe.com" is not a subdomain of it.
+    ["https://evilstripe.com/x", false],
+    ["https://checkout.evilstripe.com/x", false],
+    // The host is what follows the "@", not what precedes it.
+    ["https://checkout.stripe.com@evil.example/x", false],
     ["https://evil.example/?https://checkout.stripe.com", false],
+    ["http://localhost:3001/billing", false],
     ["javascript:alert(1)", false],
   ])("%s -> %s", (url, allowed) => {
     expect(isAllowedRedirect(url, origin)).toBe(allowed);
