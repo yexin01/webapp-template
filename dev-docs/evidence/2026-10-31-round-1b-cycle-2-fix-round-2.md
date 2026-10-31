@@ -46,7 +46,7 @@ Findings logged: 66 rows. None critical.
 
 ## Cycle 2 findings by disposition
 
-Counted from the cycle 2 ledger (a working file outside the repository: one row per finding, with the reviewer's evidence and proposed fix). The ledger's status column was not updated after the fix round, so the dispositions below are read from the merged commits and from this documentation pass. A row counts as fixed when a commit on `arch/integration` names it. **No row is recorded as refuted**: no package's outcome that reached this record refuted a claim, and if one did, its package report holds the reason. Three rows are duplicates of another (`docs-bill-13-pass-without-measurement`, `init-template-leaves-dangling-pointers`, `0f-F-12`) and share its disposition.
+Counted from the cycle 2 ledger (a working file outside the repository: one row per finding, with the reviewer's evidence and proposed fix). The ledger's status column was not updated after the fix round, so the dispositions below are read from the merged commits and from this documentation pass. A row counts as fixed when a commit on `arch/integration` names it, or, for a document, when a commit of the documentation pass (branch `arch/docs2`) does. **No row is recorded as refuted**: no package's outcome that reached this record refuted a claim, and if one did, its package report holds the reason. Three rows are duplicates of another (`docs-bill-13-pass-without-measurement`, `init-template-leaves-dangling-pointers`, `0f-F-12`) and share its disposition.
 
 | Severity | Rows | Fixed in code or tests | Fixed in the documents | Refuted | Deferred |
 |---|---|---|---|---|---|

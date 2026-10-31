@@ -66,7 +66,7 @@ PERF-06 against a deployed target measures latency and acknowledgements only. It
 
 **`VERCEL_AUTOMATION_BYPASS_SECRET`** (previews behind Vercel Deployment Protection). Deployment Protection answers `401` before the API sees a request, and k6 then stops with a "Deployment Protection" message. With this variable set, every request carries the `x-vercel-protection-bypass` header.
 
-1. In the Vercel project's Deployment Protection settings, create a **Protection Bypass for Automation** secret, with the owner's approval. On Vercel, deployments receive it as `VERCEL_AUTOMATION_BYPASS_SECRET`.
+1. In the Vercel project's Deployment Protection settings, create a **Protection Bypass for Automation** secret, with the owner's approval. Use one secret for your tools and not the one that sits in the webhook URLs at Stripe and Clerk: each secret bypasses protection on all deployments of the project ([deployment.md](../docs/deployment.md#preview-details)). On Vercel, deployments receive one of the secrets as `VERCEL_AUTOMATION_BYPASS_SECRET`.
 2. Export it as shown above. `pnpm perf:run` passes it to Docker by name only. It is never printed or written to the results, which record only `protection_bypass: true`.
 3. Revoke or regenerate it after the run if it was created only for the run.
 
