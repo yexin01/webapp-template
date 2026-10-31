@@ -94,6 +94,8 @@ def build_router(container: Container, provider_url: str) -> APIRouter:
         analytics = container.kernel.analytics
         analytics.capture(user, "checkout_started", {"plan": "pro_monthly", "email": EMAIL, "prompt": PROMPT})
         analytics.capture(user, "customer_emailed", {"email": EMAIL})
+        # An outbox handler's way: sent at once, on a thread of its own, from within the request here.
+        analytics.capture(user, "billing_portal_opened", {"email": EMAIL}, event_id=uuid.uuid4())
         return {"queued": True}
 
     return router
@@ -119,7 +121,8 @@ def main(telemetry_url: str, provider_url: str, database_url: str, result: Path)
         database_url=database_url,
         analytics_mode="sandbox",
         posthog_project_api_key="phc_test_only",
-        posthog_host=telemetry_url,
+        # Another name for the same stub: sentry-sdk never adds a trace header to a call to its own host.
+        posthog_host=telemetry_url.replace("127.0.0.1", "localhost"),
         error_reporting_mode="sandbox",
         sentry_dsn=f"http://public@{telemetry_url.removeprefix('http://')}/1",
         sentry_traces_sample_rate=1.0,

@@ -174,9 +174,12 @@ def test_the_run_exercised_what_it_claims_to(run: tuple[dict[str, Any], list[Rec
     assert any("logentry" in e for e in events), "an event made from an ERROR log record"
     assert any(c.get("category") == "httplib" for e in events for c in e.get("breadcrumbs", {}).get("values", []))
     assert any(s.get("op") == "http.client" for t in transactions for s in t.get("spans", [])), "a span"
-    assert [e["event"] for e in telemetry.sent] == ["checkout_started"]
-    assert telemetry.sent[0]["properties"]["plan"] == "pro_monthly"
-    assert telemetry.sent[0]["distinct_id"]
+    # The queued event and the one sent at once, which PostHog received in whichever order.
+    sent = {e["event"]: e for e in telemetry.sent}
+    assert sorted(sent) == ["billing_portal_opened", "checkout_started"]
+    assert sent["checkout_started"]["properties"]["plan"] == "pro_monthly"
+    assert all(e["distinct_id"] for e in sent.values())
+    assert "email" not in sent["billing_portal_opened"]["properties"]
 
 
 def test_ids_in_paths_are_replaced_not_dropped(run: tuple[dict[str, Any], list[Recorded], str]) -> None:
@@ -198,10 +201,17 @@ def test_ids_in_paths_are_replaced_not_dropped(run: tuple[dict[str, Any], list[R
 
 
 def test_no_trace_header_reaches_a_provider(run: tuple[dict[str, Any], list[Recorded], str]) -> None:
-    """A provider gets no sentry-trace or baggage header (the release, environment, trace ID and route names)."""
-    outcome, _, _ = run
+    """A provider gets no sentry-trace or baggage header (the release, environment, trace ID and route names).
+
+    Clerk and the Stripe shaped path are httpx calls; PostHog is a ``requests`` one, sent from the request here
+    (the child reaches the stub by another name than the Sentry DSN's, whose host sentry-sdk never adds a header to).
+    """
+    outcome, wire, _ = run
     assert len(outcome["provider_headers"]) == 3
     assert [headers & TRACE_HEADERS for headers in outcome["provider_headers"]] == [set()] * 3
+    posthog = [r for r in wire if r.path.startswith("/batch")]
+    assert posthog, "PostHog received a batch"
+    assert [set(r.headers) & TRACE_HEADERS for r in posthog] == [set()] * len(posthog)
 
 
 def test_no_canary_reaches_sentry_or_posthog(run: tuple[dict[str, Any], list[Recorded], str]) -> None:

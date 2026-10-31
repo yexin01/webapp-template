@@ -430,7 +430,7 @@ ANALYTICS_ALLOWLIST: Mapping[str, frozenset[str]] = {
 # A property whose name, split on "_", holds one of these words is refused when its event is registered:
 # user_email, ip_address, first_name, phone_number. A joined form (firstname, ipaddress) is listed too. This stops
 # the obvious mistake of naming a property after personal data or a credential; the allowlist is what keeps a
-# property off the wire. docs/architecture.md ("Adding an analytics event") lists the words for authors.
+# property off the wire. docs/architecture.md ("Adding an analytics event") says so to authors.
 PERSONAL_DATA_WORDS = frozenset(
     {
         # who someone is, and how to reach them
