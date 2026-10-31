@@ -46,6 +46,7 @@ class PriceDescription:
     recurring_interval: str | None
     currency: str | None
     livemode: bool
+    product_id: str | None
 
 
 class BillingRepository(Protocol):

@@ -259,6 +259,7 @@ class StripeBillingProvider:
             recurring_interval=str(_get(recurring, "interval")) if recurring else None,
             currency=str(currency) if currency else None,
             livemode=bool(_get(price, "livemode")),
+            product_id=_id(_get(price, "product")),
         )
 
     def describe_portal(self) -> PortalConfiguration | None:

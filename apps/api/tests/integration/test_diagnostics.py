@@ -23,7 +23,7 @@ from app.modules.billing.ports import PriceDescription
 from app.modules.identity.domain import ExternalMembership
 from app.modules.llm.adapters import MockLLMProvider
 from app.settings import Settings
-from tests.conftest import PRICE_MONTHLY, PRICE_YEARLY, Harness, grant_to_administrator, superuser_query
+from tests.conftest import PRICE_MONTHLY, PRICE_YEARLY, PRODUCT_PRO, Harness, grant_to_administrator, superuser_query
 
 pytestmark = pytest.mark.db
 
@@ -65,6 +65,7 @@ class FakeErrorReporter:
 def _price(price_id: str, interval: str, **kwargs: Any) -> PriceDescription:
     values: dict[str, Any] = {
         "price_id": price_id,
+        "product_id": PRODUCT_PRO,
         "active": True,
         "recurring_interval": interval,
         "currency": "eur",
@@ -311,6 +312,28 @@ def test_billing_check_flags_misconfigured_prices(
     assert body["outcome"] == "failed"
     assert body["error_code"] == "price_mismatch"
     assert expected in body["summary"]
+
+
+def test_billing_check_names_the_product_a_price_belongs_to_when_it_is_not_the_pro_product(
+    sandbox: Callable[..., Harness],
+) -> None:
+    """The owner can copy the product ID from the message into STRIPE_PRODUCT_PRO."""
+    h = sandbox()
+    h.billing.set_price(_price(PRICE_MONTHLY, "month", product_id="prod_other"))
+    body = check(h, "billing")
+    assert body["outcome"] == "failed"
+    assert body["error_code"] == "price_mismatch"
+    assert f"Monthly price belongs to product prod_other, but STRIPE_PRODUCT_PRO is {PRODUCT_PRO}" in body["summary"]
+    assert "Yearly price belongs to" not in body["summary"]
+
+
+def test_billing_check_names_each_price_that_belongs_to_another_product(sandbox: Callable[..., Harness]) -> None:
+    h = sandbox()
+    h.billing.set_price(_price(PRICE_MONTHLY, "month", product_id="prod_a"))
+    h.billing.set_price(_price(PRICE_YEARLY, "year", product_id=None))
+    summary = check(h, "billing")["summary"]
+    assert f"Monthly price belongs to product prod_a, but STRIPE_PRODUCT_PRO is {PRODUCT_PRO}" in summary
+    assert f"Yearly price belongs to product ?, but STRIPE_PRODUCT_PRO is {PRODUCT_PRO}" in summary
 
 
 def test_billing_check_passes_with_the_portal_verified_and_the_webhook_not_checked(
