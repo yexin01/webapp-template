@@ -59,7 +59,7 @@ After filling in `.env` and running `pnpm dev`, sign in and open `/integrations`
 |---|---|---|
 | PostgreSQL | Confirms queries run as `app_api` with row-level security and the tenant context applied, and reads the login role. In preview and production a login role that could skip row-level security FAILS the check and names the fix | None |
 | Clerk | Reads your organization memberships from the Clerk Backend API (your session token was already verified) | None |
-| Stripe | Retrieves both Pro prices and checks they are active, recurring monthly and yearly, in one currency, in the right mode, and on the product `STRIPE_PRODUCT_PRO` (it names the product of a price that is on another one). Reads the Customer Portal configuration and fails (`portal_mismatch`) when it does not match [what the template expects](#stripe) | None |
+| Stripe | Retrieves both Pro prices and checks they are active, recurring monthly and yearly, in one currency, in the right mode, and on the product `STRIPE_PRODUCT_PRO` (it names the product of a price that is on another one). Lists one page of subscriptions and fails (`permission_denied`) when the key may not read them: every synchronization would fail. Reads the Customer Portal configuration and fails (`portal_mismatch`) when it does not match [what the template expects](#stripe) | None |
 | LLM provider | Retrieves the model's metadata (no tokens generated) | None; counts toward the LLM check limits |
 | PostHog | Sends the allowlisted event `integration_test_sent` and flushes it | One event in your project |
 | Sentry | Sends a synthetic `IntegrationTestError` and flushes it | One issue in your project |

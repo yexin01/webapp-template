@@ -117,6 +117,10 @@ class BillingProvider(Protocol):
         """The default Customer Portal configuration, read only. ``None`` if none is saved in this mode."""
         ...
 
+    def check_subscriptions_readable(self) -> None:
+        """Read one subscription listing. ``ForbiddenError`` if the key may not read subscriptions."""
+        ...
+
 
 class BillingWebhookVerifier(Protocol):
     def verify(self, payload: bytes, signature_header: str | None) -> BillingWebhookEvent: ...

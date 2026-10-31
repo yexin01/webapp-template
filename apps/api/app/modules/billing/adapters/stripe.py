@@ -297,6 +297,20 @@ class StripeBillingProvider:
             ),
         )
 
+    def check_subscriptions_readable(self) -> None:
+        # Diagnostics only, like describe_portal. A restricted key without Subscriptions read access passes the
+        # price and portal checks, and then every synchronization fails.
+        try:
+            self._client.v1.subscriptions.list(params={"limit": 1})
+        except stripe.AuthenticationError as exc:
+            raise DependencyUnavailableError("Stripe rejected the API key.") from exc
+        except stripe.PermissionError as exc:
+            raise ForbiddenError("The Stripe API key cannot read Subscriptions.") from exc
+        except stripe.InvalidRequestError as exc:
+            raise InvalidRequestError("Stripe rejected the request to list subscriptions.") from exc
+        except stripe.StripeError as exc:
+            raise DependencyUnavailableError("Stripe is temporarily unavailable.") from exc
+
     def get_customer_app_user_id(self, customer_id: str) -> UUID | None:
         customer = self._call(self._client.v1.customers.retrieve, customer_id)
         if _get(customer, "deleted"):

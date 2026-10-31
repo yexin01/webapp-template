@@ -32,6 +32,7 @@ class InMemoryBillingProvider:
         self._prices: dict[str, PriceDescription] = {}
         self._deleted_customers: set[str] = set()
         self._portal: PortalConfiguration | Exception | None = None
+        self._subscriptions_access: Exception | None = None
         self._sessions: dict[str, _Session] = {}
         self._session_by_key: dict[str, str] = {}
         # When the sessions created from now on expire.
@@ -152,6 +153,13 @@ class InMemoryBillingProvider:
             raise portal
         return portal
 
+    def check_subscriptions_readable(self) -> None:
+        self._maybe_fail("check_subscriptions_readable")
+        with self._lock:
+            refusal = self._subscriptions_access
+        if refusal is not None:
+            raise refusal
+
     # Test helpers -----------------------------------------------------------
 
     def open_sessions(self, user_id: UUID | None = None) -> list[str]:
@@ -173,6 +181,11 @@ class InMemoryBillingProvider:
     def set_portal(self, portal: PortalConfiguration | Exception | None) -> None:
         with self._lock:
             self._portal = portal
+
+    def refuse_subscriptions_access(self, error: Exception | None) -> None:
+        """Make the subscription listing the check performs fail, or (``None``) work again."""
+        with self._lock:
+            self._subscriptions_access = error
 
     def set_price(self, price: PriceDescription) -> None:
         with self._lock:

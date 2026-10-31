@@ -479,6 +479,34 @@ class TestPortalConfiguration:
         assert FAKE_KEY not in caught.value.public_message  # type: ignore[attr-defined]
 
 
+class TestSubscriptionsReadable:
+    """The Stripe check reads one subscription listing, so a key that cannot read subscriptions is found at setup."""
+
+    def test_one_listing_is_read_and_nothing_is_written(self) -> None:
+        listing = {"object": "list", "url": "/v1/subscriptions", "has_more": False, "data": []}
+        with stub_server(lambda req: (200, listing)) as stub:
+            assert provider(stub.url).check_subscriptions_readable() is None
+        [request] = stub.requests
+        assert (request.method, urlsplit(request.path).path) == ("GET", "/v1/subscriptions")
+        assert parse_qs(urlsplit(request.path).query) == {"limit": ["1"]}
+
+    @pytest.mark.parametrize(
+        ("status", "error", "message"),
+        [
+            (401, DependencyUnavailableError, "rejected the API key"),
+            (403, ForbiddenError, "cannot read Subscriptions"),
+            (400, InvalidRequestError, "list subscriptions"),
+            (500, DependencyUnavailableError, "temporarily unavailable"),
+        ],
+    )
+    def test_errors_are_specific_and_never_echo_the_key(self, status: int, error: type, message: str) -> None:
+        body = {"error": {"type": "invalid_request_error" if status < 500 else "api_error", "message": FAKE_KEY}}
+        with stub_server(lambda req: (status, body)) as stub, pytest.raises(error) as caught:
+            provider(stub.url).check_subscriptions_readable()
+        assert message in caught.value.public_message  # type: ignore[attr-defined]
+        assert FAKE_KEY not in caught.value.public_message  # type: ignore[attr-defined]
+
+
 class TestRedirectHosts:
     """The user is sent to the URL Stripe returns: Stripe's own hosts, or the account's custom domain, nothing else."""
 
