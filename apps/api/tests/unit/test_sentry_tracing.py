@@ -148,6 +148,12 @@ def test_sentry_scrubs_transactions_and_sends_every_span_inside_one() -> None:
     assert options["trace_lifecycle"] == "static"
 
 
+def test_sentry_adds_no_trace_header_to_an_outgoing_call() -> None:
+    """Without a list, sentry-sdk adds sentry-trace and baggage to every call (test_telemetry_wire.py sends some)."""
+    options = sentry_options(make_settings(error_reporting_mode="sandbox", sentry_dsn=DSN))
+    assert options["trace_propagation_targets"] == []
+
+
 class TestScrubTransaction:
     def test_no_token_or_personal_data_is_left(self) -> None:
         assert_clean(scrub_transaction(transaction_event(), {}))
@@ -546,8 +552,9 @@ def test_at_a_rate_of_0_no_caller_can_have_a_request_traced() -> None:
     """OBS-07: a rate of 0 alone would still trace each request whose caller sends a sampled trace.
 
     Each request still continues its caller's trace, so its error events link
-    to it, and its outgoing calls pass it on as not sampled. A request without
-    one starts a trace of its own.
+    to it, and the header it would pass on says not sampled (no call carries
+    one: ``trace_propagation_targets`` is empty). A request without one starts
+    a trace of its own.
     """
     sent, propagated = _send_requests(0.0, CALLER_SAMPLED, {}, {})
     assert "transaction" not in {kind for _, kind, _ in sent}

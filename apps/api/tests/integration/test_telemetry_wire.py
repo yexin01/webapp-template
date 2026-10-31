@@ -10,7 +10,7 @@ transactions, spans, breadcrumbs, log events, the 5xx the API chose, and PostHog
 The scrubber unit tests prove the hooks work on dicts built by hand; this proves the process sends nothing
 around them. A signed-in user's request runs through the production Clerk verifier and directory against a stub
 provider, in a database of its own: the Clerk IDs travel in the request path and in the path of the call to the
-provider. Mocked: loopback only, no network access; the database is local.
+provider, which must receive no trace header. Mocked: loopback only, no network access; the database is local.
 """
 
 from __future__ import annotations
@@ -38,6 +38,8 @@ pytestmark = pytest.mark.db
 
 API_DIR = Path(__file__).resolve().parents[2]
 ENVELOPE = "/api/1/envelope/"
+# What Sentry puts on an outgoing request to continue a trace; a provider has no use for any of them.
+TRACE_HEADERS = {"sentry-trace", "baggage", "traceparent"}
 
 
 def body_of(request: Recorded) -> bytes:
@@ -138,6 +140,7 @@ def run(tmp_path_factory: pytest.TempPathFactory, wire_database: str) -> tuple[d
         provider_requests = list(provider.requests)
     outcome = json.loads(result.read_text())
     outcome["provider_calls"] = [r.path for r in provider_requests]
+    outcome["provider_headers"] = [set(r.headers) for r in provider_requests]
     return outcome, wire, child.stdout + child.stderr
 
 
@@ -192,6 +195,13 @@ def test_ids_in_paths_are_replaced_not_dropped(run: tuple[dict[str, Any], list[R
     assert "http://testserver/api/v1/_canary/orgs/{org_id}/boom" in {e["request"]["url"] for e in events}
     unmatched = {t["transaction"] for t in transactions if t["transaction_info"] == {"source": "url"}}
     assert "http://testserver/api/v1/orgs/{id}/nothing" in unmatched, "no route matched: the path stays"
+
+
+def test_no_trace_header_reaches_a_provider(run: tuple[dict[str, Any], list[Recorded], str]) -> None:
+    """A provider gets no sentry-trace or baggage header (the release, environment, trace ID and route names)."""
+    outcome, _, _ = run
+    assert len(outcome["provider_headers"]) == 3
+    assert [headers & TRACE_HEADERS for headers in outcome["provider_headers"]] == [set()] * 3
 
 
 def test_no_canary_reaches_sentry_or_posthog(run: tuple[dict[str, Any], list[Recorded], str]) -> None:

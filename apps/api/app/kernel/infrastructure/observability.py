@@ -295,6 +295,9 @@ def sentry_options(settings: CoreSettings) -> dict[str, Any]:
         "traces_sampler": None if settings.sentry_traces_sample_rate else _never_sample,
         # Spans then travel only inside transactions, which before_send_transaction scrubs.
         "trace_lifecycle": "static",
+        # No outgoing call (Clerk, Stripe, the LLM provider, PostHog) carries sentry-trace or baggage: they hold the
+        # release, environment, trace ID and route names, and no provider has a use for them.
+        "trace_propagation_targets": [],
         "before_send": scrub_event,
         "before_send_transaction": scrub_transaction,
         "before_breadcrumb": scrub_breadcrumb,

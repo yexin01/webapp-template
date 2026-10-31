@@ -25,6 +25,8 @@ if (publicEnv.errorReporting.enabled) {
     // /api/v1 requests still carry sentry-trace and baggage without a sampling decision, so the API samples
     // them at SENTRY_TRACES_SAMPLE_RATE and browser errors share the API trace ID. Any defined rate, even 0,
     // would decide for the API ("not sampled") and still record spans under a sampled server-rendered page.
+    // No tracePropagationTargets either: the browser's default is the page's own origin, so no other host gets
+    // a trace header.
     // Session replay is not enabled; it would require an approved privacy review.
     beforeSend: prepareReport,
     beforeBreadcrumb: scrubBreadcrumb,

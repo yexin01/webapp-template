@@ -31,6 +31,9 @@ if (errorReporting.enabled) {
       stackFrameVariables: false,
     },
     tracesSampleRate: errorReporting.tracesSampleRate,
+    // Without a list the SDK adds sentry-trace and baggage (release, environment, trace ID, route names) to every
+    // request the server makes, whoever receives it. With none, a request keeps only the headers it already has.
+    tracePropagationTargets: [],
     beforeSend: scrubEvent,
     beforeBreadcrumb: scrubBreadcrumb,
     // Spans never reach beforeSend; Next.js puts the raw request URL on them.
