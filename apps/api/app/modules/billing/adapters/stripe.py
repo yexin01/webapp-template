@@ -182,6 +182,8 @@ class StripeBillingProvider:
                 "success_url": success_url,
                 "cancel_url": cancel_url,
                 "subscription_data": {"metadata": {_METADATA_USER_KEY: str(user_id)}},
+                # Cards only: a bank debit reads "active" before the funds arrive (docs/limitations.md).
+                "allowed_payment_method_types": ["card"],
             },
             options={"idempotency_key": idempotency_key},
             server_built=True,

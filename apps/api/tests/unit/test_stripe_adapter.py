@@ -17,6 +17,7 @@ from typing import Any, ClassVar
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
+from stripe.params.checkout import SessionCreateParams
 
 from app.kernel.errors import DependencyUnavailableError, ForbiddenError, InvalidRequestError, NotConfiguredError
 from app.modules.billing.adapters.stripe import StripeBillingProvider
@@ -108,8 +109,31 @@ class TestRequests:
             "success_url": ["https://app.test/billing/success?session_id={CHECKOUT_SESSION_ID}"],
             "cancel_url": ["https://app.test/billing?checkout=canceled"],
             "subscription_data[metadata][app_user_id]": [str(USER)],
+            "allowed_payment_method_types[0]": ["card"],
         }
         assert request.headers["idempotency-key"] == "checkout-key-1"
+
+    def test_a_checkout_session_sends_only_parameters_the_pinned_sdk_and_api_version_accept(self) -> None:
+        """Pro follows a subscription's status, so Checkout offers cards only: a bank debit can read ``active`` before the
+        money arrives. API version 2026-09-30.endive removed ``payment_method_types`` from Checkout Session creation (a
+        request that carries it is answered 400) and added ``allowed_payment_method_types``, a filter
+        (https://docs.stripe.com/changelog/endive/2026-09-30/remove-payment-method-types-checkout-sessions).
+        A stub cannot tell a wrong name from a right one; the installed SDK's own parameter list can.
+        """
+        session = {"id": "cs_1", "object": "checkout.session", "url": "https://checkout.stripe.com/c/pay/cs_1"}
+        with stub_server(lambda req: (200, session)) as stub:
+            provider(stub.url).create_checkout_session(
+                customer_id="cus_1",
+                price_id="price_m",
+                user_id=USER,
+                success_url="https://app.test/s",
+                cancel_url="https://app.test/c",
+                idempotency_key="checkout-key-1",
+            )
+        sent = {name.split("[")[0] for name in form(stub.requests[0])}
+        assert sent <= set(SessionCreateParams.__annotations__), sent - set(SessionCreateParams.__annotations__)
+        assert "payment_method_types" not in sent
+        assert form(stub.requests[0])["allowed_payment_method_types[0]"] == ["card"]
 
     def test_a_checkout_session_without_a_url_is_an_outage(self) -> None:
         session = {"id": "cs_1", "object": "checkout.session", "url": None}
