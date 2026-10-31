@@ -7,7 +7,6 @@ import re
 from pydantic import BaseModel, Field, SecretStr
 
 from app.kernel.infrastructure.config import CoreSettings, Mode, mode_problems, secret
-from app.modules.billing.domain import PlanKey
 
 # A bare lowercase hostname with at least one dot: no scheme, port, path, or wildcard.
 _HOSTNAME = re.compile(r"^(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$")
@@ -19,9 +18,8 @@ class BillingSettings(BaseModel):
     stripe_webhook_secret: SecretStr | None = None
     stripe_price_pro_monthly: str | None = None
     stripe_price_pro_yearly: str | None = None
-    # Comma-separated prices that are no longer sold but still grant Pro to existing subscribers.
-    stripe_price_pro_monthly_retained: str = ""
-    stripe_price_pro_yearly_retained: str = ""
+    # Any monthly or yearly price of this product grants Pro, so replacing a price keeps its subscribers.
+    stripe_product_pro: str | None = None
     # The custom domain of Stripe-hosted Checkout and the Customer Portal, if the account has one.
     stripe_custom_domain: str | None = None
     checkouts_per_user_per_hour: int = Field(default=10, ge=1, le=1_000)
@@ -39,7 +37,7 @@ class BillingSettings(BaseModel):
 
 
 def billing_problems(s: BillingSettings, core: CoreSettings) -> list[str]:
-    problems = mode_problems("BILLING_MODE", s.billing_mode, core.app_env) + retained_problems(s)
+    problems = mode_problems("BILLING_MODE", s.billing_mode, core.app_env)
     if s.stripe_custom_domain and not _HOSTNAME.fullmatch(s.stripe_custom_domain):
         problems.append("STRIPE_CUSTOM_DOMAIN must be a hostname such as payments.example.com")
     if s.billing_mode is Mode.DISABLED:
@@ -60,38 +58,6 @@ def billing_problems(s: BillingSettings, core: CoreSettings) -> list[str]:
     ):
         if not value or not value.startswith("price_"):
             problems.append(f"{name} is required and must be a Stripe price ID")
-    return problems
-
-
-def retained_prices(s: BillingSettings) -> dict[str, PlanKey]:
-    """Replaced prices that still grant Pro (``STRIPE_PRICE_PRO_*_RETAINED``)."""
-    retained: dict[str, PlanKey] = {}
-    for key, raw in (
-        (PlanKey.PRO_MONTHLY, s.stripe_price_pro_monthly_retained),
-        (PlanKey.PRO_YEARLY, s.stripe_price_pro_yearly_retained),
-    ):
-        for price in (p.strip() for p in raw.split(",")):
-            if price:
-                retained[price] = key
-    return retained
-
-
-def retained_problems(s: BillingSettings) -> list[str]:
-    problems = []
-    current = {s.stripe_price_pro_monthly, s.stripe_price_pro_yearly}
-    seen: set[str] = set()
-    for name, raw in (
-        ("STRIPE_PRICE_PRO_MONTHLY_RETAINED", s.stripe_price_pro_monthly_retained),
-        ("STRIPE_PRICE_PRO_YEARLY_RETAINED", s.stripe_price_pro_yearly_retained),
-    ):
-        for price in (p.strip() for p in raw.split(",")):
-            if not price:
-                continue
-            if not price.startswith("price_"):
-                problems.append(f"{name} must list Stripe price IDs, separated by commas")
-            elif price in current:
-                problems.append(f"{name} must not list a price that is still sold")
-            elif price in seen:
-                problems.append(f"{name} lists a price more than once")
-            seen.add(price)
+    if not s.stripe_product_pro or not s.stripe_product_pro.startswith("prod_"):
+        problems.append("STRIPE_PRODUCT_PRO is required and must be a Stripe product ID")
     return problems

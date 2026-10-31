@@ -8,10 +8,7 @@ import pytest
 
 from app.modules.billing.domain import PlanKey, PortalConfiguration, PriceCatalog, portal_problems
 
-CATALOG = PriceCatalog(
-    {PlanKey.PRO_MONTHLY: "price_m", PlanKey.PRO_YEARLY: "price_y"},
-    retained={"price_old": PlanKey.PRO_MONTHLY},
-)
+CATALOG = PriceCatalog({PlanKey.PRO_MONTHLY: "price_m", PlanKey.PRO_YEARLY: "price_y"}, "prod_pro")
 GOOD = PortalConfiguration(
     active=True,
     payment_method_update=True,
@@ -47,11 +44,7 @@ def test_product_choices_are_not_checked() -> None:
         ({"switch_prices": frozenset()}, ["pro_monthly price price_m", "pro_yearly price price_y"]),
         (
             {"switch_prices": frozenset({"price_m", "price_y", "price_old"})},
-            ["also offers price_old, a replaced pro_monthly price that is no longer sold"],
-        ),
-        (
-            {"switch_prices": frozenset({"price_m", "price_y", "price_extra"})},
-            ["also offers price_extra, a price outside the catalog that grants no Pro"],
+            ["also offers price_old, which checkout does not sell"],
         ),
     ],
 )

@@ -73,7 +73,7 @@ Legend: **web** = the Next.js service, **api** = the Python service. *Baked* = f
 | `STRIPE_SECRET_KEY` | api | secret | `sk_test_` / `rk_test_` | `sk_live_` / `rk_live_` |
 | `STRIPE_WEBHOOK_SECRET` | api | secret | The Preview endpoint's secret | The Production endpoint's secret |
 | `STRIPE_PRICE_PRO_MONTHLY`, `STRIPE_PRICE_PRO_YEARLY` | api | config | Sandbox price IDs | Live price IDs |
-| `STRIPE_PRICE_PRO_MONTHLY_RETAINED`, `STRIPE_PRICE_PRO_YEARLY_RETAINED` | api | config | Optional | Optional |
+| `STRIPE_PRODUCT_PRO` | api | config | Sandbox product ID | Live product ID |
 | `STRIPE_CUSTOM_DOMAIN` | web, api; baked | config | Unset | Optional, live mode only |
 | `BILLING_RECONCILE_APPLY` | api | config | Unset | Your choice (default: report only) |
 
@@ -105,7 +105,7 @@ Legend: **web** = the Next.js service, **api** = the Python service. *Baked* = f
 
 Never in the Vercel project: `MIGRATION_DATABASE_URL` and `API_DB_PASSWORD` (the migration credential lives in a GitHub Environment secret), and the `E2E_*` variables. Set by Vercel, never by you: `VERCEL`, `VERCEL_ENV`, `VERCEL_URL`, `VERCEL_BRANCH_URL`, `VERCEL_GIT_COMMIT_SHA`, and `VERCEL_AUTOMATION_BYPASS_SECRET` when a bypass secret exists.
 
-Count for a full sandbox environment: about 20 required variables per scope, and about 26 with the optional ones, so roughly 40 to 52 entries for Preview and Production together. Optional and dashboard-only (plan availability not confirmed): the team security policy "Separate Production Secret Values", which forces different secret values in Production and Preview.
+Count for a full sandbox environment: about 21 required variables per scope, and about 25 with the optional ones, so roughly 42 to 50 entries for Preview and Production together. Optional and dashboard-only (plan availability not confirmed): the team security policy "Separate Production Secret Values", which forces different secret values in Production and Preview.
 
 ## Set up Vercel
 
@@ -210,7 +210,7 @@ Go-live is a sequence of steps that need your accounts. Do them in this order; t
 
 ### Stripe live mode
 
-**[YOU D14]** Stripe keeps test-mode and live-mode objects apart ([Stripe: keys](https://docs.stripe.com/keys#test-live-modes)). Repeat in live mode what you did in the sandbox: create the Pro product with a monthly and a yearly recurring price in one currency in the Dashboard (`pnpm setup:stripe` refuses live keys); save the Customer Portal configuration; set the Retries rule ([setup.md](setup.md#stripe), S5 and S6); create the Snapshot event destination for the production URL with the 14 events ([integrations.md](integrations.md#stripe)); then set the live key, the two live price IDs and that destination's secret in the Production scope with `BILLING_MODE=live`. An optional custom domain: `STRIPE_CUSTOM_DOMAIN`. Run a real, small payment and refund it before launch.
+**[YOU D14]** Stripe keeps test-mode and live-mode objects apart ([Stripe: keys](https://docs.stripe.com/keys#test-live-modes)). Repeat in live mode what you did in the sandbox: create the Pro product with a monthly and a yearly recurring price in one currency in the Dashboard (`pnpm setup:stripe` refuses live keys); save the Customer Portal configuration; set the Retries rule ([setup.md](setup.md#stripe), S5 and S6); create the Snapshot event destination for the production URL with the 14 events ([integrations.md](integrations.md#stripe)); then set the live key, the two live price IDs, the ID of the live product (`STRIPE_PRODUCT_PRO`; copying a sandbox product to live mode makes a separate product with its own ID, [Stripe: manage products and prices](https://docs.stripe.com/products-prices/manage-prices)) and that destination's secret in the Production scope with `BILLING_MODE=live`. An optional custom domain: `STRIPE_CUSTOM_DOMAIN`. Run a real, small payment and refund it before launch.
 
 ### PostHog and Sentry production
 

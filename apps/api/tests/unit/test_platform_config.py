@@ -18,7 +18,13 @@ from app.kernel.infrastructure.config import (
     require_development_environment,
 )
 from app.settings import Settings, load_settings
-from tests.conftest import PRICE_MONTHLY, PRICE_YEARLY, TEST_STRIPE_WEBHOOK_SECRET, _is_settings_variable
+from tests.conftest import (
+    PRICE_MONTHLY,
+    PRICE_YEARLY,
+    PRODUCT_PRO,
+    TEST_STRIPE_WEBHOOK_SECRET,
+    _is_settings_variable,
+)
 from tests.unit.test_config import SECRET_MARKER, pk
 
 PREVIEW_URL = "https://preview.example.com"
@@ -48,6 +54,7 @@ PRODUCTION: dict[str, Any] = {
     "stripe_webhook_secret": TEST_STRIPE_WEBHOOK_SECRET,
     "stripe_price_pro_monthly": PRICE_MONTHLY,
     "stripe_price_pro_yearly": PRICE_YEARLY,
+    "stripe_product_pro": PRODUCT_PRO,
     "llm_mode": "live",
     "llm_api_key": "llm-" + "k" * 30,
     "llm_model": "test-model",
@@ -233,6 +240,13 @@ def test_app_base_url_is_kept_in_the_form_a_browser_sends() -> None:
 
 def test_production_still_requires_https() -> None:
     assert "APP_BASE_URL must use https in production" in refusal(PRODUCTION, app_base_url="http://app.example.com")
+
+
+@pytest.mark.parametrize("product", [..., "", PRICE_MONTHLY, "pro"])
+def test_live_billing_needs_the_pro_product_as_a_stripe_product_id(product: Any) -> None:
+    assert "STRIPE_PRODUCT_PRO is required and must be a Stripe product ID" in refusal(
+        PRODUCTION, stripe_product_pro=product
+    )
 
 
 @pytest.mark.parametrize("name", ["billing_mode", "llm_mode", "analytics_mode", "error_reporting_mode"])

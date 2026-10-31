@@ -103,7 +103,13 @@ def test_each_problem_is_on_its_own_line_and_names_variables_only(env_file: Call
     status, _, err = run(doctor.check_config, path)
     assert status == 1
     problem_lines = [line for line in err.splitlines() if line.startswith("  - ")]
-    for name in ("STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET", "STRIPE_PRICE_PRO_MONTHLY", "STRIPE_PRICE_PRO_YEARLY"):
+    for name in (
+        "STRIPE_SECRET_KEY",
+        "STRIPE_WEBHOOK_SECRET",
+        "STRIPE_PRICE_PRO_MONTHLY",
+        "STRIPE_PRICE_PRO_YEARLY",
+        "STRIPE_PRODUCT_PRO",
+    ):
         assert any(line.startswith(f"  - {name}") for line in problem_lines), name
     assert all("; " not in line.removeprefix("  - ").split(" is a live key")[0] for line in problem_lines)
     assert "z" * 30 not in err

@@ -22,6 +22,7 @@ from app.kernel.tenancy import TenantContext
 from app.modules.billing.domain import (
     BILLING_MANAGE,
     PRO_FEATURE_USE,
+    PRO_INSIGHT,
     BillingState,
     BillingSummary,
     CheckoutBlock,
@@ -121,7 +122,7 @@ def build_read_router(billing: BillingService, clock: Clock, auth: AuthDeps, req
         dependencies=[requires(PRO_FEATURE_USE)],
     )
     def pro_insight(ctx: Personal) -> ProInsight:
-        billing.require_pro(ctx)
+        billing.require_feature(ctx, PRO_INSIGHT)
         return ProInsight(message="This content is only available on the Pro plan.", generated_at=clock.now())
 
     @router.get(
@@ -133,7 +134,7 @@ def build_read_router(billing: BillingService, clock: Clock, auth: AuthDeps, req
     )
     def org_pro_insight(ctx: Organization) -> ProInsight:
         # The caller's own subscription decides, as in the personal context (DEC-002, ADR-0002).
-        billing.require_pro(ctx)
+        billing.require_feature(ctx, PRO_INSIGHT)
         return ProInsight(message="This content is only available on the Pro plan.", generated_at=clock.now())
 
     return router

@@ -22,7 +22,7 @@ from app.modules.billing.domain import PlanKey, PriceCatalog, portal_problems
 from app.modules.billing.ports import BillingWebhookEvent
 from app.modules.billing.probe import BillingProbe
 from tests.conftest import Harness, superuser_query
-from tests.sandbox.conftest import PRICE_MONTHLY, PRICE_YEARLY
+from tests.sandbox.conftest import PRICE_MONTHLY, PRICE_YEARLY, PRODUCT
 
 Cleanup = list[Callable[[], object]]
 RUN = uuid.uuid4().hex[:8]
@@ -75,10 +75,11 @@ def test_the_configured_prices_exist_in_test_mode_and_match_the_catalog(provider
         assert price.active, f"{price_id} is archived"
         assert price.recurring_interval == interval
         assert price.livemode is False
+        assert price.product_id == PRODUCT, f"{price_id} belongs to {price.product_id}, not STRIPE_PRODUCT_PRO"
     probe = BillingProbe(
         IntegrationInfo(IntegrationKey.BILLING, "Stripe", IntegrationMode.SANDBOX),
         provider,
-        PriceCatalog({PlanKey.PRO_MONTHLY: PRICE_MONTHLY, PlanKey.PRO_YEARLY: PRICE_YEARLY}),
+        PriceCatalog({PlanKey.PRO_MONTHLY: PRICE_MONTHLY, PlanKey.PRO_YEARLY: PRICE_YEARLY}, PRODUCT),
     )
     verdict = probe.check(None)  # type: ignore[arg-type]
     assert verdict.outcome is Outcome.PASSED, verdict.summary

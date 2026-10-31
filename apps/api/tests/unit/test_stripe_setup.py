@@ -46,7 +46,7 @@ def portal(**features: Any) -> dict[str, Any]:
         "subscription_update": {
             "enabled": True,
             "default_allowed_updates": ["price"],
-            "products": [{"product": "pro", "prices": ["price_pro_monthly", "price_pro_yearly"]}],
+            "products": [{"product": "prod_pro", "prices": ["price_pro_monthly", "price_pro_yearly"]}],
         },
     }
     return {"id": "bpc_1", "object": "billing_portal.configuration", "active": True, "features": {**base, **features}}
@@ -124,9 +124,9 @@ class TestCreation:
         assert error is None
         assert writes(stub) == [("POST", "/v1/products"), ("POST", "/v1/prices"), ("POST", "/v1/prices")]
         product, monthly, yearly = (parse_qs(r.body.decode()) for r in stub.requests if r.method == "POST")
-        assert product == {"id": ["pro"], "name": ["Pro"]}
+        assert product == {"id": ["prod_pro"], "name": ["Pro"]}
         assert monthly == {
-            "product": ["pro"],
+            "product": ["prod_pro"],
             "currency": ["usd"],
             "unit_amount": ["900"],
             "recurring[interval]": ["month"],
@@ -141,6 +141,8 @@ class TestCreation:
         assert "BILLING_MODE=sandbox" in lines
         assert "STRIPE_PRICE_PRO_MONTHLY=price_pro_monthly" in lines
         assert "STRIPE_PRICE_PRO_YEARLY=price_pro_yearly" in lines
+        assert "STRIPE_PRODUCT_PRO=prod_pro" in lines
+        assert lines.index("STRIPE_PRODUCT_PRO=prod_pro") == lines.index("STRIPE_PRICE_PRO_YEARLY=price_pro_yearly") + 1
 
     def test_a_second_run_creates_nothing_and_prints_the_same_lines(self) -> None:
         fake = FakeStripe(portal_config=portal())
@@ -150,26 +152,36 @@ class TestCreation:
         assert error is None
         assert writes(stub) == []
         env_lines = [line for line in first if "=" in line]
+        assert "STRIPE_PRODUCT_PRO=prod_pro" in env_lines
         assert [line for line in second if "=" in line] == env_lines
 
     def test_one_missing_price_is_created_on_the_product_of_the_other(self) -> None:
         fake = FakeStripe([price("pro_monthly")], portal())
-        _, stub, error = run(fake)
+        lines, stub, error = run(fake)
 
         assert error is None
         assert writes(stub) == [("POST", "/v1/prices")]  # not even a product: the existing price has one
         assert parse_qs(stub.requests[-2].body.decode())["product"] == ["prod_existing"]
+        assert "STRIPE_PRODUCT_PRO=prod_existing" in lines
+
+    def test_prices_made_in_the_dashboard_give_the_product_they_belong_to(self) -> None:
+        lines, stub, error = run(FakeStripe([price("pro_monthly"), price("pro_yearly")], portal()))
+
+        assert error is None
+        assert writes(stub) == []
+        assert "STRIPE_PRODUCT_PRO=prod_existing" in lines
 
     def test_an_interrupted_run_finds_its_product_again(self) -> None:
         fake = FakeStripe(portal_config=portal())
-        fake.products["pro"] = {"id": "pro", "object": "product", "active": True, "name": "Pro"}
+        fake.products["prod_pro"] = {"id": "prod_pro", "object": "product", "active": True, "name": "Pro"}
         lines, stub, _ = run(fake)
         assert ("POST", "/v1/products") not in writes(stub)
-        assert "Product pro: already exists" in lines
+        assert "Product prod_pro: already exists" in lines
+        assert "STRIPE_PRODUCT_PRO=prod_pro" in lines
 
     def test_an_archived_product_stops_the_run(self) -> None:
         fake = FakeStripe(portal_config=portal())
-        fake.products["pro"] = {"id": "pro", "object": "product", "active": False, "name": "Pro"}
+        fake.products["prod_pro"] = {"id": "prod_pro", "object": "product", "active": False, "name": "Pro"}
         _, stub, error = run(fake)
         assert error is not None
         assert "archived" in str(error)
@@ -187,7 +199,7 @@ class TestPricesThatDiffer:
             (price("pro_monthly", recurring={"interval": "month", "interval_count": 3}), "once every month"),
         ],
     )
-    def test_the_run_stops_before_creating_anything_and_points_to_the_retained_settings(
+    def test_the_run_stops_before_creating_anything_and_says_how_to_change_a_price(
         self, existing: dict[str, Any], fragment: str
     ) -> None:
         fake = FakeStripe([existing], portal())  # the yearly price is missing: it is not created either
@@ -196,9 +208,33 @@ class TestPricesThatDiffer:
         assert error is not None
         assert fragment in str(error)
         assert "Nothing was created or changed" in str(error)
-        assert "STRIPE_PRICE_PRO_MONTHLY_RETAINED" in str(error)
+        assert "STRIPE_PRICE_PRO_MONTHLY" in str(error)
+        assert "on the same product" in str(error)  # the old price keeps Pro because it belongs to the Pro product
+        assert "RETAINED" not in str(error)
         assert writes(stub) == []
         assert lines == []  # no .env lines for a setup that did not finish
+
+    def test_prices_on_different_products_stop_the_run_because_pro_is_granted_by_one_product(self) -> None:
+        fake = FakeStripe([price("pro_monthly", product="prod_a"), price("pro_yearly", product="prod_b")], portal())
+        lines, stub, error = run(fake)
+
+        assert error is not None
+        assert "Nothing was created or changed" in str(error)
+        assert "different products (prod_a, prod_b)" in str(error)
+        assert writes(stub) == []
+        assert lines == []
+
+    def test_a_product_the_application_would_refuse_stops_the_run_before_it_prints_a_line_for_it(self) -> None:
+        """The custom ID an earlier version of this command gave its product is not a prod_ ID."""
+        lines, stub, error = run(
+            FakeStripe([price("pro_monthly", product="pro"), price("pro_yearly", product="pro")], portal())
+        )
+
+        assert error is not None
+        assert "does not start with prod_" in str(error)
+        assert "STRIPE_PRODUCT_PRO" in str(error)
+        assert writes(stub) == []
+        assert lines == []
 
     def test_every_difference_is_listed(self) -> None:
         fake = FakeStripe([price("pro_monthly", unit_amount=1), price("pro_yearly", currency="eur")])

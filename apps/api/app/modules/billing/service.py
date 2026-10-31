@@ -42,7 +42,6 @@ from app.modules.billing.domain import (
     CheckoutBlock,
     EntitlementChanged,
     EntitlementDecision,
-    Plan,
     PlanKey,
     PriceCatalog,
     SubscriptionSnapshot,
@@ -192,9 +191,9 @@ class BillingService:
             subs = t.repo.list_subscriptions(ctx.user_id)
         return decide(subs, self._clock.now())
 
-    def require_pro(self, ctx: TenantContext) -> None:
+    def require_feature(self, ctx: TenantContext, feature: str) -> None:
         authorize(ctx, PRO_FEATURE_USE)
-        if self.entitlement(ctx).plan is not Plan.PRO:
+        if feature not in self.entitlement(ctx).features:
             raise EntitlementRequiredError()
 
     # -- Checkout and portal -------------------------------------------------
@@ -739,9 +738,9 @@ def _log_anomalies(customer_id: str, subs: Sequence[SubscriptionSnapshot], now: 
             # Trials are out of scope (DEC-010, spec §9.5): not entitled, and logged.
             logger.warning("billing_trialing_anomaly", extra={"stripe_subscription_id": sub.stripe_subscription_id})
         if sub.plan_key is PlanKey.UNKNOWN and sub.status not in FINAL_STATUSES:
-            # A price outside the catalog never grants Pro: for example, a replaced
-            # price that is not listed in STRIPE_PRICE_PRO_*_RETAINED. While the
-            # subscription is paid, a user pays without Pro, so it is an error.
+            # A price that is neither configured nor a monthly or yearly price of
+            # STRIPE_PRODUCT_PRO never grants Pro: for example, a price of another product.
+            # While the subscription is paid, a user pays without Pro, so it is an error.
             paid = sub.status in (SubscriptionStatus.ACTIVE, SubscriptionStatus.PAST_DUE)
             logger.log(
                 logging.ERROR if paid else logging.WARNING,

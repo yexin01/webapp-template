@@ -1,42 +1,34 @@
-"""Billing and LLM configuration: retained prices and the bounds that protect shared capacity."""
+"""Billing and LLM configuration: the Pro product and the bounds that protect shared capacity."""
 
 from __future__ import annotations
 
 import pytest
 
 from app.kernel.infrastructure.config import ConfigError
-from app.modules.billing.domain import PlanKey
-from app.modules.billing.settings import retained_prices
-from tests.conftest import PRICE_MONTHLY, make_settings
+from app.modules.billing.module import describe
+from tests.conftest import PRODUCT_PRO, make_settings
+
+SANDBOX = {"billing_mode": "sandbox", "stripe_secret_key": "sk_test_" + "o" * 24}
 
 
-def test_retained_prices_map_to_their_plan() -> None:
-    settings = make_settings(
-        stripe_price_pro_monthly_retained=" price_old_a, price_old_b ,",
-        stripe_price_pro_yearly_retained="price_old_y",
-    )
-    assert retained_prices(settings) == {
-        "price_old_a": PlanKey.PRO_MONTHLY,
-        "price_old_b": PlanKey.PRO_MONTHLY,
-        "price_old_y": PlanKey.PRO_YEARLY,
-    }
-    assert retained_prices(make_settings()) == {}
+@pytest.mark.parametrize("product", [None, "", "price_test_monthly", "pro", "Prod_abc"])
+def test_a_sandbox_needs_the_pro_product_as_a_stripe_product_id(product: str | None) -> None:
+    with pytest.raises(ConfigError, match="STRIPE_PRODUCT_PRO is required and must be a Stripe product ID"):
+        make_settings(**SANDBOX, stripe_product_pro=product)
 
 
-@pytest.mark.parametrize(
-    ("overrides", "problem"),
-    [
-        ({"stripe_price_pro_monthly_retained": "prod_123"}, "must list Stripe price IDs"),
-        ({"stripe_price_pro_yearly_retained": PRICE_MONTHLY}, "must not list a price that is still sold"),
-        (
-            {"stripe_price_pro_monthly_retained": "price_a", "stripe_price_pro_yearly_retained": "price_a"},
-            "lists a price more than once",
-        ),
-    ],
-)
-def test_invalid_retained_prices_are_refused(overrides: dict[str, str], problem: str) -> None:
-    with pytest.raises(ConfigError, match=problem):
-        make_settings(**overrides)
+def test_a_sandbox_with_the_pro_product_is_valid() -> None:
+    assert make_settings(**SANDBOX).stripe_product_pro == PRODUCT_PRO
+
+
+@pytest.mark.parametrize("product", [None, "", "prod_abc"])
+def test_the_pro_product_is_optional_in_mock_mode(product: str | None) -> None:
+    assert make_settings(stripe_product_pro=product).billing_mode.value == "mock"
+
+
+def test_the_report_says_whether_the_pro_product_is_set() -> None:
+    assert "Pro product: configured" in describe(make_settings()).details
+    assert "Pro product: missing" in describe(make_settings(stripe_product_pro=None)).details
 
 
 def test_the_worker_pool_keeps_a_connection_beside_billing_synchronization() -> None:

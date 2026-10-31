@@ -20,17 +20,18 @@ from app.modules.billing.adapters.stripe import StripeBillingProvider
 from app.modules.billing.domain import PlanKey, PriceCatalog
 from tests.stub_server import Recorded, stub_server
 
-CATALOG = PriceCatalog({PlanKey.PRO_MONTHLY: "price_m", PlanKey.PRO_YEARLY: "price_y"})
+CATALOG = PriceCatalog({PlanKey.PRO_MONTHLY: "price_m", PlanKey.PRO_YEARLY: "price_y"}, "prod_pro")
 FAKE_KEY = "sk_test_" + "0" * 24
 
 
-def _price(price_id: str, interval: str | None = "month") -> dict[str, Any]:
+def _price(price_id: str, interval: str | None = "month", product: Any = "prod_pro") -> dict[str, Any]:
     return {
         "id": price_id,
         "object": "price",
         "active": True,
         "currency": "eur",
         "livemode": False,
+        "product": product,
         "recurring": {"interval": interval} if interval else None,
         "type": "recurring" if interval else "one_time",
     }
@@ -41,15 +42,28 @@ class TestStripeDescribePrice:
         with stub_server(lambda req: (200, _price("price_m", "year"))) as stub:
             provider = StripeBillingProvider(secret_key=FAKE_KEY, catalog=CATALOG, api_base=stub.url)
             price = provider.describe_price("price_m")
-        assert (price.price_id, price.active, price.recurring_interval, price.currency, price.livemode) == (
-            "price_m",
-            True,
-            "year",
-            "eur",
-            False,
-        )
+        assert (
+            price.price_id,
+            price.product_id,
+            price.active,
+            price.recurring_interval,
+            price.currency,
+            price.livemode,
+        ) == ("price_m", "prod_pro", True, "year", "eur", False)
         assert stub.requests[0].path == "/v1/prices/price_m"
         assert stub.requests[0].method == "GET"
+
+    @pytest.mark.parametrize(
+        ("product", "expected"),
+        [({"id": "prod_x", "object": "product"}, "prod_x"), (None, None)],
+        ids=["expanded", "none"],
+    )
+    def test_the_product_may_come_expanded_or_be_missing(self, product: Any, expected: str | None) -> None:
+        with stub_server(lambda req: (200, _price("price_m", product=product))) as stub:
+            price = StripeBillingProvider(secret_key=FAKE_KEY, catalog=CATALOG, api_base=stub.url).describe_price(
+                "price_m"
+            )
+        assert price.product_id == expected
 
     def test_one_time_price_has_no_interval(self) -> None:
         with stub_server(lambda req: (200, _price("price_m", None))) as stub:

@@ -2,10 +2,12 @@
 
 Sandbox only, and idempotent: it finds the prices by their lookup keys and
 creates only what is missing. It stops, changing nothing, if a price it finds
-differs from what was asked for (Stripe prices cannot be edited). It prints the
-``.env`` lines to set and never writes ``.env``, never prints the secret key,
-and then reads the Customer Portal's default configuration (read only: the
-portal stays dashboard-owned, ADR-0001) to print the dashboard steps still needed.
+differs from what was asked for (Stripe prices cannot be edited), or if the two
+prices belong to different products (Pro is granted by one product). It prints
+the ``.env`` lines to set, the product among them, and never writes ``.env``,
+never prints the secret key, and then reads the Customer Portal's default
+configuration (read only: the portal stays dashboard-owned, ADR-0001) to print
+the dashboard steps still needed.
 """
 
 from __future__ import annotations
@@ -20,10 +22,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.kernel.errors import DomainError, ForbiddenError
 from app.kernel.infrastructure.config import ENV_FILE
-from app.modules.billing.adapters.stripe import StripeBillingProvider, _get
+from app.modules.billing.adapters.stripe import StripeBillingProvider, _get, _id
 from app.modules.billing.domain import PlanKey, PriceCatalog, portal_problems
 
-PRODUCT_ID = "pro"
+# A custom ID, so a rerun finds the product again. It starts with prod_ like the IDs Stripe makes:
+# STRIPE_PRODUCT_PRO must (an earlier version of this command used the ID "pro").
+PRODUCT_ID = "prod_pro"
 _PRODUCT_NAME = "Pro"
 
 # The lookup key is the identity of a price: it is how an existing one is found again.
@@ -84,7 +88,7 @@ def run(
         base_addresses={"api": api_base} if api_base else None,
     )
     try:
-        price_ids = _ensure_prices(client, amounts, out)
+        price_ids, product_id = _ensure_prices(client, amounts, out)
     except stripe.StripeError as exc:
         # Stripe's message can quote the key's last characters or request values: type and ids only.
         raise SetupError(
@@ -97,6 +101,7 @@ def run(
     out("BILLING_MODE=sandbox")
     for plan, _interval, _name, variable in _PRICES:
         out(f"{variable}={price_ids[plan]}")
+    out(f"STRIPE_PRODUCT_PRO={product_id}")
     out("STRIPE_SECRET_KEY=<your sk_test_ key, which this command never prints>")
     out("STRIPE_WEBHOOK_SECRET=<whsec_..., from `stripe listen --print-secret`; see docs/integrations.md>")
 
@@ -104,7 +109,10 @@ def run(
     _report_portal(StripeBillingProvider(secret_key=key, catalog=catalog, api_base=api_base), catalog, out)
 
 
-def _ensure_prices(client: stripe.StripeClient, amounts: Amounts, out: Callable[[str], None]) -> dict[PlanKey, str]:
+def _ensure_prices(
+    client: stripe.StripeClient, amounts: Amounts, out: Callable[[str], None]
+) -> tuple[dict[PlanKey, str], str]:
+    """The price IDs and the ID of the product they belong to, creating what is missing."""
     found = client.v1.prices.list(params={"lookup_keys": [plan.value for plan, *_ in _PRICES], "limit": 10})
     existing = {str(_get(p, "lookup_key")): p for p in found.data}
 
@@ -115,7 +123,22 @@ def _ensure_prices(client: stripe.StripeClient, amounts: Amounts, out: Callable[
     if differences:
         raise SetupError(_differences_message(differences))
 
-    product_id = next((str(_get(p, "product")) for p in existing.values() if _get(p, "product")), None)
+    products = sorted({product for p in existing.values() if (product := _id(_get(p, "product")))})
+    if len(products) > 1:
+        raise SetupError(
+            "Nothing was created or changed. The prices that already have these lookup keys belong to different "
+            f"products ({', '.join(products)}), and Pro is granted by one product. In the Stripe Dashboard, create the "
+            "replacement price on the product you keep and move its lookup key to it, then run this command again."
+        )
+    if products and not products[0].startswith("prod_"):
+        raise SetupError(
+            f"Nothing was created or changed. The existing prices belong to the product {products[0]}, whose ID "
+            "does not start with prod_, and the application refuses it as STRIPE_PRODUCT_PRO. In the Stripe "
+            "Dashboard, create the Pro prices on a new product and move their lookup keys to them, then run this "
+            "command again."
+        )
+    # The prices that exist say which product holds them; with none, the product is found or made now.
+    product_id = products[0] if products else _ensure_product(client, out)
     ids: dict[PlanKey, str] = {}
     for plan, interval, name, _variable in _PRICES:
         price = existing.get(plan.value)
@@ -123,7 +146,6 @@ def _ensure_prices(client: stripe.StripeClient, amounts: Amounts, out: Callable[
             ids[plan] = str(_get(price, "id"))
             out(f"Price {plan.value}: {ids[plan]} (already exists, matches)")
             continue
-        product_id = product_id or _ensure_product(client, out)
         amount = amounts.amount(plan)
         created = client.v1.prices.create(
             params={
@@ -139,7 +161,7 @@ def _ensure_prices(client: stripe.StripeClient, amounts: Amounts, out: Callable[
         )
         ids[plan] = str(created.id)
         out(f"Price {plan.value}: {ids[plan]} (created)")
-    return ids
+    return ids, product_id
 
 
 def _ensure_product(client: stripe.StripeClient, out: Callable[[str], None]) -> str:
@@ -183,10 +205,9 @@ def _differences_message(differences: list[str]) -> str:
         "Nothing was created or changed. A price that already has a lookup key here differs from what you asked for:\n"
         + "\n".join(f"- {d}" for d in differences)
         + "\nStripe prices cannot be edited, and this command never moves a lookup key. To change a price: create "
-        "the new one in the Stripe Dashboard, move the lookup key to it, set STRIPE_PRICE_PRO_MONTHLY (or "
-        "STRIPE_PRICE_PRO_YEARLY) to the new ID, and list the old ID in STRIPE_PRICE_PRO_MONTHLY_RETAINED (or "
-        "STRIPE_PRICE_PRO_YEARLY_RETAINED) so existing subscribers keep Pro. Or re-run with the amounts the existing "
-        "prices have."
+        "the new one on the same product in the Stripe Dashboard, move the lookup key to it, and set "
+        "STRIPE_PRICE_PRO_MONTHLY (or STRIPE_PRICE_PRO_YEARLY) to the new ID. Subscribers on the old price keep Pro, "
+        "because it belongs to the Pro product. Or re-run with the amounts the existing prices have."
     )
 
 

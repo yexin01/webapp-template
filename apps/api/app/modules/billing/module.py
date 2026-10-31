@@ -19,7 +19,7 @@ from app.modules.billing.ports import BillingProvider, BillingWebhookVerifier
 from app.modules.billing.probe import BillingProbe
 from app.modules.billing.routes import build_action_router, build_read_router, build_webhook_router
 from app.modules.billing.service import BillingService, BillingUrls
-from app.modules.billing.settings import BillingSettings, retained_prices
+from app.modules.billing.settings import BillingSettings
 
 
 @dataclass
@@ -42,7 +42,7 @@ def build_billing(
             )
             if price
         },
-        retained_prices(settings),
+        settings.stripe_product_pro,
     )
     provider: BillingProvider | None = pick(overrides, "billing_provider", lambda: _provider(core, settings, catalog))
     webhooks: BillingWebhookVerifier | None = pick(
@@ -114,6 +114,7 @@ def describe(settings: BillingSettings) -> IntegrationInfo:
         IntegrationMode(settings.billing_mode.value),
         (
             "Pro prices configured: " + (", ".join(prices) or "none"),
+            "Pro product: " + ("configured" if settings.stripe_product_pro else "missing"),
             "Webhook signing secret: " + ("configured" if settings.stripe_webhook_secret else "missing"),
         ),
     )

@@ -48,7 +48,7 @@ Stripe retries a failed delivery automatically for up to three days with exponen
 | `rejected_customers` | Stripe rejected the request for that customer. Usually the customer was deleted in Stripe after its stored subscriptions had all ended: nothing to do, and it is reported each time the rotation reaches it. If *every* customer is rejected, the keys belong to a different Stripe account (for example, a new sandbox) | Nothing is changed and existing entitlements stay as they are. If many customers are rejected, check the keys first; otherwise confirm in Stripe that the customer is deleted |
 | more than one Pro subscription for one user | Logged as `billing_multiple_entitling_subscriptions` | Cancel and refund the duplicate in Stripe |
 
-A paid subscription on a price the catalog does not know is logged as `billing_unknown_price` at error level: the user is paying without Pro. Add the old price ID to `STRIPE_PRICE_PRO_MONTHLY_RETAINED` or `STRIPE_PRICE_PRO_YEARLY_RETAINED`, deploy, then run `pnpm billing:reconcile --apply`.
+A paid subscription on a price that is neither one of the two configured prices nor a monthly or yearly price of `STRIPE_PRODUCT_PRO` is logged as `billing_unknown_price` at error level: the user is paying without Pro. Check the price in the Dashboard (its product, and that it bills every month or every year) and `STRIPE_PRODUCT_PRO`, fix what is wrong, then run `pnpm billing:reconcile --apply`.
 
 ## Key rotation
 

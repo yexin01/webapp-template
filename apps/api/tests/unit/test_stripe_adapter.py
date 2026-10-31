@@ -31,7 +31,7 @@ from app.modules.billing.domain import (
 from app.modules.billing.ports import CheckoutSession
 from tests.stub_server import Recorded, stub_server
 
-CATALOG = PriceCatalog({PlanKey.PRO_MONTHLY: "price_m", PlanKey.PRO_YEARLY: "price_y"})
+CATALOG = PriceCatalog({PlanKey.PRO_MONTHLY: "price_m", PlanKey.PRO_YEARLY: "price_y"}, "prod_pro")
 FAKE_KEY = "sk_test_" + "0" * 24
 USER = uuid.UUID("2f1a6a3e-8f4b-4f57-9a43-3c1b1f0e9d21")
 PERIOD_END = 1_900_000_000
@@ -56,8 +56,14 @@ def form(request: Recorded) -> dict[str, list[str]]:
     return parse_qs(request.body.decode())
 
 
-def subscription(status: str = "active", price: str = "price_m", **fields: Any) -> dict[str, Any]:
-    item = {"id": "si_1", "object": "subscription_item", "price": {"id": price, "object": "price"}}
+def subscription(
+    status: str = "active", price: str = "price_m", price_fields: dict[str, Any] | None = None, **fields: Any
+) -> dict[str, Any]:
+    item = {
+        "id": "si_1",
+        "object": "subscription_item",
+        "price": {"id": price, "object": "price", **(price_fields or {})},
+    }
     return {
         "id": "sub_1",
         "object": "subscription",
@@ -203,6 +209,30 @@ class TestSubscriptionReads:
                 ended_at=None,
             )
         ]
+
+    @pytest.mark.parametrize(
+        ("product", "interval", "expected"),
+        [
+            ("prod_pro", "year", PlanKey.PRO_YEARLY),
+            ("prod_pro", "month", PlanKey.PRO_MONTHLY),
+            ("prod_other", "year", PlanKey.UNKNOWN),
+            ("prod_pro", "week", PlanKey.UNKNOWN),
+        ],
+    )
+    def test_a_replaced_price_has_the_plan_of_its_product_and_interval(
+        self, product: str, interval: str, expected: PlanKey
+    ) -> None:
+        """The SDK's own objects carry the product and the recurring terms the mapping reads."""
+        terms = {"product": product, "recurring": {"interval": interval, "interval_count": 1, "usage_type": "licensed"}}
+        listing = {
+            "object": "list",
+            "url": "/v1/subscriptions",
+            "has_more": False,
+            "data": [subscription(price="price_replaced", price_fields=terms)],
+        }
+        with stub_server(lambda req: (200, listing)) as stub:
+            [sub] = provider(stub.url).list_customer_subscriptions("cus_1")
+        assert (sub.plan_key, sub.price_id) == (expected, "price_replaced")
 
     def test_a_subscription_is_read_by_id(self) -> None:
         ended = subscription(status="canceled", price="price_y", ended_at=PERIOD_END - 60)

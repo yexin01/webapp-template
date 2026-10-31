@@ -1,4 +1,4 @@
-"""Subscription state -> entitlement matrix (spec §9.5, BILL-01)."""
+"""Subscription state -> entitlement matrix (spec §9.5, BILL-01): the plan and the features it unlocks."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from app.modules.billing.domain import (
+    PRO_FEATURES,
     BillingState,
     CheckoutBlock,
     Plan,
@@ -22,6 +23,7 @@ from app.modules.billing.domain import (
 NOW = datetime(2026, 6, 1, 12, 0, tzinfo=UTC)
 LATER = NOW + timedelta(days=20)
 EARLIER = NOW - timedelta(days=1)
+NO_FEATURES: frozenset[str] = frozenset()
 
 
 def sub(status: SubscriptionStatus, **kw: object) -> SubscriptionSnapshot:
@@ -53,29 +55,35 @@ def sub(status: SubscriptionStatus, **kw: object) -> SubscriptionSnapshot:
     ],
 )
 def test_status_matrix(status: SubscriptionStatus, expected: Plan) -> None:
-    assert decide([sub(status)], NOW).plan is expected
+    decision = decide([sub(status)], NOW)
+    assert decision.plan is expected
+    assert decision.features == (PRO_FEATURES if expected is Plan.PRO else NO_FEATURES)
 
 
 def test_no_subscription_is_free() -> None:
     decision = decide([], NOW)
     assert decision.plan is Plan.FREE
     assert decision.reason == "no_entitling_subscription"
+    assert decision.features == NO_FEATURES
 
 
 def test_cancel_at_period_end_keeps_pro_until_period_end() -> None:
     s = sub(SubscriptionStatus.ACTIVE, cancel_at_period_end=True)
-    assert decide([s], NOW).plan is Plan.PRO
-    assert decide([s], LATER + timedelta(seconds=1)).plan is Plan.FREE
+    before, after = decide([s], NOW), decide([s], LATER + timedelta(seconds=1))
+    assert (before.plan, before.features) == (Plan.PRO, PRO_FEATURES)
+    assert (after.plan, after.features) == (Plan.FREE, NO_FEATURES)
 
 
 def test_cancel_at_in_past_revokes_even_if_status_not_yet_updated() -> None:
     s = sub(SubscriptionStatus.ACTIVE, cancel_at=EARLIER)
-    assert decide([s], NOW).plan is Plan.FREE
+    decision = decide([s], NOW)
+    assert (decision.plan, decision.features) == (Plan.FREE, NO_FEATURES)
 
 
 def test_unknown_price_never_entitles() -> None:
     s = sub(SubscriptionStatus.ACTIVE, plan_key=PlanKey.UNKNOWN)
-    assert decide([s], NOW).plan is Plan.FREE
+    decision = decide([s], NOW)
+    assert (decision.plan, decision.features) == (Plan.FREE, NO_FEATURES)
 
 
 def test_entitled_subscription_wins_over_canceled_history() -> None:
@@ -83,6 +91,7 @@ def test_entitled_subscription_wins_over_canceled_history() -> None:
     current = sub(SubscriptionStatus.ACTIVE, stripe_subscription_id="sub_new")
     decision = decide([old, current], NOW)
     assert decision.plan is Plan.PRO
+    assert decision.features == PRO_FEATURES
     assert decision.subscription is not None
     assert decision.subscription.stripe_subscription_id == "sub_new"
 

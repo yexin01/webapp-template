@@ -76,7 +76,7 @@ Ten findings from the architecture review were deferred, with the reason. What t
 
 **Billing**
 
-- Plans are Free and Pro with two price IDs (and a database `CHECK` on the plan key). Subscriptions are matched by price, so a price change needs a retained price. Granting Pro by Stripe product instead, and feature entitlements beyond the binary Pro check (BILL-01), are open (spec §23, step 7).
+- Plans are Free and Pro (a database `CHECK` allows only `pro_monthly`, `pro_yearly` and `unknown`), so a third plan is a code and schema change. Pro is granted by the Stripe product: every monthly or yearly price of `STRIPE_PRODUCT_PRO` grants it, whatever it charges, so other plans, add-ons and free prices belong on other products. A subscription on a price of another product, or one that bills every three months, has no plan and is logged as `billing_unknown_price`. The portal check cannot tell a replaced price of the Pro product from a price of another product: it reports any price checkout does not sell. `decide()` returns the feature set (`pro_insight`); no API response carries it yet ([ADR-0004 §16](../dev-docs/adr/0004-cycle-1-adopted-decisions.md)).
 - The sandbox suite does not cover retry exhaustion. A DB-level race between two checkouts of one user in about a second is closed after the fact (the loser's session is expired), not prevented.
 - With `DATABASE_WORKER_POOL_MAX_SIZE=2` user re-reads are always refused (`503`) and the page falls back to polling.
 - A completed checkout leaves its row in `app.billing_checkout_sessions` until the user's next checkout.

@@ -56,13 +56,22 @@ def _id(value: Any) -> str | None:
     return found if isinstance(found, str) else None
 
 
+def _plan_key(item: Any, catalog: PriceCatalog) -> PlanKey:
+    """The plan of one subscription item: its price, or the product and billing interval of its price."""
+    price = _get(item, "price")
+    recurring = _get(price, "recurring")
+    return catalog.key_for(
+        _id(price),
+        _id(_get(price, "product")),
+        _get(recurring, "interval"),
+        _get(recurring, "interval_count"),
+    )
+
+
 def to_snapshot(sub: Any, catalog: PriceCatalog) -> SubscriptionSnapshot:
     items = _get(_get(sub, "items"), "data") or []
-    # A subscription may carry more items (add-ons); the plan is the item with a known price.
-    item = next(
-        (i for i in items if catalog.key_for(_id(_get(i, "price"))) is not PlanKey.UNKNOWN),
-        items[0] if items else None,
-    )
+    # A subscription may carry more items (add-ons); the plan is the item with a known plan.
+    item = next((i for i in items if _plan_key(i, catalog) is not PlanKey.UNKNOWN), items[0] if items else None)
     price_id = _id(_get(item, "price"))
     # Since API version 2025-03-31, billing periods live on subscription items.
     period_end = _get(item, "current_period_end") or _get(sub, "current_period_end")
@@ -76,7 +85,7 @@ def to_snapshot(sub: Any, catalog: PriceCatalog) -> SubscriptionSnapshot:
         stripe_subscription_id=str(_get(sub, "id")),
         stripe_customer_id=str(_id(_get(sub, "customer"))),
         status=status,
-        plan_key=catalog.key_for(price_id),
+        plan_key=_plan_key(item, catalog),
         price_id=price_id,
         current_period_end=_ts(period_end),
         cancel_at_period_end=bool(_get(sub, "cancel_at_period_end")),
@@ -250,6 +259,7 @@ class StripeBillingProvider:
             recurring_interval=str(_get(recurring, "interval")) if recurring else None,
             currency=str(currency) if currency else None,
             livemode=bool(_get(price, "livemode")),
+            product_id=_id(_get(price, "product")),
         )
 
     def describe_portal(self) -> PortalConfiguration | None:

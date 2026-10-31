@@ -1,14 +1,13 @@
-"""Diagnostics probe for Stripe: the API key works, the Pro prices exist, and the Customer Portal matches DEC-010."""
+"""Diagnostics probe for Stripe: the key works, the Pro prices belong to the Pro product, the portal matches DEC-010."""
 
 from __future__ import annotations
 
 from app.kernel.diagnostics import IntegrationInfo, IntegrationMode, Outcome, Verdict
 from app.kernel.errors import ForbiddenError
 from app.kernel.tenancy import TenantContext
-from app.modules.billing.domain import PlanKey, PriceCatalog, portal_problems
+from app.modules.billing.domain import PLAN_INTERVALS, PlanKey, PriceCatalog, portal_problems
 from app.modules.billing.ports import BillingProvider
 
-_EXPECTED_INTERVALS = {PlanKey.PRO_MONTHLY: "month", PlanKey.PRO_YEARLY: "year"}
 _PLAN_LABELS = {PlanKey.PRO_MONTHLY: "Monthly", PlanKey.PRO_YEARLY: "Yearly"}
 
 
@@ -29,7 +28,8 @@ class BillingProbe:
         problems: list[str] = []
         found: list[str] = []
         currencies: set[str] = set()
-        for plan, interval in _EXPECTED_INTERVALS.items():
+        product = self._catalog.product
+        for plan, interval in PLAN_INTERVALS.items():
             label = _PLAN_LABELS[plan]
             price_id = self._catalog.price_for(plan)
             if price_id is None:
@@ -44,6 +44,10 @@ class BillingProbe:
                 )
             if price.livemode != expect_live:
                 problems.append(f"{label} price belongs to {'live' if price.livemode else 'test'} mode")
+            if price.product_id != product:
+                problems.append(
+                    f"{label} price belongs to product {price.product_id or '?'}, but STRIPE_PRODUCT_PRO is {product}"
+                )
             if price.currency:
                 currencies.add(price.currency.upper())
             found.append(f"{label.lower()} ({price.recurring_interval or 'one-time'}, {price.currency or '?'})")

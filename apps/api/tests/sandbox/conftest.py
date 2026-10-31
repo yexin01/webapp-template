@@ -1,10 +1,10 @@
 """The Stripe sandbox suite: real test-mode objects, never run by the normal suite.
 
 It runs only with STRIPE_SANDBOX_TESTS=1 and a Stripe sandbox secret key (sk_test_..., unrestricted:
-test clocks need it) in STRIPE_SECRET_KEY, with the Pro prices that `pnpm setup:stripe` creates in
-STRIPE_PRICE_PRO_MONTHLY and STRIPE_PRICE_PRO_YEARLY. The key and prices come from the environment or the
-repository .env, and are read when this file is imported, at collection: the shared fixtures remove every
-STRIPE_* variable once the session starts. Run it with `pnpm test:stripe-sandbox`.
+test clocks need it) in STRIPE_SECRET_KEY, with the Pro prices and product that `pnpm setup:stripe` creates in
+STRIPE_PRICE_PRO_MONTHLY, STRIPE_PRICE_PRO_YEARLY and STRIPE_PRODUCT_PRO. The key, prices and product come from
+the environment or the repository .env, and are read when this file is imported, at collection: the shared
+fixtures remove every STRIPE_* variable once the session starts. Run it with `pnpm test:stripe-sandbox`.
 
 Everything it creates is deleted when each test ends (a test clock takes its customers and subscriptions
 with it). Names start with `template-sandbox-`, so a leftover from a killed run is easy to find.
@@ -36,6 +36,7 @@ class _SandboxSettings(BaseSettings):
     stripe_secret_key: SecretStr | None = None
     stripe_price_pro_monthly: str = ""
     stripe_price_pro_yearly: str = ""
+    stripe_product_pro: str = ""
 
 
 ENABLED = os.environ.get("STRIPE_SANDBOX_TESTS") == "1"
@@ -43,6 +44,7 @@ _SETTINGS = _SandboxSettings() if ENABLED else None
 KEY = _SETTINGS.stripe_secret_key.get_secret_value() if _SETTINGS and _SETTINGS.stripe_secret_key else ""
 PRICE_MONTHLY = _SETTINGS.stripe_price_pro_monthly if _SETTINGS else ""
 PRICE_YEARLY = _SETTINGS.stripe_price_pro_yearly if _SETTINGS else ""
+PRODUCT = _SETTINGS.stripe_product_pro if _SETTINGS else ""
 
 
 def unavailable() -> str | None:
@@ -53,8 +55,11 @@ def unavailable() -> str | None:
         return (
             "Stripe sandbox suite: STRIPE_SECRET_KEY must be a sandbox secret key (sk_test_...); test clocks need one"
         )
-    if not (PRICE_MONTHLY.startswith("price_") and PRICE_YEARLY.startswith("price_")):
-        return "Stripe sandbox suite: set STRIPE_PRICE_PRO_MONTHLY and STRIPE_PRICE_PRO_YEARLY (pnpm setup:stripe)"
+    if not (PRICE_MONTHLY.startswith("price_") and PRICE_YEARLY.startswith("price_") and PRODUCT.startswith("prod_")):
+        return (
+            "Stripe sandbox suite: set STRIPE_PRICE_PRO_MONTHLY, STRIPE_PRICE_PRO_YEARLY and STRIPE_PRODUCT_PRO "
+            "(pnpm setup:stripe)"
+        )
     return None
 
 
@@ -95,7 +100,7 @@ def cleanup() -> Iterator[list[Callable[[], object]]]:
 @pytest.fixture
 def provider() -> StripeBillingProvider:
     """The adapter exactly as the application builds it for BILLING_MODE=sandbox."""
-    catalog = PriceCatalog({PlanKey.PRO_MONTHLY: PRICE_MONTHLY, PlanKey.PRO_YEARLY: PRICE_YEARLY})
+    catalog = PriceCatalog({PlanKey.PRO_MONTHLY: PRICE_MONTHLY, PlanKey.PRO_YEARLY: PRICE_YEARLY}, PRODUCT)
     return StripeBillingProvider(secret_key=KEY, catalog=catalog)
 
 
@@ -103,6 +108,10 @@ def provider() -> StripeBillingProvider:
 def world(make_harness: Callable[..., Harness], provider: StripeBillingProvider) -> Harness:
     """The application on the test database, with the real Stripe adapter and the real prices."""
     return make_harness(
-        {"stripe_price_pro_monthly": PRICE_MONTHLY, "stripe_price_pro_yearly": PRICE_YEARLY},
+        {
+            "stripe_price_pro_monthly": PRICE_MONTHLY,
+            "stripe_price_pro_yearly": PRICE_YEARLY,
+            "stripe_product_pro": PRODUCT,
+        },
         billing_provider=provider,
     )
