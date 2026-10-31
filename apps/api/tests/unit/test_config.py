@@ -144,7 +144,16 @@ MALFORMED_DATABASE_URLS = [
     ("postgresql://u:LEAKF@LEAKG@127.0.0.1/app", ["LEAKF", "LEAKG"]),
     ("postgresql://u:4821/LEAKH@127.0.0.1/app", ["4821", "LEAKH"]),
     ("postgresql://u:/LEAKI@127.0.0.1:5432/app", ["LEAKI"]),
+    # libpq rejects a query parameter it does not know, and its reason quotes the parameter and the URL.
+    ("postgresql://u:LEAKJ@db.example.com:6543/app?leakk_param=1", ["LEAKJ", "leakk_param"]),
+    ("postgresql://u:LEAKL@db.example.com:6543/app?sslmode=require&leakm_param=1", ["LEAKL", "leakm_param"]),
 ]
+# What the message must tell: both constraints a connection string has to meet, whichever one the URL breaks.
+URL_CONSTRAINTS = (
+    "Percent-encode special characters in the password",
+    "remove query parameters",
+    "sslmode is accepted",
+)
 
 
 @pytest.mark.parametrize(("url", "secrets"), MALFORMED_DATABASE_URLS)
@@ -154,8 +163,17 @@ def test_a_malformed_database_url_is_refused_at_startup_without_echoing_it(url: 
         make_settings(database_url=url)
     message = str(excinfo.value)
     assert "DATABASE_URL is not a valid PostgreSQL connection string" in message
+    for constraint in URL_CONSTRAINTS:
+        assert constraint in message
     for fragment in secrets:
         assert fragment not in message
+
+
+@pytest.mark.parametrize("suffix", ["?pgbouncer=true", "?pgbouncer=true&connection_limit=1", "?supa=base-pooler.x"])
+def test_a_driver_only_query_parameter_is_refused_with_a_message_that_names_the_query(suffix: str) -> None:
+    """The suffixes Supabase's connection dialog and Vercel's integration hand out: the message must not blame the password alone."""
+    with pytest.raises(ConfigError, match="remove query parameters PostgreSQL's client does not know"):
+        make_settings(database_url=f"postgresql://u:pw@db.example.com:6543/postgres{suffix}")
 
 
 @pytest.mark.parametrize(("url", "secrets"), MALFORMED_DATABASE_URLS)
@@ -170,6 +188,8 @@ def test_maintenance_commands_refuse_a_malformed_database_url_without_echoing_it
     assert cli.main(["migrate", "--allow-remote"]) == 1
     output = capsys.readouterr()
     assert "DATABASE_URL is not a valid PostgreSQL connection string" in output.err
+    for constraint in URL_CONSTRAINTS:
+        assert constraint in output.err
     for fragment in secrets:
         assert fragment not in output.out + output.err
 

@@ -118,7 +118,7 @@ Found while writing these documents or listed in the package notes, and not done
 - A per-user limit on ordinary writes (creating and deleting projects, and every generated module), and a guard against concurrent or repeated runs of a job through `GET /api/v1/jobs/{name}`: a leaked `CRON_SECRET` can start `reconcile-billing` repeatedly, at up to `BILLING_RECONCILE_BATCH_SIZE` Stripe calls a run. Until then: the WAF rule (step D7) and rotating `CRON_SECRET`.
 - Wire `apps/web/eslint.guards.mjs` into `eslint.config.mjs` (a lint-config edit that an owner applies).
 - A `supabase/seed.sql` header that says the seed is "for performance tests": the performance server seeds its own data; the seed serves the restore drill and the hosted restore test.
-- A validator message for driver-only URL parameters that names the parameter instead of blaming percent-encoding.
+- A message for a rejected database URL that says which part is wrong. Today it lists both likely causes (the password's encoding, a driver-only query parameter), because libpq's reason quotes the URL.
 - `scripts/init-template.mjs` and the messages of `apps/api/app/doctor.py` and `scripts/lib/preflight.mjs` still say "see docs/integrations.md"; the setup guide is [setup.md](setup.md) (the `#clerk` anchor they use is kept).
 - A Clerk key-pair check in `IdentityProbe` (compare `GET /v1/jwks` with `<issuer>/.well-known/jwks.json`); a doctor check for stray env files; an optional pass-through proxy so `pnpm dev` runs without Clerk keys; refusing the placeholder pair when `APP_ENV=preview`.
 - A test that the docs list exactly `SYNC_EVENT_TYPES`, and a `stripe-events` command to feed `stripe listen --events`; a webhook-endpoint check and a "last verified webhook" line on `/integrations`.

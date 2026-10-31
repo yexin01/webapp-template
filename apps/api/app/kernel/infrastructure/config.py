@@ -85,7 +85,12 @@ def secret(value: SecretStr | None) -> str:
 
 
 def database_url_invalid(name: str) -> str:
-    return f"{name} is not a valid PostgreSQL connection string (percent-encode special characters in the password)"
+    """Both likely causes, and no more: libpq's own reason quotes the URL, password included, so it is never shown."""
+    return (
+        f"{name} is not a valid PostgreSQL connection string. Percent-encode special characters in the password, "
+        "and remove query parameters PostgreSQL's client does not know, such as ?pgbouncer=true or "
+        "connection_limit (sslmode is accepted)"
+    )
 
 
 DATABASE_URL_INVALID = database_url_invalid("DATABASE_URL")
