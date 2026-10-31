@@ -207,6 +207,7 @@ describe("billing panel", () => {
         true,
       ],
       ["subscription_exists", { state: "canceled" }, /already have a subscription/, true],
+      ["subscription_exists", { state: "unrecognized" }, /already have a subscription/, true],
       ["subscription_exists", { state: "processing" }, /already have a subscription/, true],
       ["payment_pending", { state: "processing" }, /once this payment is confirmed/, false],
     ] as const)(
@@ -220,6 +221,18 @@ describe("billing panel", () => {
         expect(!!screen.queryByRole("button", { name: "Manage billing" })).toBe(canManage);
       },
     );
+
+    it("says a subscription no plan matches was not matched, in the warning card, with plan management", async () => {
+      api.billingStatus.mockResolvedValue(
+        blocked({ state: "unrecognized", plan_key: "unknown", checkout_blocked: "subscription_exists" }),
+      );
+      render(<BillingPanel />);
+      const copy = await screen.findByText(/could not match your subscription to a plan/);
+      expect(copy.closest("section")).toHaveClass("card-warning");
+      expect(screen.queryByText(/Your Pro plan has ended/)).toBeNull(); // the user pays: the plan has not ended
+      expect(screen.getByRole("button", { name: "Manage billing" })).toBeEnabled();
+      expect(screen.queryByRole("button", { name: /Pro — (monthly|yearly)/ })).toBeNull();
+    });
 
     it("for a Pro plan offers plan management, never the upgrade", async () => {
       api.billingStatus.mockResolvedValue(pro);

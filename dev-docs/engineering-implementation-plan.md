@@ -884,6 +884,7 @@ Clerk provides authentication. It does not replace application authorization.
 | `canceled` | Ended | Free | Re-subscribe through a new checkout |
 | `paused` | Paused (for example, a trial ended without a payment method) | Free | — |
 | Pending update (`pending_update` present) | A change awaits payment confirmation | Entitlement follows the current, not the pending, items | Stripe has no "pending" subscription status; "pending" refers to pending updates |
+| `active` or `past_due` on a price no plan matches (BILL-03) | Paid, but not a Pro price of `STRIPE_PRODUCT_PRO` | Free | UI says the subscription could not be matched (`unrecognized`; `past_due`: payment required) and offers Manage billing, not Upgrade; `billing_unknown_price` is logged at ERROR |
 
 ### 9.6 Plan changes, cancellation, and reactivation
 
@@ -906,7 +907,7 @@ Clerk provides authentication. It does not replace application authorization.
 
 ### 9.8 Presentation
 
-- **BILL-20** A single billing-status endpoint feeds the paywall, settings, and navigation. The states are: Free, Pro (renews on <date>), Pro (cancels on <date>), payment issue, and processing. It carries `checkout_blocked` (BILL-07); the page offers Upgrade only when that is null.
+- **BILL-20** A single billing-status endpoint feeds the paywall, settings, and navigation. The states are: Free, Pro (renews on <date>), Pro (cancels on <date>), payment issue, processing, and a subscription no plan matches (`unrecognized`: the user pays and Pro is not active; `past_due` on such a price is a payment issue). It carries `checkout_blocked` (BILL-07); the page offers Upgrade only when that is null.
 - **BILL-21** Pro-gated APIs return `403` with `code: ENTITLEMENT_REQUIRED`, which the frontend maps to the dedicated paywall. The paywall and status presentation stay consistent across all surfaces.
 
 ### 9.9 Organization context (DEC-002)

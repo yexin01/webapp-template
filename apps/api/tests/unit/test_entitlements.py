@@ -106,12 +106,41 @@ def test_entitled_subscription_wins_over_canceled_history() -> None:
         ([sub(SubscriptionStatus.INCOMPLETE)], BillingState.PROCESSING, Plan.FREE),
         ([sub(SubscriptionStatus.UNPAID)], BillingState.PAYMENT_REQUIRED, Plan.FREE),
         ([sub(SubscriptionStatus.CANCELED)], BillingState.CANCELED, Plan.FREE),
+        # A paying subscription that no plan matches is not an ended plan: the user pays and is not told so.
+        ([sub(SubscriptionStatus.ACTIVE, plan_key=PlanKey.UNKNOWN)], BillingState.UNRECOGNIZED, Plan.FREE),
+        ([sub(SubscriptionStatus.PAST_DUE, plan_key=PlanKey.UNKNOWN)], BillingState.PAYMENT_REQUIRED, Plan.FREE),
+        # Over by its own date, whatever Stripe still says: nothing to report.
+        (
+            [sub(SubscriptionStatus.ACTIVE, plan_key=PlanKey.UNKNOWN, cancel_at_period_end=True, ended_at=EARLIER)],
+            BillingState.CANCELED,
+            Plan.FREE,
+        ),
+        ([sub(SubscriptionStatus.CANCELED, plan_key=PlanKey.UNKNOWN)], BillingState.CANCELED, Plan.FREE),
+    ],
+    ids=[
+        "none",
+        "active",
+        "canceling",
+        "past_due",
+        "incomplete",
+        "unpaid",
+        "canceled",
+        "active-unknown-plan",
+        "past_due-unknown-plan",
+        "unknown-plan-ended",
+        "canceled-unknown-plan",
     ],
 )
 def test_summary_states(subs: list[SubscriptionSnapshot], state: BillingState, plan: Plan) -> None:
     summary = summarize(subs, NOW)
     assert summary.state is state
     assert summary.plan is plan
+
+
+def test_an_unrecognized_subscription_keeps_its_unknown_plan_and_period_for_the_page() -> None:
+    summary = summarize([sub(SubscriptionStatus.ACTIVE, plan_key=PlanKey.UNKNOWN)], NOW)
+    assert (summary.plan_key, summary.current_period_end, summary.cancels_at) == (PlanKey.UNKNOWN, LATER, None)
+    assert summary.checkout_block is CheckoutBlock.SUBSCRIPTION_EXISTS  # Upgrade stays hidden: it would buy a second
 
 
 def test_summary_reports_cancellation_date() -> None:
@@ -173,5 +202,9 @@ def test_a_payment_that_is_due_is_named_before_an_active_subscription_the_catalo
 def test_the_summary_blocks_exactly_when_it_does_not_offer_checkout() -> None:
     """The UI offers Upgrade only when nothing blocks it, so the two cannot disagree."""
     for status in SubscriptionStatus:
-        summary = summarize([sub(status)], NOW)
-        assert (summary.checkout_block is None) == (summary.state in (BillingState.CANCELED, BillingState.NONE))
+        for plan_key in (PlanKey.PRO_MONTHLY, PlanKey.UNKNOWN):
+            summary = summarize([sub(status, plan_key=plan_key)], NOW)
+            assert (summary.checkout_block is None) == (summary.state in (BillingState.CANCELED, BillingState.NONE)), (
+                status,
+                plan_key,
+            )

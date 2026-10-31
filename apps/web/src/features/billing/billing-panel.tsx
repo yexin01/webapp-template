@@ -35,6 +35,8 @@ export function describeStatus(status: Status): string {
       return "Your payment is being confirmed.";
     case "payment_required":
       return "Payment is required to restore Pro.";
+    case "unrecognized":
+      return "We could not match your subscription to a plan, so Pro is not active. Use Manage billing to see it, or contact support.";
     case "canceled":
       return "Your Pro plan has ended. You are on the Free plan.";
     default:
@@ -126,7 +128,8 @@ export function BillingPanel() {
   if (error) return <ErrorState error={error} onRetry={reload} />;
   if (!status) return <LoadingState label="Loading billing…" />;
 
-  const needsAttention = status.state === "past_due" || status.state === "payment_required";
+  const needsAttention =
+    status.state === "past_due" || status.state === "payment_required" || status.state === "unrecognized";
   const blockCopy = describeCheckoutBlock(status);
   // Plan management is the way on for every refusal except a payment that is still being confirmed.
   const canManage =

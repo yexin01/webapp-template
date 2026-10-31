@@ -1174,6 +1174,29 @@ def test_status_transitions_via_webhooks(harness: Harness, status: SubscriptionS
     assert (body["plan"], body["state"]) == (plan, state)
 
 
+@pytest.mark.parametrize(
+    ("status", "state", "blocked"),
+    [
+        (SubscriptionStatus.ACTIVE, "unrecognized", "subscription_exists"),
+        (SubscriptionStatus.PAST_DUE, "payment_required", "payment_required"),
+    ],
+)
+def test_a_paying_subscription_no_plan_matches_is_not_shown_as_an_ended_plan(
+    harness: Harness, status: SubscriptionStatus, state: str, blocked: str
+) -> None:
+    """A price of another product grants no Pro (BILL-03) but the user pays: the page must not say the plan ended."""
+    customer = make_pro(harness, "user_a")
+    harness.billing.set_subscriptions(
+        customer, [snapshot(customer, status, plan_key=PlanKey.UNKNOWN, price_id="price_other_product")]
+    )
+    assert send_webhook(harness, event_payload(customer)).json()["status"] == "processed"
+
+    body = harness.client.get("/api/v1/billing/status", headers=harness.login("user_a")).json()
+
+    assert (body["plan"], body["state"], body["checkout_blocked"]) == ("free", state, blocked)
+    assert harness.client.get("/api/v1/pro/insight", headers=harness.login("user_a")).status_code == 403
+
+
 def test_end_of_period_cancellation_keeps_pro_until_period_end(harness: Harness) -> None:
     customer = make_pro(harness, "user_a")
     harness.billing.set_subscriptions(

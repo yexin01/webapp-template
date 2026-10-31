@@ -58,6 +58,8 @@ class BillingState(StrEnum):
     PAST_DUE = "past_due"
     PROCESSING = "processing"
     PAYMENT_REQUIRED = "payment_required"
+    # A paying subscription that no plan matches (a price of another product): not an ended plan, and not Pro.
+    UNRECOGNIZED = "unrecognized"
     CANCELED = "canceled"
 
 
@@ -205,6 +207,13 @@ def summarize(
         else:
             state = BillingState.ACTIVE
         return BillingSummary(Plan.PRO, state, sub.plan_key, sub.current_period_end, end, block)
+
+    # Nothing entitles here, so a live subscription that is paid (or retried) has no plan; calling it ended hides it.
+    unmatched = [s for s in live_subscriptions(subscriptions, now) if s.status in _ENTITLED_STATUSES]
+    if unmatched:
+        u = _latest(unmatched)
+        state = BillingState.PAYMENT_REQUIRED if u.status is SubscriptionStatus.PAST_DUE else BillingState.UNRECOGNIZED
+        return BillingSummary(Plan.FREE, state, u.plan_key, u.current_period_end, None, block)
 
     pending = [s for s in subscriptions if s.status in _PENDING_STATES]
     if pending:
