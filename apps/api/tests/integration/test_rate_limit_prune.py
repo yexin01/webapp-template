@@ -20,7 +20,7 @@ RETENTION = timedelta(days=2)  # longer than the longest window (a day)
 
 
 def test_prune_deletes_only_windows_older_than_its_cutoff(make_harness: Callable[..., Harness]) -> None:
-    h = make_harness({"cron_secret": CRON_SECRET, "llm_checks_global_per_day": 1})
+    h = make_harness({"cron_secret": CRON_SECRET, "llm_checks_global_per_day": 1, "diagnostics_operator_ids": "user_a"})
     headers = h.login("user_a")
     assert h.client.post("/api/v1/llm/check", headers=headers).status_code == 200  # spends the day's global budget
     [(user_id,)] = superuser_query(h.database_url, "SELECT id FROM app.users WHERE clerk_user_id = 'user_a'")

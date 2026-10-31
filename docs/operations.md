@@ -156,7 +156,7 @@ The application limits these. Counters live in PostgreSQL, so every limit holds 
 |---|---|---|---|
 | Writes (`POST`, `PUT`, `PATCH`, `DELETE`) of one signed-in user on routes with no limit of their own: projects and generated modules. One count across the personal context and every organization | 60 a minute | `WRITES_PER_USER_PER_MINUTE` | `429`, `Retry-After` |
 | Checkout sessions, portal sessions, billing re-reads, per user | 10, 20 and 30 an hour | `CHECKOUTS_PER_USER_PER_HOUR`, `PORTAL_SESSIONS_PER_USER_PER_HOUR`, `BILLING_SYNCS_PER_USER_PER_HOUR` | `429`, `Retry-After` |
-| LLM checks | 5 a minute per user; 200 a day for everyone | `LLM_CHECKS_PER_USER_PER_MINUTE`, `LLM_CHECKS_GLOBAL_PER_DAY` | `429`; the daily budget answers code `BUDGET_EXCEEDED` |
+| LLM checks (operators only) | 5 a minute per user; 200 a day for everyone | `LLM_CHECKS_PER_USER_PER_MINUTE`, `LLM_CHECKS_GLOBAL_PER_DAY` | `429`; the daily budget answers code `BUDGET_EXCEEDED` |
 | Integration checks | 20 a minute per user; 1,000 a day for everyone | `DIAGNOSTICS_RUNS_PER_USER_PER_MINUTE`, `DIAGNOSTICS_RUNS_GLOBAL_PER_DAY` | `429` |
 | A job started over HTTP | One run at a time; 60 s between starts | `JOB_MIN_SPACING_SECONDS` (0: only the one-at-a-time rule) | `409` while it runs; `429`, `Retry-After` when too soon |
 | JSON request body | 1,000,000 bytes | `MAX_REQUEST_BODY_BYTES` | `413` |

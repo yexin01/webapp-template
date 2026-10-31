@@ -169,7 +169,15 @@ def build_container(settings: Settings, **adapters: Any) -> Container:
     billing = build_billing(settings, settings, kernel, identity.auth, overrides)
     projects = build_projects(kernel, identity.auth)
     # new:module:build
-    llm = build_llm(settings, kernel, identity.auth, overrides)
+    container: Container  # bound below; the checks run only once requests arrive
+    llm = build_llm(
+        settings,
+        kernel,
+        identity.auth,
+        overrides,
+        # Diagnostics are built after this module, since they collect its probe, so the policy is asked late.
+        may_use_operator_tools=lambda ctx: container.diagnostics.service.may_use(ctx),
+    )
     container = Container(
         settings=settings,
         kernel=kernel,

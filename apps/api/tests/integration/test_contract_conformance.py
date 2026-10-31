@@ -138,6 +138,7 @@ def test_every_operation_answers_as_the_document_says_when_signed_in(sweep: Swee
     sweep("POST", f"{api}/orgs/{OTHER_ORG}/projects", 404, json={"name": "x"}, headers=a)
     sweep("DELETE", f"{api}/orgs/{OTHER_ORG}/projects/{UNKNOWN}", 404, headers=a)
     sweep("DELETE", f"{api}/projects/{UNKNOWN}", 404, headers=a)
+    sweep("POST", f"{api}/llm/check", 404, headers=b)
     sweep("GET", f"{api}/diagnostics/integrations", 404, headers=b)
     sweep("POST", f"{api}/diagnostics/integrations/database/check", 404, headers=b)
     sweep("GET", f"{api}/projects?cursor=!!!", 400, headers=a)

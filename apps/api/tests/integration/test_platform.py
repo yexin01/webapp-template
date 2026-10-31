@@ -44,6 +44,9 @@ PUBLIC_ROUTES = {
 # Authenticated by a bearer secret of its own (CRON_SECRET), not a session, and hidden from the
 # contract; test_outbox_jobs checks that it refuses a missing or wrong secret.
 SECRET_AUTHENTICATED_ROUTES = {("GET", "/api/v1/jobs/{name}")}
+# The LLM check is an operator tool (the diagnostics policy): the users of these tests are operators.
+OPERATOR_A = {"diagnostics_operator_ids": "user_a"}
+OPERATORS_A_AND_B = {"diagnostics_operator_ids": "user_a,user_b"}
 
 Discovered = tuple[str, str, APIRoute, tuple[Any, ...]]
 
@@ -284,7 +287,7 @@ def test_unhandled_errors_are_sanitized(make_harness: Any) -> None:
         def check(self) -> Any:
             raise RuntimeError("secret detail sk_test_LEAKCANARY0000 at /internal/path")
 
-    h = make_harness(llm_provider=Exploding())
+    h = make_harness(OPERATOR_A, llm_provider=Exploding())
     r = h.client.post("/api/v1/llm/check", headers=h.login("user_a"))
     assert r.status_code == 500
     assert r.json()["code"] == "INTERNAL_ERROR"
@@ -312,7 +315,7 @@ def test_unhandled_error_message_never_reaches_the_logs(make_harness: Any, capsy
     root = logging.getLogger()
     root.addHandler(handler)
     try:
-        h = make_harness(llm_provider=Exploding())
+        h = make_harness(OPERATOR_A, llm_provider=Exploding())
         r = h.client.post("/api/v1/llm/check", headers=h.login("user_a"))
     finally:
         root.removeHandler(handler)
@@ -599,7 +602,7 @@ def test_analytics_failure_does_not_break_requests(make_harness: Any) -> None:
 
 
 def test_llm_outage_only_affects_llm_feature(make_harness: Any) -> None:
-    h = make_harness(llm_provider=MockLLMProvider(ok=False, error_code="unavailable"))
+    h = make_harness(OPERATOR_A, llm_provider=MockLLMProvider(ok=False, error_code="unavailable"))
     headers = h.login("user_a")
     body = h.client.post("/api/v1/llm/check", headers=headers).json()
     assert body["ok"] is False
@@ -608,7 +611,7 @@ def test_llm_outage_only_affects_llm_feature(make_harness: Any) -> None:
 
 
 def test_llm_per_user_and_global_limits(make_harness: Any) -> None:
-    h = make_harness({"llm_checks_per_user_per_minute": 2, "llm_checks_global_per_day": 3})
+    h = make_harness({"llm_checks_per_user_per_minute": 2, "llm_checks_global_per_day": 3, **OPERATORS_A_AND_B})
     a, b = h.login("user_a"), h.login("user_b")
     responses = [h.client.post("/api/v1/llm/check", headers=a) for _ in range(3)]
     assert [r.status_code for r in responses] == [200, 200, 429]
@@ -624,7 +627,7 @@ def test_llm_per_user_and_global_limits(make_harness: Any) -> None:
 
 
 def test_llm_check_refused_by_the_concurrency_bound_uses_no_quota(make_harness: Any) -> None:
-    h = make_harness({"llm_checks_per_user_per_minute": 1, "llm_max_concurrent_checks": 1})
+    h = make_harness({"llm_checks_per_user_per_minute": 1, "llm_max_concurrent_checks": 1, **OPERATOR_A})
     headers = h.login("user_a")
     service = h.container.llm.service
     assert service._in_flight.acquire(blocking=False)  # another check is in flight
@@ -929,7 +932,7 @@ def test_llm_checks_in_flight_are_bounded_per_instance(make_harness: Any) -> Non
             assert release.wait(10)
             return LLMCheckResult(ok=True, provider="slow", model="m", latency_ms=1, error_code=None)
 
-    h = make_harness({"llm_max_concurrent_checks": 1}, llm_provider=Slow())
+    h = make_harness({"llm_max_concurrent_checks": 1, **OPERATORS_A_AND_B}, llm_provider=Slow())
     codes: list[int] = []
     first = threading.Thread(
         target=lambda: codes.append(h.client.post("/api/v1/llm/check", headers=h.login("user_a")).status_code)
