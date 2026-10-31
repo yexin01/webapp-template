@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from typing import Literal
 
 from pydantic import BaseModel, Field, SecretStr
 
@@ -35,6 +36,9 @@ class BillingSettings(BaseModel):
     billing_reconcile_apply: bool | None = None
     # Customers the scheduled job checks per run (one Stripe call each), least recently checked first.
     billing_reconcile_batch_size: int = Field(default=200, ge=1, le=2_000)
+    # What happens to the subscription of a user the identity provider reports as deleted: Stripe is asked to end it
+    # at the period's end, or it is only logged. Unset: the first, except in mock mode (``cancels_on_user_deleted``).
+    billing_on_user_deleted: Literal["cancel_at_period_end", "log"] | None = None
 
 
 def reconcile_applies(s: BillingSettings) -> bool:
@@ -45,6 +49,17 @@ def reconcile_applies(s: BillingSettings) -> bool:
     """
     if s.billing_reconcile_apply is not None:
         return s.billing_reconcile_apply
+    return s.billing_mode is not Mode.MOCK
+
+
+def cancels_on_user_deleted(s: BillingSettings) -> bool:
+    """Whether the subscription of a deleted user is ended at the period's end (BILL-16), rather than only logged.
+
+    A deleted user cannot sign in, so nobody can reach the Customer Portal and the subscription keeps renewing.
+    Mock mode has no Stripe subscription to end.
+    """
+    if s.billing_on_user_deleted is not None:
+        return s.billing_on_user_deleted == "cancel_at_period_end"
     return s.billing_mode is not Mode.MOCK
 
 

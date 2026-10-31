@@ -254,6 +254,13 @@ class StripeBillingProvider:
     def retrieve_subscription(self, subscription_id: str) -> SubscriptionSnapshot:
         return to_snapshot(self._call(self._client.v1.subscriptions.retrieve, subscription_id), self._catalog)
 
+    def cancel_subscription_at_period_end(self, subscription_id: str) -> SubscriptionSnapshot:
+        # A natural repeat: no idempotency key, because Stripe replays even a failed response for 24 hours per key.
+        updated = self._call(
+            self._client.v1.subscriptions.update, subscription_id, params={"cancel_at_period_end": True}
+        )
+        return to_snapshot(updated, self._catalog)
+
     def describe_price(self, price_id: str) -> PriceDescription:
         # Diagnostics only: unlike customer-facing calls, failures are specific
         # so that an operator can tell a bad key from a missing price.

@@ -19,7 +19,8 @@ from app.modules.billing.ports import BillingProvider, BillingWebhookVerifier
 from app.modules.billing.probe import BillingProbe
 from app.modules.billing.routes import build_action_router, build_read_router, build_webhook_router
 from app.modules.billing.service import BillingService, BillingUrls
-from app.modules.billing.settings import BillingSettings, reconcile_applies
+from app.modules.billing.settings import BillingSettings, cancels_on_user_deleted, reconcile_applies
+from app.modules.identity.api import UserDeleted
 
 
 @dataclass
@@ -71,9 +72,13 @@ def build_billing(
         # at least one worker connection for everything else (the pool has two or more).
         sync_slots=core.database_worker_pool_max_size - 1,
         sync_wait_seconds=core.database_connect_timeout_seconds,
+        cancel_on_user_deleted=cancels_on_user_deleted(settings),
     )
 
     kernel.handlers.subscribe(EntitlementChanged, "billing.analytics", service.capture_entitlement_change)
+    kernel.handlers.subscribe(
+        UserDeleted, "billing.end_deleted_users_subscription", service.end_deleted_users_subscription
+    )
     kernel.jobs.register(
         Job(
             "reconcile-billing",

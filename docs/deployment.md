@@ -76,6 +76,7 @@ Legend: **web** = the Next.js service, **api** = the Python service. *Baked* = f
 | `STRIPE_PRODUCT_PRO` | api | config | Sandbox product ID | Live product ID |
 | `STRIPE_CUSTOM_DOMAIN` | web, api; baked | config | Unset | Optional, live mode only |
 | `BILLING_RECONCILE_APPLY` | api | config | Leave unset (the job applies Stripe's state) | Leave unset; `false` makes the job only report |
+| `BILLING_ON_USER_DELETED` | api | config | Leave unset (a deleted user's subscription is set to end at the period's end) | Leave unset; `log` only reports it |
 
 **LLM, analytics, errors**
 

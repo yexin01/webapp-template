@@ -6,7 +6,7 @@ import pytest
 
 from app.kernel.infrastructure.config import ConfigError, Mode
 from app.modules.billing.module import describe
-from app.modules.billing.settings import BillingSettings, reconcile_applies
+from app.modules.billing.settings import BillingSettings, cancels_on_user_deleted, reconcile_applies
 from tests.conftest import PRODUCT_PRO, make_settings
 
 SANDBOX = {"billing_mode": "sandbox", "stripe_secret_key": "sk_test_" + "o" * 24}
@@ -102,3 +102,35 @@ def test_the_apply_setting_reads_true_false_and_empty_as_unset(
 ) -> None:
     monkeypatch.setenv("BILLING_RECONCILE_APPLY", value)
     assert make_settings().billing_reconcile_apply is expected
+
+
+@pytest.mark.parametrize(
+    ("mode", "setting", "cancels"),
+    [
+        (Mode.MOCK, None, False),  # there is no Stripe subscription to end
+        (Mode.SANDBOX, None, True),
+        (Mode.LIVE, None, True),
+        (Mode.MOCK, "cancel_at_period_end", True),
+        (Mode.LIVE, "log", False),
+    ],
+)
+def test_a_deleted_users_subscription_is_ended_at_the_period_end_unless_billing_is_mocked_or_told_to_log(
+    mode: Mode, setting: str | None, cancels: bool
+) -> None:
+    assert cancels_on_user_deleted(BillingSettings(billing_mode=mode, billing_on_user_deleted=setting)) is cancels
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"), [("", None), ("log", "log"), ("cancel_at_period_end", "cancel_at_period_end")]
+)
+def test_the_user_deleted_setting_reads_its_two_values_and_empty_as_unset(
+    monkeypatch: pytest.MonkeyPatch, value: str, expected: str | None
+) -> None:
+    monkeypatch.setenv("BILLING_ON_USER_DELETED", value)
+    assert make_settings().billing_on_user_deleted == expected
+
+
+def test_any_other_value_of_the_user_deleted_setting_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BILLING_ON_USER_DELETED", "cancel_now")  # immediate cancellation is not built
+    with pytest.raises(ConfigError, match="BILLING_ON_USER_DELETED"):
+        make_settings()

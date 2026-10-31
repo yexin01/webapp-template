@@ -96,8 +96,8 @@ Dotted arrows are contracts that the composition root passes in. No module impor
 
 | Module | Owns | Routes | Jobs | Events |
 |---|---|---|---|---|
-| `identity` | Users, the organization-membership mirror, Clerk token and webhook verification, tenant-context resolution | `/me`, `/webhooks/clerk` | `reconcile-memberships` | — |
-| `billing` | Customers, subscriptions, the entitlement matrix, price catalog, the open Checkout Session per user, Stripe | `/entitlement`, `/billing/*` (status, checkout, portal, sync), `/pro/insight`, `/webhooks/stripe` | `reconcile-billing` | publishes `billing.entitlement_changed` |
+| `identity` | Users, the organization-membership mirror, Clerk token and webhook verification, tenant-context resolution | `/me`, `/webhooks/clerk` | `reconcile-memberships` | publishes `identity.user_deleted` (through its `api.py`) |
+| `billing` | Customers, subscriptions, the entitlement matrix, price catalog, the open Checkout Session per user, Stripe | `/entitlement`, `/billing/*` (status, checkout, portal, sync), `/pro/insight`, `/webhooks/stripe` | `reconcile-billing` | publishes `billing.entitlement_changed`; handles `identity.user_deleted` |
 | `projects` | Example tenant-scoped resource; the generator's reference | `/projects`, `/orgs/{org_id}/projects` | — | publishes `projects.created` |
 | `llm` | Provider-agnostic connectivity check with cost bounds | `/llm/check` | — | — |
 | `diagnostics` | Operator-only integration report and checks, and the answer to "may I use them?" | `/diagnostics/*` (`/diagnostics/access` answers any signed-in caller) | — | — |
@@ -261,6 +261,7 @@ flowchart TD
 - The stored row holds the session ID, the request key, and the expiry, never the URL, and only the API role reads or writes it.
 - The success page polls the billing status and, after 3 s, asks the server once to re-read; the portal returns to `/billing?from=portal`, where the page asks once. The re-read counts against the per-instance Stripe-call bound that checkout and the portal share, never waits, never takes the last synchronization slot (so webhooks and reconciliation keep one), and is limited per user. If it fails, the page keeps polling.
 - The template never creates or changes the Customer Portal configuration; the `/integrations` Stripe check reads it. The webhook endpoint must use the **Snapshot** payload format: a Thin event is answered `400 INVALID_REQUEST` with a message that says so.
+- When Clerk reports `user.deleted`, identity records `identity.user_deleted` with the revocation; billing handles it after commit and asks Stripe to end the user's subscription at the period's end (`BILLING_ON_USER_DELETED`). Identity does not import billing: billing imports the event from `identity/api.py`.
 - A customer Stripe has deleted is replaced at the user's next checkout (`BillingService._replace_deleted_customer`): the stored link is pointed at a new customer by the worker, unless a subscription of the old one is not over (then `409` and an ERROR log). Subscriptions that ended under the old customer keep its ID.
 - A rejected API key or a rejected create call is `503 NOT_CONFIGURED`, reported to Sentry once at error level (its details are one warning log line, `stripe_configuration_error`). A Checkout or portal URL whose host is not `stripe.com`, a subdomain of it, or `STRIPE_CUSTOM_DOMAIN` is refused the same way, with one ERROR log of the host.
 

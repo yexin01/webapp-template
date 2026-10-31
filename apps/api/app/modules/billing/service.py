@@ -158,6 +158,7 @@ class BillingService:
         sync_slots: int = 1,
         sync_wait_seconds: float = 5.0,
         reconcile_time_budget_seconds: float = TIME_BUDGET_SECONDS,
+        cancel_on_user_deleted: bool = False,
     ) -> None:
         self._tx = tx
         self._provider = provider
@@ -175,6 +176,7 @@ class BillingService:
         self.sync_wait_seconds = sync_wait_seconds
         self._sync_slots = _Slots(sync_slots, sync_wait_seconds)
         self._reconcile_time_budget = reconcile_time_budget_seconds
+        self._cancel_on_user_deleted = cancel_on_user_deleted
 
     # -- Reads ---------------------------------------------------------------
 
@@ -684,6 +686,59 @@ class BillingService:
         if not self._analytics.flush():
             raise DependencyUnavailableError("Analytics export could not be confirmed.")
 
+    def end_deleted_users_subscription(self, event: StoredEvent) -> None:
+        """Outbox handler for ``identity.user_deleted`` (BILL-16): the user can no longer sign in, so nobody can
+        reach the Customer Portal, and the subscription would renew until an operator noticed.
+
+        Asks Stripe to end each subscription of the user's customer that is not over at the end of its period, so
+        what the user paid for runs out and nothing more is charged. A repeat finds them scheduled and does
+        nothing. Without ``cancel_on_user_deleted`` it only names them. A subscription that cannot be ended is
+        an ERROR naming the customer, for an operator, and the handler raises, so the outbox retries.
+        """
+        user_id = UUID(str(event.payload["user_id"]))
+        with self._tx.as_system() as t:
+            customer_id = t.repo.get_billing_customer_id(user_id)
+            stored = t.repo.list_subscriptions_by_customer(customer_id) if customer_id is not None else []
+        if customer_id is None:
+            return
+        not_over = [s for s in stored if s.status not in FINAL_STATUSES]
+        if not self._cancel_on_user_deleted:
+            if not_over:
+                self._alert_deleted_users_subscription(customer_id, not_over)
+            return
+        provider = self._require_provider()
+        try:
+            listed = provider.list_customer_subscriptions(customer_id)
+        except InvalidRequestError:
+            if provider.customer_exists(customer_id):
+                self._alert_deleted_users_subscription(customer_id, not_over)
+                raise
+            return  # Stripe deleted the customer, which cancelled its subscriptions; reconciliation records that
+        except DomainError:
+            self._alert_deleted_users_subscription(customer_id, not_over)
+            raise
+        failed: list[SubscriptionSnapshot] = []
+        for sub in listed:
+            if sub.status in _ENDABLE_STATUSES and not _scheduled_to_end(sub):
+                try:
+                    provider.cancel_subscription_at_period_end(sub.stripe_subscription_id)
+                except DomainError:
+                    failed.append(sub)
+        if failed:
+            self._alert_deleted_users_subscription(customer_id, failed)
+            raise DependencyUnavailableError("A deleted user's subscription could not be ended.")
+
+    @staticmethod
+    def _alert_deleted_users_subscription(customer_id: str, subscriptions: Sequence[SubscriptionSnapshot]) -> None:
+        """The ERROR an operator acts on: this customer may keep being charged, and its user no longer exists."""
+        logger.error(
+            "billing_deleted_user_has_subscription",
+            extra={
+                "stripe_customer_id": customer_id,
+                "stripe_subscription_ids": ",".join(s.stripe_subscription_id for s in subscriptions),
+            },
+        )
+
     def _require_provider(self) -> BillingProvider:
         if self._provider is None:
             raise NotConfiguredError("Billing is not configured in this environment.")
@@ -749,6 +804,22 @@ class _Slots:
             yield
         finally:
             self._slots.release()
+
+
+# The subscriptions that charge, or will: an incomplete one expires by itself, within a day, without a charge.
+_ENDABLE_STATUSES = frozenset(
+    {
+        SubscriptionStatus.ACTIVE,
+        SubscriptionStatus.PAST_DUE,
+        SubscriptionStatus.TRIALING,
+        SubscriptionStatus.UNPAID,
+        SubscriptionStatus.PAUSED,
+    }
+)
+
+
+def _scheduled_to_end(sub: SubscriptionSnapshot) -> bool:
+    return sub.cancel_at_period_end or sub.cancel_at is not None
 
 
 def _busy() -> DependencyUnavailableError:

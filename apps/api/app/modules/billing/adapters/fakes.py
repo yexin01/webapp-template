@@ -5,12 +5,12 @@ from __future__ import annotations
 import hashlib
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from uuid import UUID
 
 from app.kernel.errors import InvalidRequestError
-from app.modules.billing.domain import PortalConfiguration, SubscriptionSnapshot
+from app.modules.billing.domain import PortalConfiguration, SubscriptionSnapshot, SubscriptionStatus
 from app.modules.billing.ports import CheckoutSession, PriceDescription
 
 
@@ -43,6 +43,8 @@ class InMemoryBillingProvider:
         self.checkout_requests: list[dict[str, object]] = []
         self.portal_requests: list[dict[str, object]] = []
         self.customer_requests: list[dict[str, object]] = []
+        # The IDs of the subscriptions set to end at the period's end, in order.
+        self.cancellations: list[str] = []
         self.fail_with: Callable[[], Exception] | None = None
 
     def _maybe_fail(self, call: str) -> None:
@@ -144,6 +146,20 @@ class InMemoryBillingProvider:
                 for sub in subs:
                     if sub.stripe_subscription_id == subscription_id:
                         return sub
+        raise InvalidRequestError("The billing request was rejected.")
+
+    def cancel_subscription_at_period_end(self, subscription_id: str) -> SubscriptionSnapshot:
+        self._maybe_fail("cancel_subscription_at_period_end")
+        with self._lock:
+            for customer_id, subs in self._subscriptions.items():
+                for index, sub in enumerate(subs):
+                    if sub.stripe_subscription_id == subscription_id:
+                        if sub.status in (SubscriptionStatus.CANCELED, SubscriptionStatus.INCOMPLETE_EXPIRED):
+                            raise InvalidRequestError("The billing request was rejected.")
+                        updated = replace(sub, cancel_at_period_end=True)
+                        self._subscriptions[customer_id][index] = updated
+                        self.cancellations.append(subscription_id)
+                        return updated
         raise InvalidRequestError("The billing request was rejected.")
 
     def get_customer_app_user_id(self, customer_id: str) -> UUID | None:

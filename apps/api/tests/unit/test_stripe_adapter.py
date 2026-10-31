@@ -17,6 +17,7 @@ from typing import Any, ClassVar
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
+from stripe.params import SubscriptionUpdateParams
 from stripe.params.checkout import SessionCreateParams
 
 from app.kernel.errors import (
@@ -168,6 +169,27 @@ class TestRequests:
         [request] = stub.requests
         assert form(request) == {"metadata[app_user_id]": [str(USER)]}
         assert request.headers["idempotency-key"] == f"customer-create-{USER}-replaces-cus_old"
+
+    def test_a_subscription_is_set_to_end_with_the_period_it_paid_for_and_nothing_else_changes(self) -> None:
+        """BILL-16: `cancel_at_period_end` is what the Update Subscription call documents for ending at the period's end
+        (https://docs.stripe.com/api/subscriptions/update, API 2026-10-28.endive; the SDK pins 2026-09-30.endive)."""
+        ending = subscription(cancel_at_period_end=True)
+        with stub_server(lambda req: (200, ending)) as stub:
+            snap = provider(stub.url).cancel_subscription_at_period_end("sub_1")
+        [request] = stub.requests
+        assert (request.method, request.path) == ("POST", "/v1/subscriptions/sub_1")
+        assert form(request) == {"cancel_at_period_end": ["true"]}
+        assert {name.split("[")[0] for name in form(request)} <= set(SubscriptionUpdateParams.__annotations__)
+        assert (snap.status, snap.cancel_at_period_end) == (SubscriptionStatus.ACTIVE, True)  # runs to the period's end
+
+    @pytest.mark.parametrize(
+        ("status", "error"),
+        [(404, InvalidRequestError), (401, ProviderRejectedError), (500, DependencyUnavailableError)],
+    )
+    def test_a_failure_to_set_the_end_is_mapped_like_every_other_call(self, status: int, error: type) -> None:
+        body = MISSING if status == 404 else {"error": {"type": "api_error", "message": "m"}}
+        with stub_server(lambda req: (status, body)) as stub, pytest.raises(error):
+            provider(stub.url).cancel_subscription_at_period_end("sub_1")
 
     def test_a_portal_session_returns_to_the_given_url(self) -> None:
         session = {

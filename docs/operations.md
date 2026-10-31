@@ -56,6 +56,12 @@ Stripe cancels a customer's subscriptions when it deletes the customer, and cann
 
 It does not replace a customer that still has a subscription which is not over. The checkout or portal answers `409` ("contact support"), and the log has `billing_customer_gone_with_subscription` at ERROR with `stripe_customer_id` and `stripe_subscription_ids`. That is the state of a database whose keys now belong to another Stripe account (a new sandbox, the database kept): nothing there can end the stored subscription. Check the keys first. If the subscription is really over, record it: `pnpm billing:reconcile --apply` reads it by ID when Stripe knows it; otherwise, as the migration role, `UPDATE app.subscriptions SET status = 'canceled', ended_at = now() WHERE stripe_subscription_id = 'sub_...';`. The user's next checkout then links a new customer. A replacement that loses a race with a subscription stored meanwhile leaves one unlinked customer in Stripe, which you can delete.
 
+### A user deleted in Clerk
+
+When Clerk reports `user.deleted` (the user deleted their account, or you deleted them in the Clerk Dashboard), the API revokes their memberships and records the outbox event `identity.user_deleted` in the same transaction. Billing handles that event after commit and asks Stripe to end each of the user's subscriptions that is not over at the end of the period it paid for: Pro and billing run to that date, and nothing renews. The signed-in user is gone, so nobody could reach the Customer Portal. Replays are harmless (a subscription already scheduled to end is left alone). Nothing is refunded and nothing is cancelled at once: both are yours, in the Stripe Dashboard.
+
+If Stripe cannot be asked, the log has `billing_deleted_user_has_subscription` at ERROR with `stripe_customer_id` and `stripe_subscription_ids`, and the event is retried with backoff until `OUTBOX_MAX_ATTEMPTS`, after which it is `dead` ([Outbox](#outbox)): cancel the subscription in the Stripe Dashboard, then replay or ignore the event. With `BILLING_ON_USER_DELETED=log` the same ERROR is the only action, once. The application data and the Stripe customer are kept ([data-inventory.md](data-inventory.md#adopter-decision-checklist)). The Stripe key needs write access to Subscriptions ([integrations.md](integrations.md#stripe)).
+
 ## Key rotation
 
 Rotate immediately after any suspected exposure, and periodically otherwise. For every secret:
