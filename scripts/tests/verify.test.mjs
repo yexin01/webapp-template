@@ -175,6 +175,9 @@ test("each missing tool fails the preflight with its fix", async (t) => {
   const fixes = async (probe, argv) => (await failedChecks(root, probe, argv)).map((check) => check.fix);
   assert.deepEqual(await fixes(healthy({ nodeVersion: "20.1.0" }), ["--only", "web-lint"]), ["install a current Node (.nvmrc names the version the repository uses), then open a new shell"]);
   assert.deepEqual(await fixes(healthy({ versionOf: () => null }), ["--only", "web-lint"]), ["corepack enable && corepack prepare pnpm@9.15.0 --activate"]);
+  // Node 25 and later no longer distribute Corepack.
+  assert.deepEqual(await fixes(healthy({ nodeVersion: "25.8.2", versionOf: () => null }), ["--only", "web-lint"]), ["npm install -g pnpm@9.15.0"]);
+  assert.deepEqual(await fixes(healthy({ nodeVersion: "24.19.0", versionOf: () => null }), ["--only", "web-lint"]), ["corepack enable && corepack prepare pnpm@9.15.0 --activate"]);
   assert.deepEqual(await fixes(healthy({ versionOf: (command) => (command === "pnpm" ? "10.1.0" : "x") }), ["--only", "web-lint"]), ["corepack enable && corepack prepare pnpm@9.15.0 --activate"]);
   assert.deepEqual(await fixes(healthy({ versionOf: (command) => (command === "uv" ? null : "9.15.0") }), ["--only", "api-types"]), ["install uv: https://docs.astral.sh/uv/getting-started/installation/"]);
   assert.deepEqual(await fixes(healthy({ exists: (file) => !file.endsWith("node_modules") }), ["--only", "web-lint"]), ["pnpm bootstrap"]);
@@ -268,11 +271,23 @@ test("an unreachable database stops the run before anything starts, and says how
   assert.match(err, /pnpm verify --no-db/);
 });
 
-test("a skipped step is a PASS with the reason in the verdict, so nothing is skipped silently", async (t) => {
-  const { status, out } = await runMain(t, ["--job", "secrets"], { probe: healthy({ versionOf: () => null }) });
+test("a skipped step beside a passing one is a PASS with the reason in the verdict, so nothing is skipped silently", async (t) => {
+  const { status, out } = await runMain(t, ["--only", "api-types", "--only", "secrets"], { probe: healthy({ versionOf: (command) => (command === "gitleaks" ? null : "uv 0.11.1") }) });
   assert.equal(status, 0);
   assert.match(out, /secrets\s+secrets\s+SKIPPED\s+-?\S*\s+gitleaks is not installed/);
-  assert.match(out, /verify: PASS - 0 passed; 1 skipped: secrets \(gitleaks is not installed/);
+  assert.match(out, /verify: PASS - 1 passed; 1 skipped: secrets \(gitleaks is not installed/);
+});
+
+test("when every selected step is skipped, nothing was checked: NOTHING RAN and exit 2, never PASS", async (t) => {
+  const { status, out } = await runMain(t, ["--job", "secrets"], { probe: healthy({ versionOf: () => null }) });
+  assert.equal(status, 2);
+  assert.match(out, /secrets\s+secrets\s+SKIPPED\s+-?\S*\s+gitleaks is not installed/);
+  assert.match(out, /verify: NOTHING RAN - every selected step was skipped, so nothing was checked: secrets \(gitleaks is not installed/);
+  assert.doesNotMatch(out, /verify: PASS/);
+  const left = await runMain(t, ["--only", "web-lint", "--skip", "web-lint"]);
+  assert.equal(left.status, 2);
+  assert.match(left.out, /verify: NOTHING RAN - every selected step was skipped, so nothing was checked: web-lint \(left out with --skip\)/);
+  assert.match((await runMain(t, ["--help"])).out, /NOTHING RAN, never PASS/);
 });
 
 test("the uv steps assert the lock, and an inherited UV_FROZEN is dropped because uv refuses the two together", async (t) => {
@@ -312,6 +327,9 @@ test("the summary says what the working tree was, and reads a dirty or unknown o
   assert.match(dirty, /working tree has uncommitted changes/);
   assert.match(dirty, /verify: PASS - 1 passed; 1 skipped: e2e \(left out with --skip\) in 1m30s\./);
   assert.match(renderSummary({ results, meta: { ...meta(), dirty: null }, options: options(), totalMs: 1 }), /working tree unknown/);
+  const skippedOnly = renderSummary({ results: [results[1]], meta: meta(), options: options(), totalMs: 1 });
+  assert.match(skippedOnly, /verify: NOTHING RAN - every selected step was skipped, so nothing was checked: e2e \(left out with --skip\)\./);
+  assert.doesNotMatch(skippedOnly, /PASS/);
   const failing = renderSummary({ results: [{ id: "web-lint", job: "web", status: FAIL, ms: 100, detail: "exit 1" }], meta: meta(), options: options(["--no-db"]), totalMs: 100 });
   assert.match(failing, /pnpm verify --only web-lint --no-db\), then run pnpm verify in full\./);
 });

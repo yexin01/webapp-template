@@ -1,8 +1,10 @@
 /**
- * `pnpm verify`: the one command that runs what CI requires, so "is my change done, and will CI agree?" has
- * one answer. This module holds the step list, the selection, the preflight and the report; scripts/verify.mjs
- * is the entry point. The steps are grouped by CI job (api, web, secrets), in the order CI runs them, and
- * CI calls `node scripts/verify.mjs --job <name>` for its check steps, so the two cannot drift apart.
+ * `pnpm verify`: one command for "is my change done, and will CI agree?". This module holds the step list,
+ * the selection, the preflight and the report; scripts/verify.mjs is the entry point. The steps are grouped
+ * by CI job (api, web, secrets, and the opt-in supabase), in the order CI runs them, and CI's api and web
+ * jobs call `node scripts/verify.mjs --job <name>`, so those two cannot drift apart. Two CI jobs are not
+ * steps here: the deployment configuration is `pnpm test:vercel-build`, and the Supabase image job is
+ * `pnpm test:supabase` (or `--job supabase`).
  *
  * It starts nothing: the database is somebody else's (`pnpm db:up`), and a database that is not there is an
  * error unless `--no-db` says the database tests may not run.
@@ -23,7 +25,12 @@ export class UsageError extends Error {}
 
 export const USAGE = `Usage: pnpm verify [options]
 
-Runs what CI requires, in CI's order, and ends with a PASS/FAIL table. Exit status 0 only when no step failed.
+Runs the checks of CI's api, web and secrets jobs, in CI's order, and ends with a PASS/FAIL table. The other
+CI jobs are separate commands: the Supabase image (--job supabase, or pnpm test:supabase) and the deployment
+configuration (pnpm test:vercel-build).
+
+Exit status: 0 when no step failed and at least one passed; 1 when a step failed; 2 when nothing ran (a usage
+error, a failed preflight check, or every selected step skipped: that is NOTHING RAN, never PASS).
 
   --job <name>   run one CI job: api, web, secrets, or supabase (repeatable; default: api, web, secrets)
   --quick        only lint, format, types and the API and web tests (pnpm verify:quick)
@@ -256,10 +263,12 @@ export async function preflight({ root, steps, env, noDb, probe }) {
   if (needs.has("pnpm")) {
     const wanted = /^pnpm@(\d+)\./.exec(manifest.packageManager ?? "");
     const have = probe.versionOf("pnpm");
+    const pinned = manifest.packageManager ?? "pnpm@latest";
     add(
       `pnpm ${wanted ? `${wanted[1]}.x ` : ""}(this is ${have ?? "not installed"})`,
       Boolean(have) && (!wanted || have.startsWith(`${wanted[1]}.`)),
-      `corepack enable && corepack prepare ${manifest.packageManager ?? "pnpm@latest"} --activate`,
+      // Node 25 and later no longer distribute Corepack.
+      Number(probe.nodeVersion.split(".")[0]) >= 25 ? `npm install -g ${pinned}` : `corepack enable && corepack prepare ${pinned} --activate`,
     );
     add("web dependencies installed (node_modules)", probe.exists(path.join(root, "node_modules")), "pnpm bootstrap");
   }
@@ -320,6 +329,10 @@ export function renderSummary({ results, meta, options, totalMs }) {
       `verify: FAIL - ${failed.length} failed (${failed.map((result) => result.id).join(", ")})${notRun ? `, ${notRun} not run` : ""} in ${formatDuration(totalMs)}.`,
       `Fix it, run just that again (pnpm verify ${failed.map((result) => `--only ${result.id}`).join(" ")}${options.noDb ? " --no-db" : ""}), then run pnpm verify in full.`,
     );
+  } else if (count(PASS) === 0) {
+    lines.push(
+      `verify: NOTHING RAN - every selected step was skipped, so nothing was checked${skipped.length ? `: ${skipped.map((result) => `${result.id} (${result.detail})`).join("; ")}` : ""}.`,
+    );
   } else {
     const caveats = [];
     if (skipped.length) caveats.push(`${skipped.length} skipped: ${skipped.map((result) => `${result.id} (${result.detail})`).join("; ")}`);
@@ -331,8 +344,8 @@ export function renderSummary({ results, meta, options, totalMs }) {
 }
 
 /**
- * The whole command. Returns the exit status: 0 when no step failed, 1 when one did, 2 for a usage error or a
- * preflight check that failed (nothing ran).
+ * The whole command. Returns the exit status: 0 when no step failed and one passed, 1 when one failed, 2 when
+ * nothing ran: a usage error, a preflight check that failed, or every selected step skipped.
  */
 export async function main(
   argv,
@@ -405,5 +418,6 @@ export async function main(
   );
   const withJobs = results.map((result) => ({ ...result, job: steps.find((step) => step.id === result.id)?.job }));
   log(renderSummary({ results: withJobs, meta: meta(), options, totalMs: now() - start }));
-  return results.some((result) => result.status === FAIL) ? 1 : 0;
+  if (results.some((result) => result.status === FAIL)) return 1;
+  return results.some((result) => result.status === PASS) ? 0 : 2;
 }
