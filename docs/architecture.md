@@ -119,7 +119,7 @@ Every module has the same files, which is what lets `pnpm new:module` generate o
 | Ports | `ports.py` (optional) | domain | everything above |
 | Domain | `domain.py` | kernel core only | frameworks, Pydantic, SDKs, everything above |
 
-`module.py` returns a `Contribution`: routers, integration probes, the analytics events the module sends, and closers. The composition root collects them, so a module that adds a probe or an event edits no shared file. `domain.py` of a module that lists a resource also declares `Capabilities`, what the caller may do with it ([Capability flags](#capability-flags)).
+`module.py` returns a `Contribution`: routers, integration probes, the analytics events the module sends, and closers. The composition root collects them, so a module that adds a probe or an event edits no shared file. `domain.py` of a module that lists a resource also declares `Capabilities`, what the caller may do with it ([Capability flags](#frontend)).
 
 Rules between modules:
 

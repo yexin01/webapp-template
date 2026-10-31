@@ -19,7 +19,7 @@
 | API tests, combined tree of both sessions | `pnpm test:api` | PASS: **466** |
 | Contract drift | `pnpm contracts:check` | PASS (no API schema change) |
 
-The full gate suite over the final tree is recorded in [§23](../engineering-implementation-plan.md#23-current-status-2026-10-15).
+The full gate suite over the final tree is recorded in [§23](../engineering-implementation-plan.md#23-current-status-2026-10-30).
 
 ## Defects found and fixed
 
