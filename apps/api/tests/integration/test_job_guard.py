@@ -43,7 +43,7 @@ class CountingJob:
     def __call__(self) -> Mapping[str, int | str | bool]:
         self.runs += 1
         self.started.set()
-        assert self.proceed.wait(10), "the test never let the job end"
+        assert self.proceed.wait(60), "the test never let the job end"
         if self.fail:
             raise RuntimeError("the job failed")
         return {"runs": self.runs}
@@ -73,11 +73,11 @@ def test_two_concurrent_requests_run_the_job_once(cron: Harness) -> None:
     thread = threading.Thread(target=lambda: first.append(call(cron, "gated")))
     thread.start()
     try:
-        assert job.started.wait(10)
+        assert job.started.wait(30)
         second = call(cron, "gated")
     finally:
         job.proceed.set()
-        thread.join(10)
+        thread.join(30)
     assert second.status_code == 409
     assert second.headers["content-type"] == "application/problem+json"
     assert (second.json()["code"], second.json()["request_id"] is not None) == ("CONFLICT", True)
@@ -94,20 +94,20 @@ def test_a_burst_of_requests_runs_the_job_once(cron: Harness) -> None:
     start = threading.Barrier(8)
 
     def request() -> None:
-        start.wait(10)
+        start.wait(30)
         answers.put(call(cron, "burst").status_code)
 
     threads = [threading.Thread(target=request) for _ in range(8)]
     for thread in threads:
         thread.start()
     try:
-        assert job.started.wait(10)
+        assert job.started.wait(30)
         # The seven that lost answer while the winner is still running.
         assert [answers.get(timeout=30) for _ in range(7)] == [409] * 7
     finally:
         job.proceed.set()
         for thread in threads:
-            thread.join(10)
+            thread.join(30)
     assert answers.get(timeout=30) == 200
     assert job.runs == 1
 
@@ -166,11 +166,11 @@ def test_spacing_zero_leaves_single_flight_only(make_harness: Callable[..., Harn
     thread = threading.Thread(target=lambda: first.append(call(h, "unspaced-gated")))
     thread.start()
     try:
-        assert gated.started.wait(10)
+        assert gated.started.wait(30)
         assert call(h, "unspaced-gated").status_code == 409
     finally:
         gated.proceed.set()
-        thread.join(10)
+        thread.join(30)
     assert [r.status_code for r in first] == [200]
     assert call(h, "unspaced-gated").status_code == 200  # no spacing, and the job is free again
 

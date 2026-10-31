@@ -1,8 +1,8 @@
 """A signed-in user's writes are limited per minute (SEC-09, DEC-011, WRITES_PER_USER_PER_MINUTE).
 
-The limit is a router dependency that runs after authentication and before the request takes a database
-place. It counts every POST, PUT, PATCH and DELETE of one user, whatever the context and the outcome, and
-answers 429 with Retry-After past the limit. Routes with a limit of their own and the webhooks do not use it.
+The limit is a router dependency that runs after authentication and once the request has its admission place.
+It counts every POST, PUT, PATCH and DELETE of one user, whatever the context and the outcome, and answers 429
+with Retry-After past the limit. Routes with a limit of their own and the webhooks do not use it.
 """
 
 from __future__ import annotations
@@ -127,24 +127,15 @@ def test_a_request_without_a_valid_token_spends_nothing(make_harness: Callable[.
     assert write(h, "user_a") == 201
 
 
-def test_a_refused_write_never_takes_a_request_transaction(
-    make_harness: Callable[..., Harness], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The limit runs before the request-scoped transaction, so a flood of refused writes holds no admission place."""
+def test_a_refused_write_costs_one_counter_update_and_nothing_else(make_harness: Callable[..., Harness]) -> None:
+    """No user lookup, no membership read, no request transaction: four round trips, the counter's own."""
+    from tests.integration.test_query_counts import counting_round_trips
+
     h = make_harness({"writes_per_user_per_minute": 1})
-    database = h.container.kernel.database
-    begun: list[int] = []
-    original = database.begin_request_scope
-
-    def counting(*args: Any, **kwargs: Any) -> Any:
-        begun.append(1)
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(database, "begin_request_scope", counting)
-    assert write(h, "user_a") == 201
-    assert len(begun) == 1
-    assert [write(h, "user_a") for _ in range(3)] == [429] * 3
-    assert len(begun) == 1
+    assert write(h, "user_a") == 201  # provisions the user and opens the connections the next call reuses
+    with counting_round_trips() as trips:
+        assert write(h, "user_a") == 429
+    assert trips.total == 4
 
 
 def test_a_counted_write_adds_one_short_worker_transaction(make_harness: Callable[..., Harness]) -> None:
@@ -228,6 +219,23 @@ def test_every_write_route_is_counted_or_says_why_not(harness: Harness) -> None:
     assert ("POST", PROJECTS) in counted
     assert ("DELETE", f"{PROJECTS}/{{project_id}}") in counted
     assert len([m for m, _ in counted if m == "POST"]) == 2  # personal and organization create
+
+
+def test_the_limit_runs_after_authentication_and_admission_on_every_counted_route(harness: Harness) -> None:
+    """A burst of writes must queue at the admission gate, which holds no thread, not on threads that wait for
+    the counter's worker connection (the database refuses those past its waiter budget with 503)."""
+    app = harness.client.app
+    authenticate = harness.container.identity.auth.authenticate
+    admission = harness.container.kernel.request_transaction
+    checked = 0
+    for method, path, route, _ in _api_routes(list(app.routes)):  # type: ignore[attr-defined]
+        if method in SAFE_METHODS or not _limits_writes(route.dependant):
+            continue
+        calls = [d.call for d in route.dependant.dependencies]
+        limit = next(i for i, call in enumerate(calls) if limits_writes(call))
+        assert calls.index(authenticate) < calls.index(admission) < limit, (method, path)
+        checked += 1
+    assert checked == 4
 
 
 def test_the_manifest_reports_a_write_route_that_skips_the_limit(harness: Harness) -> None:

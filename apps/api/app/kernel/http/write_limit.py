@@ -6,7 +6,10 @@ PostgreSQL, and answers 429 with ``Retry-After`` past ``WRITES_PER_USER_PER_MINU
 
 It depends on ``authenticate``, so a request without a valid token is refused first and counts
 for nothing, and it needs no tenant context, so a refused write costs one counter update. List it
-before the request-scoped transaction: a refused write then never takes an admission place.
+after ``request_transaction``: the counter update takes a worker connection, and a burst of writes
+should queue at the admission gate, which holds no thread, not on threads that wait for one (the
+database refuses those past its waiter budget with 503). It runs before the transaction opens a
+connection, so it never holds an API connection while it waits for a worker one.
 
 A route with a limit of its own (checkout, the portal, the LLM check, diagnostics) and the
 webhooks, which have no user, do not use it. A test lists them, so a new write route is limited

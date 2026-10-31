@@ -65,6 +65,8 @@ _ENV_PREFIXES = (
     "DIAGNOSTICS_",
     "CRON_",
     "OUTBOX_",
+    "WRITES_",
+    "JOB_",
 )
 
 

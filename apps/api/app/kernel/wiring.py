@@ -50,7 +50,7 @@ class Kernel:
 
     def limit_writes(self, auth: AuthDeps) -> Any:
         """The router dependency that counts a user's writes (SEC-09): list it after ``auth.authenticate``
-        and before ``request_transaction``. A route with a limit of its own does not use it."""
+        and ``request_transaction``. A route with a limit of its own does not use it."""
         return limit_writes(auth.authenticate, self.rate_limiter, self.writes_per_user_per_minute)
 
     def transactions(self, factory: Callable[[psycopg.Connection], R]) -> PgTransactions[R]:

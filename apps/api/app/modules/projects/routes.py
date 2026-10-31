@@ -62,11 +62,11 @@ class ProjectCreate(StrictInput):
 
 
 def build_router(projects: ProjectService, auth: AuthDeps, request_transaction: Any, write_limit: Any) -> APIRouter:
-    # Database-only: each request is one request-scoped transaction. The token is verified, and a write counted,
-    # before the request takes an admission place.
+    # Database-only: each request is one request-scoped transaction. The token is verified before the request
+    # takes an admission place, and a write is counted once it has one: a burst queues at the gate, not on threads.
     router = APIRouter(
         tags=["projects"],
-        dependencies=[Depends(auth.authenticate), write_limit, Depends(request_transaction, scope="function")],
+        dependencies=[Depends(auth.authenticate), Depends(request_transaction, scope="function"), write_limit],
     )
     Personal = Annotated[TenantContext, Depends(auth.personal)]
     Organization = Annotated[TenantContext, Depends(auth.organization)]
