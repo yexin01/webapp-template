@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import time
 import uuid
+import warnings
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -17,11 +18,14 @@ from typing import Any
 import stripe
 
 from app.kernel.diagnostics import IntegrationInfo, IntegrationKey, IntegrationMode, Outcome
+from app.kernel.errors import InvalidRequestError
 from app.modules.billing.adapters.stripe import StripeBillingProvider
-from app.modules.billing.domain import PlanKey, PriceCatalog, portal_problems
+from app.modules.billing.domain import PlanKey, PriceCatalog, SubscriptionStatus, portal_problems
 from app.modules.billing.ports import BillingWebhookEvent
 from app.modules.billing.probe import BillingProbe
+from app.modules.identity.adapters.clerk import ClerkWebhookVerifier
 from tests.conftest import Harness, superuser_query
+from tests.integration.test_platform import SVIX_SECRET, clerk_send
 from tests.sandbox.conftest import PRICE_MONTHLY, PRICE_YEARLY, PRODUCT
 
 Cleanup = list[Callable[[], object]]
@@ -39,8 +43,8 @@ def eventually(check: Callable[[], Any], *, seconds: float = 90, every: float = 
         time.sleep(every)
 
 
-def new_user(world: Harness) -> tuple[dict[str, str], uuid.UUID]:
-    headers = world.login(f"sandbox_{uuid.uuid4().hex[:12]}")
+def new_user(world: Harness, name: str | None = None) -> tuple[dict[str, str], uuid.UUID]:
+    headers = world.login(name or f"sandbox_{uuid.uuid4().hex[:12]}")
     return headers, uuid.UUID(world.client.get("/api/v1/me", headers=headers).json()["user_id"])
 
 
@@ -139,6 +143,55 @@ def test_checkout_sessions_are_created_for_the_user_and_the_next_one_closes_the_
     assert second != first
     assert admin.v1.checkout.sessions.retrieve(str(first)).status == "expired"
     assert admin.v1.checkout.sessions.retrieve(str(second)).status == "open"
+
+
+def test_a_customer_deleted_in_stripe_is_replaced_at_the_next_checkout(
+    world: Harness, admin: stripe.StripeClient, provider: StripeBillingProvider, cleanup: Cleanup
+) -> None:
+    """BILL-04 against Stripe's own objects. Stripe documents only that a deleted customer takes no further operation
+    (https://docs.stripe.com/api/customers/delete), not what listing its subscriptions answers: a rejection, or an empty
+    list. The service replaces the customer on either answer (the rejection of the listing, or of the new session), so
+    this accepts both and reports which one Stripe gave."""
+    headers, user = new_user(world)
+    cleanup.append(lambda: forget_customer_of(admin, world, user))
+
+    def checkout(plan: str) -> str:
+        r = world.client.post(
+            "/api/v1/billing/checkout", json={"plan": plan}, headers={**headers, "Idempotency-Key": uuid.uuid4().hex}
+        )
+        assert r.status_code == 200, r.text
+        return str(r.json()["url"])
+
+    def linked_customer() -> str:
+        [(customer_id,)] = superuser_query(
+            world.database_url, "SELECT stripe_customer_id FROM app.billing_customers WHERE user_id = %s", (user,)
+        )
+        return str(customer_id)
+
+    checkout("pro_monthly")
+    old = linked_customer()
+    assert provider.customer_exists(old) is True
+    admin.v1.customers.delete(old)
+
+    assert provider.customer_exists(old) is False
+    try:
+        listed = f"answers with {len(provider.list_customer_subscriptions(old))} subscriptions"
+    except InvalidRequestError:
+        listed = "is rejected"
+    warnings.warn(f"Listing the subscriptions of a deleted customer {listed} (BILL-04).", stacklevel=1)
+
+    url = checkout("pro_yearly")  # the one that must not answer 400 for good
+    assert url.startswith("https://checkout.stripe.com/")
+    new = linked_customer()
+    assert new != old
+    assert provider.customer_exists(new) is True
+    assert admin.v1.customers.retrieve(new).metadata["app_user_id"] == str(user)
+    [(session_id,)] = superuser_query(
+        world.database_url, "SELECT stripe_session_id FROM app.billing_checkout_sessions WHERE user_id = %s", (user,)
+    )
+    cleanup.append(lambda: admin.v1.checkout.sessions.expire(str(session_id)))
+    session = admin.v1.checkout.sessions.retrieve(str(session_id))
+    assert (session.status, session.customer) == ("open", new)
 
 
 # -- Test clocks: renewal, cancellation, and a failed renewal --------------------
@@ -254,3 +307,99 @@ def test_a_failed_renewal_keeps_pro_while_stripe_retries_and_recovery_is_followe
         return status_of(world, headers)["state"] == "active"
 
     assert eventually(recovered, seconds=60), "paying the open invoice did not bring the subscription back to active"
+
+
+# -- A user Clerk reports as deleted (BILL-16) -----------------------------------
+
+
+def test_a_subscription_is_set_to_end_with_its_period_through_the_adapter(
+    world: Harness, admin: stripe.StripeClient, provider: StripeBillingProvider, cleanup: Cleanup
+) -> None:
+    """The request the adapter sends (Update Subscription with ``cancel_at_period_end``) does what the loopback stub
+    only assumes: the subscription stays active to the end of the period it paid for, and nothing else changes."""
+    _, user = new_user(world)
+    clock = start_clock(admin, cleanup, f"template-sandbox-{RUN}-end")
+    customer, subscription = subscribe_on_clock(admin, clock, user, f"template-sandbox-{RUN}-end")
+    end = datetime.fromtimestamp(period_end(admin, subscription), UTC)
+
+    ended = provider.cancel_subscription_at_period_end(subscription)
+
+    assert (ended.status, ended.cancel_at_period_end, ended.current_period_end) == (
+        SubscriptionStatus.ACTIVE,
+        True,
+        end,
+    )
+    at_stripe = admin.v1.subscriptions.retrieve(subscription)
+    assert (at_stripe.status, at_stripe.cancel_at_period_end) == ("active", True)
+    again = provider.cancel_subscription_at_period_end(subscription)
+    assert (again.status, again.cancel_at_period_end) == (SubscriptionStatus.ACTIVE, True)  # a repeat changes nothing
+    listed = provider.list_customer_subscriptions(customer)
+    assert [(s.stripe_subscription_id, s.cancel_at_period_end) for s in listed] == [(subscription, True)]
+
+
+def test_a_subscription_awaiting_its_first_payment_is_cancelled_at_once_through_the_adapter(
+    world: Harness, admin: stripe.StripeClient, provider: StripeBillingProvider, cleanup: Cleanup
+) -> None:
+    """The premise of the user.deleted handler for an ``incomplete`` subscription: Stripe's Cancel Subscription accepts
+    one that was never paid (https://docs.stripe.com/api/subscriptions/cancel), and ends it."""
+    _, user = new_user(world)
+    customer = admin.v1.customers.create(
+        params={"name": f"template-sandbox-{RUN}-incomplete", "metadata": {"app_user_id": str(user)}}
+    )
+    cleanup.append(lambda: admin.v1.customers.delete(customer.id))
+    subscription = admin.v1.subscriptions.create(
+        params={"customer": customer.id, "items": [{"price": PRICE_MONTHLY}], "payment_behavior": "default_incomplete"}
+    )
+    assert subscription.status == "incomplete", f"the subscription is {subscription.status}, not awaiting a payment"
+
+    canceled = provider.cancel_subscription_immediately(str(subscription.id))
+
+    # Which of the two Stripe reports for a subscription canceled before its payment is not documented; both are over.
+    assert canceled.status in (SubscriptionStatus.CANCELED, SubscriptionStatus.INCOMPLETE_EXPIRED)
+    assert admin.v1.subscriptions.retrieve(str(subscription.id)).status in ("canceled", "incomplete_expired")
+
+
+def test_user_deleted_ends_the_subscription_and_the_open_session_through_the_real_adapter(
+    make_harness: Callable[..., Harness], admin: stripe.StripeClient, provider: StripeBillingProvider, cleanup: Cleanup
+) -> None:
+    """ADR-0004 section 21 and 27 against Stripe: the handler (``BILLING_ON_USER_DELETED`` is off in mock mode, so the
+    test turns it on) ends a subscription at the period's end and expires a Checkout Session that could still be paid.
+    Clerk's event is signed here with a test secret."""
+    world = make_harness(
+        {
+            "stripe_price_pro_monthly": PRICE_MONTHLY,
+            "stripe_price_pro_yearly": PRICE_YEARLY,
+            "stripe_product_pro": PRODUCT,
+            "billing_on_user_deleted": "cancel_at_period_end",
+        },
+        billing_provider=provider,
+        identity_webhook_verifier=ClerkWebhookVerifier(SVIX_SECRET),
+    )
+    subscriber = f"sandbox_{uuid.uuid4().hex[:12]}"
+    _, subscriber_id = new_user(world, subscriber)
+    clock = start_clock(admin, cleanup, f"template-sandbox-{RUN}-deleted")
+    customer, subscription = subscribe_on_clock(admin, clock, subscriber_id, f"template-sandbox-{RUN}-deleted")
+    synchronize(world, customer)  # linked, and the subscription stored, as a webhook would
+
+    shopper = f"sandbox_{uuid.uuid4().hex[:12]}"
+    headers, shopper_id = new_user(world, shopper)
+    cleanup.append(lambda: forget_customer_of(admin, world, shopper_id))
+    opened = world.client.post(
+        "/api/v1/billing/checkout",
+        json={"plan": "pro_monthly"},
+        headers={**headers, "Idempotency-Key": uuid.uuid4().hex},
+    )
+    assert opened.status_code == 200, opened.text
+    [(session_id,)] = superuser_query(
+        world.database_url,
+        "SELECT stripe_session_id FROM app.billing_checkout_sessions WHERE user_id = %s",
+        (shopper_id,),
+    )
+    assert admin.v1.checkout.sessions.retrieve(str(session_id)).status == "open"
+
+    for name in (subscriber, shopper):
+        assert clerk_send(world, "user.deleted", {"id": name, "deleted": True}).json()["status"] == "processed"
+
+    ended = admin.v1.subscriptions.retrieve(subscription)
+    assert (ended.status, ended.cancel_at_period_end) == ("active", True)  # Pro runs to the end of the paid period
+    assert admin.v1.checkout.sessions.retrieve(str(session_id)).status == "expired"  # nothing left to pay
