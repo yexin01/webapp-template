@@ -22,7 +22,7 @@ Each is true by design or by documentation and has not been observed. What would
 
 **Platform (Vercel)**
 
-- **Services accepts this configuration.** Services is in Beta on all plans, and the project's Framework Preset must be **Services**. Verify: create the project and deploy a preview.
+- **Services accepts this configuration.** Services is in Beta on all plans. Vercel's Python guide says to select the **Services** Framework Preset and does not say what happens without it ([deployment.md](deployment.md#what-ships)). Verify: create the project, select the preset, and deploy a preview.
 - **The Next.js proxy runs inside the web service.** Vercel documents that middleware is not supported inside a service; a local build shows the proxy emitted as a Node.js function. If the proxy does not run, a signed-out visitor to a protected page gets the page shell and the browser-side page gate redirects after load, and the proxy's `azp` check is not active either. The API authorizes every operation and enforces `azp` on every call regardless, so this affects redirects only. Verify: `curl -sI https://<preview-host>/dashboard` signed out; `307` means the proxy ran, `200` means it did not.
 - **The router sends `/api/v1/*` to the API before the catch-all**, with raw request bodies for webhooks. Verify: `curl -s https://<preview-host>/api/v1/health`; a Stripe test delivery.
 - **The four crons register from the root `vercel.json`** and call the routes. Crons run on production deployments only. Verify: a production deployment.
@@ -32,22 +32,25 @@ Each is true by design or by documentation and has not been observed. What would
 - **A Vercel build installs the Python dependencies like the local `uv` install.**
 - **After-response work completes before the instance is frozen:** the telemetry flush and the outbox dispatch. If it does not, errors and events can be late or lost; `drain-outbox` delivers the outbox events at its next run. Verify: trigger an error and a checkout start on an idle preview; both must arrive.
 - **Providers accept a webhook URL with a query string** (the Protection Bypass parameter). Verify: register a protected preview's endpoint and send a test delivery.
+- **A protected preview lets the app's own API calls through.** The client sends the page's cookies with same-origin requests, and Vercel documents that a relative fetch "automatically includes the user's authentication cookie for protected URLs" ([Vercel: Deployment Protection](https://vercel.com/docs/deployment-protection)). Without that cookie every panel fails. Verify: on a protected preview, the dashboard shows "No projects yet" ([deployment.md](deployment.md#verify-the-first-preview)). Whether a new project starts with protection on is not known either.
+- **The branch URL of a first preview** matches `<project-name>-git-<branch-name>-<scope-slug>.vercel.app` ([Vercel: generated URLs](https://vercel.com/docs/deployments/generated-urls)). Long names are truncated, and the page does not say how a `/` in a branch name is written. Verify: read the deployment's URLs, then correct `APP_BASE_URL` if it differs ([deployment.md](deployment.md#the-first-preview-in-order)).
+- **HSTS on the API's responses.** The web app sends the header for its host; the API sends none. Whether Vercel adds one for the API is not known ([deployment.md](deployment.md#preview-details)). Verify: `curl -sI https://<host>/api/v1/health` and read the headers.
 
 **Providers**
 
 - **Hosted Supabase:** the pooler's user routing (`app_login.<project-ref>`), SCRAM verifiers through the shared pooler, and the hosted image's extensions. The Supabase image tested is `17.6.1.106`; the newer `17.11.0.004` was not pulled (try it with `SUPABASE_POSTGRES_IMAGE`). Five database tests are skipped on that image because they create a superuser role, which `postgres` there cannot do.
-- **Stripe:** the sandbox suite; `pnpm setup:stripe`; the portal check against a real portal configuration (field names come from the installed SDK's types and loopback stubs); expiring real Checkout sessions; the restricted-key permission needed to read portal configurations.
-- **Clerk:** the sign-in-token flow of the sandbox end-to-end run, user creation through the Backend API, and that Device Trust does not affect a token sign-in (taken from Clerk's documentation); the `currentTask` property names used to detect a pending session (taken from clerk-js's types); Clerk's real session behavior around sign-out and organization switches (the page-gate tests mock Clerk); the Clerk CLI route to Membership optional. The sandbox run must show that signing out from a protected page lands on the home page and that switching organizations does not reload the page.
+- **Stripe:** the sandbox suite; `pnpm setup:stripe`; the portal check against a real portal configuration (field names come from the installed SDK's types and loopback stubs); expiring real Checkout sessions; the restricted-key permission needed to read portal configurations. Four calls of fix round 2 have only met stubs (`NOT RUN` against Stripe): Checkout with `allowed_payment_method_types: ["card"]`, retrieving a deleted customer, `subscriptions.list(limit=1)` in the Stripe check, and updating a subscription with `cancel_at_period_end` ([ADR-0004 §20 and §21](../dev-docs/adr/0004-cycle-1-adopted-decisions.md)). That wallets and Link behave as cards under the card-only filter, or are offered at all, is not known.
+- **Clerk:** that a session token with a custom `aud` claim can be issued (`CLERK_AUDIENCE`: Clerk's default session token has none; [integrations.md](integrations.md#clerk)); the default of **Allow users to delete their accounts**, which Clerk's documentation does not state; that Clerk's `<SignIn />` honors only a safe `redirect_url` (the app builds relative return paths only, SEC-14, and does not check a `redirect_url` that arrives on `/sign-in` from outside: that rests on Clerk); that a `*.vercel.app` URL cannot carry a production instance (Clerk's Vercel guide says so, and the installed SDK holds an automatic proxy for it that Clerk's pages do not describe: [deployment.md](deployment.md#preview-details)); the sign-in-token flow of the sandbox end-to-end run, user creation through the Backend API, and that Device Trust does not affect a token sign-in (taken from Clerk's documentation); the `currentTask` property names used to detect a pending session (taken from clerk-js's types); Clerk's real session behavior around sign-out and organization switches (the page-gate tests mock Clerk); the Clerk CLI route to Membership optional. The sandbox run must show that signing out from a protected page lands on the home page and that switching organizations does not reload the page.
 - **PostHog and Sentry:** real delivery, the managed proxy with this template, and source-map upload.
 - **A page opened in a browser with the placeholder Clerk pair:** no page of the web app was seen in a browser without a Clerk instance (command-line checks show the handshake redirect).
 
 <!-- template-only:start -->
-**Template maintenance.** The local DEC-001 proof (`proofs/dec-001/run.sh`) was last run before the cycle 1 changes to the database login, the root `vercel.json` and the Services layout. It was not re-run: it needs Docker Desktop and about ten minutes.
+**Template maintenance.** The local DEC-001 proof (`proofs/dec-001/run.sh`) last passed at `966d3b3`, before the cycle 1 changes to the database login, the root `vercel.json` and the Services layout. It has not been run since (NOT RUN): it needs Docker Desktop and about ten minutes. `pnpm test:vercel-build` and `pnpm test:supabase` cover the packaging and the database login, not the proof's runtime and pooler steps.
 <!-- template-only:end -->
 
 ## Deferred review findings
 
-Ten findings from the architecture review were deferred, with the reason. What to do if one matters to you:
+Eleven findings from the architecture review were deferred, with the reason; the last row is not a finding but a pinned dependency override. What to do if one matters to you:
 
 | Finding | Reason it was deferred | If it matters to you |
 |---|---|---|
@@ -74,12 +77,15 @@ Ten findings from the architecture review were deferred, with the reason. What t
 - What the UI offers (`can` on each list) is as fresh as the membership mirror (at most 300 s); the routes re-check. A new action needs its flag added by hand. A screen with no list response has no flag.
 - Impersonation is audited only where a use case writes an audit entry (organization project deletes, diagnostics); the `actor_session` log line records the rest.
 - Diagnostics operators are authenticated by a listed Clerk user ID and a valid session; no second factor is required. They are off in production unless `DIAGNOSTICS_ENABLED=true`, and on for listed operators elsewhere; every run and refusal is audited. The capability is registered as DEC-014 (option B adopted by delegation, awaiting the owner's confirmation; [ADR-0004 §15](../dev-docs/adr/0004-cycle-1-adopted-decisions.md)). Require multi-factor authentication for every listed operator in Clerk. If you enable diagnostics in production, choose option (A) and have the API check the session's second factor (`fva`); that check is not built.
+- An operator's run of `POST /api/v1/llm/check` is not audited (ADM-01); the run from the Integrations page is. The route applies the diagnostics policy, so a caller it refuses gets `404` and nothing is written ([ADR-0004 §23](../dev-docs/adr/0004-cycle-1-adopted-decisions.md)).
+- HSTS is kept per host. The web app sends `Strict-Transport-Security: max-age=63072000` for its own host, with no `includeSubDomains`, so a sibling subdomain that is still plain HTTP keeps working and is not covered. The API sets no HSTS header ([deployment.md](deployment.md#preview-details), [ADR-0004 §24](../dev-docs/adr/0004-cycle-1-adopted-decisions.md)).
 
 **Billing**
 
 - Plans are Free and Pro (a database `CHECK` allows only `pro_monthly`, `pro_yearly` and `unknown`), so a third plan is a code and schema change. Pro is granted by the Stripe product: every monthly or yearly price of `STRIPE_PRODUCT_PRO` grants it, whatever it charges, so other plans, add-ons and free prices belong on other products. A subscription on a price of another product, or one that bills every three months, has no plan and is logged as `billing_unknown_price`. The portal check cannot tell a replaced price of the Pro product from a price of another product: it reports any price checkout does not sell. `decide()` returns the feature set (`pro_insight`); no API response carries it yet ([ADR-0004 §16](../dev-docs/adr/0004-cycle-1-adopted-decisions.md)).
 - Checkout offers cards only (`allowed_payment_method_types: ["card"]`; a wallet that charges a card is a card). Pro follows a subscription's status, and Stripe documents that with a delayed method such as SEPA Direct Debit "a subscription can become `active` while its first payment is still processing" ([Stripe: SEPA Direct Debit subscriptions](https://docs.stripe.com/billing/subscriptions/sepa-debit), re-read 2026-10-31). To offer one, add its type in `StripeBillingProvider.create_checkout_session`, make the entitlement require a paid latest invoice (read `latest_invoice` in `list_customer_subscriptions` and refuse Pro in `decide()` until it is paid), and turn the method on in the Dashboard (Settings > Payment methods). Refunds and disputes do not change Pro: the template reads the subscription's status and nothing else, so a refunded or disputed payment keeps Pro until the subscription itself ends or you cancel it in Stripe.
-- A user deleted in Clerk (by themselves through `<UserButton />`, or by you) keeps their application data and Stripe customer. Their subscription is set to end at the end of the paid period; nothing is refunded and nothing is cancelled at once, and deletion is never blocked ([operations.md](operations.md#a-user-deleted-in-clerk)).
+- A user deleted in Clerk (by themselves through `<UserButton />`, or by you) keeps their application data and Stripe customer. Their subscription is set to end at the end of the paid period; nothing is refunded and nothing is cancelled at once, and deletion is never blocked. The API learns of the deletion only from the Clerk webhook ([operations.md](operations.md#a-user-deleted-in-clerk)).
+- A deleted Stripe customer is replaced at the user's next checkout. A replacement that loses a race with a subscription stored meanwhile leaves one unlinked customer in Stripe, which you can delete there ([operations.md](operations.md#a-customer-stripe-deleted)).
 - The sandbox suite does not cover retry exhaustion. A DB-level race between two checkouts of one user in about a second is closed after the fact (the loser's session is expired), not prevented.
 - With `DATABASE_WORKER_POOL_MAX_SIZE=2` user re-reads are always refused (`503`) and the page falls back to polling.
 - A completed checkout leaves its row in `app.billing_checkout_sessions` until the user's next checkout.
@@ -97,7 +103,7 @@ Ten findings from the architecture review were deferred, with the reason. What t
 - The coarse per-IP rule is a dashboard step (D7, [deployment.md](deployment.md#set-up-vercel)) and is not applied. Until you add it, a flood without a valid session is bounded only by Vercel's automatic DDoS mitigation and the database. Its effect on a deployment is NOT VERIFIED.
 - Application limits count in fixed windows in PostgreSQL, and a refused request counts too: a burst across a window boundary can use up to twice the limit. Each account has an allowance of its own, so a crowd of accounts is for the per-IP rule.
 - Each counted write adds one short worker transaction, about four database round trips, ahead of its own. At 20 ms a round trip, the figure PERF-07 modelled for a remote database, that is about 80 ms ([operations.md](operations.md#limits)).
-- A run of a job that the platform stopped holds its job for up to 15 minutes: calls over HTTP get `409` meanwhile. Run it from the CLI, which is not limited.
+- A run of a job that the platform stopped holds its job for up to 15 minutes: calls over HTTP get `409` meanwhile. Run it from the CLI, which is not limited. The 15 minutes (900 s) are a constant, `LEASE_SECONDS` in `apps/api/app/kernel/application/job_guard.py`, not a setting; a function given more than 900 s (Vercel's beta allows 1800 s per function; the root `vercel.json` sets none) needs it raised in code, and `OUTBOX_LEASE_SECONDS` with it ([operations.md](operations.md#outbox)).
 
 **Telemetry**
 
@@ -105,6 +111,9 @@ Ten findings from the architecture review were deferred, with the reason. What t
 - The browser allowlist keeps any `$`-prefixed property name (the SDK's own), and drops other properties that are not allowlisted, including a plain `utm_source` key.
 - The error throttle is per instance and in memory: a fleet of N instances can report one cause N times a minute. A Stripe rejection and a Stripe outage are one error type in Sentry.
 - A sampled trace of a request can be lost when an instance is frozen; errors are not.
+- The PostHog SDK reports a drained client-side limit (10 events a second, bursts of 100) with an event of its own. The allowlist drops that event, so a runaway loop is bounded and not reported ([ADR-0004 §24](../dev-docs/adr/0004-cycle-1-adopted-decisions.md)).
+- Sentry events from the API still carry the host name (`server_name`) and, under `extra`, the process arguments (`sys.argv`), by the SDK's default; the options drop neither. The host name was seen on a local wire capture.
+- A path segment of fewer than ten characters after its prefix (`user_alice`) is not replaced by `{id}` in Sentry URLs. Real Clerk and Stripe IDs are longer; a short made-up ID in a test fixture passes ([ADR-0004 §25](../dev-docs/adr/0004-cycle-1-adopted-decisions.md)).
 
 **Setup and tooling**
 
@@ -119,6 +128,8 @@ Ten findings from the architecture review were deferred, with the reason. What t
 - Dependabot does not read the gitleaks version pins (in `ci.yml` and in the pre-commit hook), nor the Supabase image tag in `scripts/test-supabase-image.mjs`. Bump them by hand; a test keeps the two gitleaks versions equal.
 - The ESLint guards in `apps/web/eslint.guards.mjs` (including the ban on importing `posthog-js` outside `src/lib/analytics.ts`) are tested but not loaded by `eslint.config.mjs`: an owner-applied step (spec §23, step 4). Until it lands, `src/no-client-roles.test.ts`, `src/lib/page-access.test.ts`, `src/app/layout.test.tsx` and `src/rendering-baseline.test.ts` carry the web fitness checks.
 - No `CODEOWNERS` file ships (SEC-12 relies on one for `supabase/migrations/` and `.github/workflows/`). Add yours.
+- CI and CodeQL run for every pull request and every push to `main` (CodeQL also weekly); a push to any other branch runs nothing until a pull request is opened for it. Neither has run remotely.
+- `pnpm test:init-template`, `pnpm test:new-module` and the verify steps that copy the tracked files need a git repository. In an unpacked archive, run `git init && git add -A` first; the scripts say so.
 
 ## Follow-ups in the code
 
@@ -127,12 +138,15 @@ Found while writing these documents or listed in the package notes, and not done
 - Run `check-bundle-secrets.mjs --require-values` inside every Vercel build (chain `&& node ../../scripts/check-bundle-secrets.mjs --require-values` onto the web `build` script), so the web service is checked with the real values. Today it runs in `pnpm test:vercel-build` with canary values. Not built: the local `vercel build` runs that script with the repository around `apps/web` and `VERCEL=1` (checked), but the platform's service build is unverified, and a chain that cannot find `scripts/` fails every deployment. Add it once the first preview shows `scripts/` in the web build ([ADR-0004 §18](../dev-docs/adr/0004-cycle-1-adopted-decisions.md)).
 - Wire `apps/web/eslint.guards.mjs` into `eslint.config.mjs` (a lint-config edit that an owner applies).
 - A message for a rejected database URL that says which part is wrong. Today it lists both likely causes (the password's encoding, a driver-only query parameter), because libpq's reason quotes the URL.
-- `scripts/init-template.mjs` and the messages of `apps/api/app/doctor.py` and `scripts/lib/preflight.mjs` still say "see docs/integrations.md"; the setup guide is [setup.md](setup.md) (the `#clerk` anchor they use is kept).
+- The messages of `apps/api/app/doctor.py` and `scripts/lib/preflight.mjs` (and three lines in `stripe_setup.py` and `adapters/stripe.py`) still say "see docs/integrations.md"; the setup guide is [setup.md](setup.md) (the `#clerk` anchor they use is kept).
 - A Clerk key-pair check in `IdentityProbe` (compare `GET /v1/jwks` with `<issuer>/.well-known/jwks.json`); a doctor check for stray env files; an optional pass-through proxy so `pnpm dev` runs without Clerk keys; refusing the placeholder pair when `APP_ENV=preview`.
 - A test that the docs list exactly `SYNC_EVENT_TYPES`, and a `stripe-events` command to feed `stripe listen --events`; a webhook-endpoint check and a "last verified webhook" line on `/integrations`.
 - A second, worker-only login role and pool; detection of `supabase_migrations.schema_migrations` in the runner; a no-transaction migration mode for `CREATE INDEX CONCURRENTLY`.
-- Naming unmatched transactions `unmatched` and dropping `request.url` for them (OBS-07).
+- Naming unmatched transactions `unmatched` and dropping `request.url` for them (a matched route already reports its template).
 - An `ErrorCode` enum with exhaustive web typing.
+- Audit an operator's run of `POST /api/v1/llm/check` with the same short transaction `DiagnosticsService` uses (ADM-01).
+- Drop `server_name` and `extra.sys.argv` from Sentry events in `before_send` or the SDK options, and decide whether to lower the ten-character threshold of the `{id}` rule.
+- Keep the two 900 s leases in step with the functions' duration: `LEASE_SECONDS` in `job_guard.py` is a constant, and the comments in `job_guard.py` and `outbox.py` still say "longer than any function may run". An optional test could tie a configured `maxDuration` to both leases.
 
 ## What the template deliberately does not do
 
