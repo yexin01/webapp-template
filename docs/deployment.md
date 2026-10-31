@@ -135,7 +135,7 @@ Each step is a person's; none can be automated from this repository.
 6. **[YOU D6]** Choose the plan: Pro for a commercial product (see above).
 7. **[YOU D7]** Add the platform rate-limit rule (DEC-011), the coarse per-IP layer. In the project, open **Firewall**, select **Configure**, then **+ New Rule**. Add **If** conditions (all must be true): the request path starts with `/api/v1/`, does not start with `/api/v1/webhooks/`, and does not start with `/api/v1/jobs/`. **Then** **Rate Limit**, fixed window, key **IP**, time window 60 s, request limit 300 (a starting point: it is not measured, tune it to your traffic), first with the **Log** action, then the default **429**. **Save Rule**, **Review Changes**, **Publish**. The first time, Vercel asks you to review its **Rate Limiting Pricing** dialog. Hobby allows one such rule per project, and counters are kept per region ([Vercel: WAF rate limiting](https://vercel.com/docs/vercel-firewall/vercel-waf/rate-limiting), checked 2026-10-31). Never put webhook or job paths behind a rate limit or challenge: Stripe and Clerk deliver from shared addresses, and throttling them causes retries.
 
-   With your authorization an agent can stage the same rule with the Vercel CLI ([`vercel firewall`](https://vercel.com/docs/cli/firewall), checked 2026-10-31). A staged rule is a draft that changes nothing until published:
+   With your authorization an agent can stage the same rule with the Vercel CLI, from a directory linked to the project (`vercel link`; [`vercel firewall`](https://vercel.com/docs/cli/firewall), checked 2026-10-31). A staged rule is a draft that changes nothing until published:
 
    ```bash
    vercel firewall rules add "API per-IP limit" \

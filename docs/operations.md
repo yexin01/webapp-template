@@ -157,7 +157,7 @@ The application limits these. Counters live in PostgreSQL, so every limit holds 
 | Checkout sessions, portal sessions, billing re-reads, per user | 10, 20 and 30 an hour | `CHECKOUTS_PER_USER_PER_HOUR`, `PORTAL_SESSIONS_PER_USER_PER_HOUR`, `BILLING_SYNCS_PER_USER_PER_HOUR` | `429`, `Retry-After` |
 | LLM checks | 5 a minute per user; 200 a day for everyone | `LLM_CHECKS_PER_USER_PER_MINUTE`, `LLM_CHECKS_GLOBAL_PER_DAY` | `429`; the daily budget answers code `BUDGET_EXCEEDED` |
 | Integration checks | 20 a minute per user; 1,000 a day for everyone | `DIAGNOSTICS_RUNS_PER_USER_PER_MINUTE`, `DIAGNOSTICS_RUNS_GLOBAL_PER_DAY` | `429` |
-| A job started over HTTP | One run at a time; 60 s between starts | `JOB_MIN_SPACING_SECONDS` (0 keeps only the first rule) | `409` while it runs; `429`, `Retry-After` when too soon |
+| A job started over HTTP | One run at a time; 60 s between starts | `JOB_MIN_SPACING_SECONDS` (0: only the one-at-a-time rule) | `409` while it runs; `429`, `Retry-After` when too soon |
 | JSON request body | 1,000,000 bytes | `MAX_REQUEST_BODY_BYTES` | `413` |
 | Requests per IP | Not set by the application | The platform rule, step D7 of [deployment.md](deployment.md#set-up-vercel) | `429` from the platform |
 

@@ -221,6 +221,30 @@ def test_every_write_route_is_counted_or_says_why_not(harness: Harness) -> None:
     assert len([m for m, _ in counted if m == "POST"]) == 2  # personal and organization create
 
 
+def test_put_and_patch_count_like_post_and_delete(make_harness: Callable[..., Harness]) -> None:
+    """No route uses them yet; a module that adds one is counted by the router's dependency."""
+    h = make_harness({"writes_per_user_per_minute": 2})
+    auth = h.container.identity.auth
+    router = APIRouter(dependencies=[Depends(auth.authenticate), h.container.kernel.limit_writes(auth)])
+
+    @router.put("/probe/put", dependencies=[requires(Access.OWN_ACCOUNT)])
+    def replace() -> dict[str, str]:
+        return {}
+
+    @router.patch("/probe/patch", dependencies=[requires(Access.OWN_ACCOUNT)])
+    def amend() -> dict[str, str]:
+        return {}
+
+    h.client.app.include_router(router, prefix="/api/v1")  # type: ignore[attr-defined]
+    headers = h.login("user_a")
+    sent = [
+        h.client.request(method, f"/api/v1/probe/{method.lower()}", headers=headers)
+        for method in ("PUT", "PATCH", "PUT")
+    ]
+    assert [r.status_code for r in sent] == [200, 200, 429]
+    assert write(h, "user_a") == 429  # one counter for every method
+
+
 def test_the_limit_runs_after_authentication_and_admission_on_every_counted_route(harness: Harness) -> None:
     """A burst of writes must queue at the admission gate, which holds no thread, not on threads that wait for
     the counter's worker connection (the database refuses those past its waiter budget with 503)."""
