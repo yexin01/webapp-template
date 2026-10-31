@@ -350,7 +350,8 @@ def test_a_subscription_awaiting_its_first_payment_is_cancelled_at_once_through_
     world: Harness, admin: stripe.StripeClient, provider: StripeBillingProvider, cleanup: Cleanup
 ) -> None:
     """The premise of the user.deleted handler for an ``incomplete`` subscription: Stripe's Cancel Subscription accepts
-    one that was never paid (https://docs.stripe.com/api/subscriptions/cancel), and ends it."""
+    one that was never paid (https://docs.stripe.com/api/subscriptions/cancel), and ends it. This one is made through the
+    API; one made by Checkout is not covered (Stripe's subscription overview says expiring its session cancels it)."""
     _, user = new_user(world)
     customer = admin.v1.customers.create(
         params={"name": f"template-sandbox-{RUN}-incomplete", "metadata": {"app_user_id": str(user)}}
