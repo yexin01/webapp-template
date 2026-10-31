@@ -1,6 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
-import { expect, test, type Page } from "@playwright/test";
+import type { Page } from "@playwright/test";
 
+import { expect, test } from "./support/browser";
 import { signInTestUser } from "./support/clerk-session";
 import { isSandboxRun, testUserEmail } from "./support/sandbox";
 
@@ -12,9 +13,13 @@ import { isSandboxRun, testUserEmail } from "./support/sandbox";
  * before any of these runs. Every test signs that user in with a sign-in token (support/clerk-session.ts).
  * The integrations test also needs the API to let the user run diagnostics: APP_ENV=local (the .env
  * default) or the user's Clerk ID in DIAGNOSTICS_OPERATOR_IDS.
+ * Like every browser spec, this one takes `test` from support/browser.ts, so each page also has to raise no
+ * uncaught error, report no Content Security Policy violation, and request nothing of the app's own that fails.
  * Results from this file are "sandbox" evidence, never "live" evidence.
  */
 const email = testUserEmail(process.env);
+/** What the API answers a Free user on the Pro feature: the paywall is what the page shows for it. */
+const PAYWALL_RESPONSE = "403 /api/v1/pro/insight";
 
 /** The status the API gives this signed-in user for a GET, asked the way the pages ask. */
 async function apiStatus(page: Page, path: string): Promise<number> {
@@ -64,7 +69,8 @@ test.describe("signed-in flows (sandbox)", () => {
     await expect(page.getByRole("alert").filter({ hasText: "Enter a project name" })).toBeVisible();
   });
 
-  test("free user sees the paywall on the Pro feature", async ({ page }) => {
+  test("free user sees the paywall on the Pro feature", async ({ page, expectedFailures }) => {
+    expectedFailures.push(PAYWALL_RESPONSE);
     await page.goto("/pro");
     await expect(page.getByRole("heading", { name: "Upgrade to Pro" })).toBeVisible();
   });
@@ -77,7 +83,8 @@ test.describe("signed-in flows (sandbox)", () => {
     await page.waitForURL(/checkout\.stripe\.com/);
   });
 
-  test("checkout success redirect alone does not grant Pro", async ({ page }) => {
+  test("checkout success redirect alone does not grant Pro", async ({ page, expectedFailures }) => {
+    expectedFailures.push(PAYWALL_RESPONSE);
     await page.goto("/billing/success?session_id=cs_test_forged");
     await expect(page.getByRole("heading", { name: "Confirming your subscription" })).toBeVisible();
     await page.goto("/pro");
