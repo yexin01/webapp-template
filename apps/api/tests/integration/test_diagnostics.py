@@ -393,6 +393,38 @@ def test_billing_check_says_so_when_the_key_cannot_read_the_portal(sandbox: Call
     assert "Customer Portal: not checked" in body["summary"]
 
 
+def test_billing_check_reads_subscriptions_and_says_so(sandbox: Callable[..., Harness]) -> None:
+    h = sandbox()
+    body = check(h, "billing")
+    assert body["outcome"] == "passed", body
+    assert "Subscriptions readable" in body["summary"]
+    assert "check_subscriptions_readable" in h.billing.calls
+
+
+def test_billing_check_fails_when_the_key_cannot_read_subscriptions(sandbox: Callable[..., Harness]) -> None:
+    """A restricted key can retrieve prices and still fail every synchronization (503): found here, not by a user."""
+    h = sandbox()
+    h.billing.refuse_subscriptions_access(ForbiddenError("The Stripe API key cannot read Subscriptions."))
+    body = check(h, "billing")
+    assert body["outcome"] == "failed"
+    assert body["error_code"] == "permission_denied"
+    assert "cannot read Subscriptions" in body["summary"]
+    assert "Subscriptions readable" not in body["summary"]
+
+
+def test_billing_check_reports_a_missing_permission_with_the_price_and_portal_problems(
+    sandbox: Callable[..., Harness],
+) -> None:
+    h = sandbox()
+    h.billing.refuse_subscriptions_access(ForbiddenError())
+    h.billing.set_price(_price(PRICE_MONTHLY, "month", active=False))
+    h.billing.set_portal(_portal(invoice_history=False))
+    body = check(h, "billing")
+    assert body["error_code"] == "price_mismatch"  # the first kind of problem names the failure
+    for expected in ("archived", "invoice history", "cannot read Subscriptions"):
+        assert expected in body["summary"]
+
+
 def test_billing_check_reports_unknown_price(sandbox: Callable[..., Harness]) -> None:
     h = sandbox({"stripe_price_pro_yearly": "price_missing"})
     body = check(h, "billing")

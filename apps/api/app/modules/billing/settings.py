@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from typing import Literal
 
 from pydantic import BaseModel, Field, SecretStr
 
@@ -30,10 +31,36 @@ class BillingSettings(BaseModel):
     # Checkout and portal requests in Stripe calls at once per instance. Each holds a server
     # thread (40 by default, shared by every synchronous route) until Stripe answers.
     billing_max_concurrent_stripe_calls: int = Field(default=4, ge=1, le=16)
-    # The scheduled reconcile-billing job reports divergences; it applies them only when true.
-    billing_reconcile_apply: bool = False
+    # Whether the scheduled reconcile-billing job applies Stripe's state or only reports divergences.
+    # Unset: it applies, except in mock mode (``reconcile_applies``).
+    billing_reconcile_apply: bool | None = None
     # Customers the scheduled job checks per run (one Stripe call each), least recently checked first.
     billing_reconcile_batch_size: int = Field(default=200, ge=1, le=2_000)
+    # What happens to the subscription of a user the identity provider reports as deleted: Stripe is asked to end it
+    # at the period's end, or it is only logged. Unset: the first, except in mock mode (``cancels_on_user_deleted``).
+    billing_on_user_deleted: Literal["cancel_at_period_end", "log"] | None = None
+
+
+def reconcile_applies(s: BillingSettings) -> bool:
+    """Whether the scheduled job applies what it finds (BILL-19).
+
+    A webhook that never arrives would otherwise leave Pro in place after a cancellation, with only a log line
+    to say so. Mock mode has no Stripe to compare with.
+    """
+    if s.billing_reconcile_apply is not None:
+        return s.billing_reconcile_apply
+    return s.billing_mode is not Mode.MOCK
+
+
+def cancels_on_user_deleted(s: BillingSettings) -> bool:
+    """Whether the subscription of a deleted user is ended at the period's end (BILL-16), rather than only logged.
+
+    A deleted user cannot sign in, so nobody can reach the Customer Portal and the subscription keeps renewing.
+    Mock mode has no Stripe subscription to end.
+    """
+    if s.billing_on_user_deleted is not None:
+        return s.billing_on_user_deleted == "cancel_at_period_end"
+    return s.billing_mode is not Mode.MOCK
 
 
 def billing_problems(s: BillingSettings, core: CoreSettings) -> list[str]:

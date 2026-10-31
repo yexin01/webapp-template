@@ -126,6 +126,20 @@ class PgBillingRepository:
         if stored != stripe_customer_id:
             raise ConflictError("User is already linked to another billing customer.")
 
+    def relink_customer(self, user_id: UUID, old_customer_id: str, new_customer_id: str, linked_at: datetime) -> str:
+        # Recorded as if checked when linked, like a new link, so the customer joins the back of the rotation.
+        self._exec(
+            """
+            UPDATE app.billing_customers SET stripe_customer_id = %s, reconciled_at = %s
+            WHERE user_id = %s AND stripe_customer_id = %s
+            """,
+            (new_customer_id, linked_at, user_id, old_customer_id),
+        )
+        stored = self.get_billing_customer_id(user_id)
+        if stored is None:  # pragma: no cover
+            raise RuntimeError("billing customer link was lost")
+        return stored
+
     def find_user_by_customer(self, stripe_customer_id: str) -> UUID | None:
         row = self._one(
             "SELECT user_id FROM app.billing_customers WHERE stripe_customer_id = %s", (stripe_customer_id,)

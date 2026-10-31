@@ -16,7 +16,13 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.routing import Match
 
-from app.kernel.errors import AuthenticationError, DomainError, NotConfiguredError, RateLimitedError
+from app.kernel.errors import (
+    AuthenticationError,
+    DomainError,
+    NotConfiguredError,
+    ProviderRejectedError,
+    RateLimitedError,
+)
 from app.kernel.http.schemas import MAX_VALIDATION_ERRORS
 from app.kernel.infrastructure.observability import report_server_error
 from app.kernel.request_context import request_id_var
@@ -87,7 +93,9 @@ def install_error_handlers(app: FastAPI) -> None:
             cause = type(exc.__cause__).__name__ if exc.__cause__ is not None else None
             logger.warning("dependency_or_configuration_error", extra={"code": exc.code, "cause_type": cause})
             # Expected, so a warning: the public Clerk webhook answers NOT_CONFIGURED while its secret is unset.
-            report_server_error(exc, level="warning" if isinstance(exc, NotConfiguredError) else "error")
+            # A key the provider rejects is not waiting to be set: an operator has to act, so that is an error.
+            unset = isinstance(exc, NotConfiguredError) and not isinstance(exc, ProviderRejectedError)
+            report_server_error(exc, level="warning" if unset else "error")
         return problem(status, exc.code, exc.public_message, headers=headers or None)
 
     @app.exception_handler(RequestValidationError)

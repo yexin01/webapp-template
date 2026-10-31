@@ -128,6 +128,7 @@ def test_checkout_sessions_are_created_for_the_user_and_the_next_one_closes_the_
     cleanup.append(lambda: admin.v1.checkout.sessions.expire(str(first)))
     session = admin.v1.checkout.sessions.retrieve(str(first))
     assert (session.status, session.mode, session.client_reference_id) == ("open", "subscription", str(user))
+    assert list(session.payment_method_types) == ["card"]  # no bank debit: Pro would start before the funds arrive
     assert session.subscription is None  # nothing was paid
 
     checkout("pro_yearly")

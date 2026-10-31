@@ -75,7 +75,8 @@ Legend: **web** = the Next.js service, **api** = the Python service. *Baked* = f
 | `STRIPE_PRICE_PRO_MONTHLY`, `STRIPE_PRICE_PRO_YEARLY` | api | config | Sandbox price IDs | Live price IDs |
 | `STRIPE_PRODUCT_PRO` | api | config | Sandbox product ID | Live product ID |
 | `STRIPE_CUSTOM_DOMAIN` | web, api; baked | config | Unset | Optional, live mode only |
-| `BILLING_RECONCILE_APPLY` | api | config | Unset | Your choice (default: report only) |
+| `BILLING_RECONCILE_APPLY` | api | config | Leave unset (the job applies Stripe's state) | Leave unset; `false` makes the job only report |
+| `BILLING_ON_USER_DELETED` | api | config | Leave unset (a deleted user's subscription is set to end at the period's end) | Leave unset; `log` only reports it |
 
 **LLM, analytics, errors**
 
@@ -228,7 +229,7 @@ Go-live is a sequence of steps that need your accounts. Do them in this order; t
 
 ### Stripe live mode
 
-**[YOU D14]** Stripe keeps test-mode and live-mode objects apart ([Stripe: keys](https://docs.stripe.com/keys#test-live-modes)). Repeat in live mode what you did in the sandbox: create the Pro product with a monthly and a yearly recurring price in one currency in the Dashboard (`pnpm setup:stripe` refuses live keys); save the Customer Portal configuration; set the Retries rule ([setup.md](setup.md#stripe), S5 and S6); create the Snapshot event destination for the production URL with the 14 events ([integrations.md](integrations.md#stripe)); then set the live key, the two live price IDs, the ID of the live product (`STRIPE_PRODUCT_PRO`; copying a sandbox product to live mode makes a separate product with its own ID, [Stripe: manage products and prices](https://docs.stripe.com/products-prices/manage-prices)) and that destination's secret in the Production scope with `BILLING_MODE=live`. An optional custom domain: `STRIPE_CUSTOM_DOMAIN`. Run a real, small payment and refund it before launch.
+**[YOU D14]** Stripe keeps test-mode and live-mode objects apart ([Stripe: keys](https://docs.stripe.com/keys#test-live-modes)). Repeat in live mode what you did in the sandbox: create the Pro product with a monthly and a yearly recurring price in one currency in the Dashboard (`pnpm setup:stripe` refuses live keys); save the Customer Portal configuration and turn off bank debits and bank transfers under Settings > Payment methods; set the Retries rule ([setup.md](setup.md#stripe), S5 and S6); create the Snapshot event destination for the production URL with the 14 events ([integrations.md](integrations.md#stripe)); then set the live key, the two live price IDs, the ID of the live product (`STRIPE_PRODUCT_PRO`; copying a sandbox product to live mode makes a separate product with its own ID, [Stripe: manage products and prices](https://docs.stripe.com/products-prices/manage-prices)) and that destination's secret in the Production scope with `BILLING_MODE=live`. An optional custom domain: `STRIPE_CUSTOM_DOMAIN`. Run a real, small payment and refund it before launch.
 
 ### PostHog and Sentry production
 

@@ -20,11 +20,11 @@ The template never stores email addresses, names, or payment details. Those stay
 
 | Table | Personal data | Purpose | Retention (current behavior) |
 |---|---|---|---|
-| `users` | Clerk user ID, created time, when memberships were last read from Clerk | Map identity to an internal ID | Kept indefinitely. `user.deleted` revokes memberships but keeps the row. |
+| `users` | Clerk user ID, created time, when memberships were last read from Clerk | Map identity to an internal ID | Kept indefinitely. `user.deleted` revokes memberships and keeps the row; billing sets the user's subscription to end at the period's end (below, item 2). |
 | `organizations` | Clerk organization ID, deleted time | Tenant boundary | Kept; marked deleted on `organization.deleted`. |
 | `organization_memberships` | User, organization, role, verification time | Authorization mirror (DEC-009) | Replaced on each re-verification; removed when Clerk reports removal or user deletion. |
 | `projects` | Name (**free text a user may fill with personal data**), creator | Sample tenant data | Until the user deletes the project. |
-| `billing_customers` | User → Stripe customer ID, when last reconciled | Billing link | Kept indefinitely. Payment records are never deleted (DEC-004 interim rule). |
+| `billing_customers` | User → Stripe customer ID, when last reconciled | Billing link | Kept indefinitely. Payment records are never deleted (DEC-004 interim rule). When Stripe deletes a customer, the next checkout replaces the ID in this row; the subscriptions that ended under the old customer keep the old ID. |
 | `subscriptions` | Status, plan, period dates, cancellation dates | Entitlements | Kept indefinitely. |
 | `billing_events` | Stripe event ID, event type, customer ID, timestamps, attempt count; **no payloads** | Webhook idempotency ledger | Kept indefinitely. |
 | `identity_events` | Clerk/Svix event ID, event type, timestamps; **no payloads** | Webhook idempotency ledger | Kept indefinitely. |
@@ -88,7 +88,7 @@ Answer these questions before production, record the policy in an ADR, and keep 
    - the Clerk user;
    - the PostHog person;
    - Sentry events.
-2. **Active subscriptions.** Cancel immediately, cancel at period end, or block deletion until the subscription is canceled.
+2. **Active subscriptions.** Cancel immediately, cancel at period end, or block deletion until the subscription is canceled. The template's default is the second: when Clerk reports `user.deleted`, Stripe is asked to end the subscription at the period's end (`BILLING_ON_USER_DELETED`, [operations.md](operations.md#a-user-deleted-in-clerk)). Nothing blocks deletion, cancels at once or refunds.
 3. **Sole organization owners.** Block deletion, transfer ownership, or delete the organization.
 4. **Export.** Scope (which tables and providers) and format (for example JSON).
 5. **Retention periods** for `audit_log`, `billing_events`, `identity_events`, logs, and telemetry. Configure the matching settings in PostHog, Sentry, and your log drain.

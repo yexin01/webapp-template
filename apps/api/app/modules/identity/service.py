@@ -28,10 +28,10 @@ from uuid import UUID
 from app.kernel.application.rate_limit import RateLimiter
 from app.kernel.errors import DependencyUnavailableError, NotConfiguredError, NotFoundError, RateLimitedError
 from app.kernel.jobs import TIME_BUDGET_SECONDS, JobSummary
-from app.kernel.ports import Clock, Transactions
+from app.kernel.ports import Clock, Transactions, Tx
 from app.kernel.tenancy import ContextKind, TenantContext, VerifiedIdentity
 from app.kernel.webhooks import EventStatus
-from app.modules.identity.domain import MembershipRecord, is_valid_external_org_id
+from app.modules.identity.domain import MembershipRecord, UserDeleted, is_valid_external_org_id
 from app.modules.identity.ports import (
     IdentityRepository,
     IdentityWebhookEvent,
@@ -381,7 +381,7 @@ class IdentitySyncService:
             status = t.repo.claim_identity_event(event)
             if status in (EventStatus.PROCESSED, EventStatus.IGNORED):
                 return status
-            result, refresh = self._apply(t.repo, event, self._clock.now())
+            result, refresh = self._apply(t, event, self._clock.now())
 
         # The provider call happens after the user row is committed and
         # outside any transaction. If it fails, the event stays "received",
@@ -395,8 +395,9 @@ class IdentitySyncService:
 
     @staticmethod
     def _apply(
-        repo: IdentityRepository, event: IdentityWebhookEvent, now: datetime
+        t: Tx[IdentityRepository], event: IdentityWebhookEvent, now: datetime
     ) -> tuple[EventStatus, tuple[UUID, str] | None]:
+        repo = t.repo
         if event.event_type in _MEMBERSHIP_EVENTS:
             external_user_id = _membership_user_id(event.data)
             if external_user_id is None:
@@ -419,6 +420,8 @@ class IdentitySyncService:
                 # Retention of the user's data is an adopter decision
                 # (DEC-004, ADR-0002) and is not decided here.
                 repo.remove_user_memberships(user_id, now)
+                # Billing and others end what the user left behind, after this commits.
+                t.record(UserDeleted(user_id=user_id))
             return EventStatus.PROCESSED, None
 
         return EventStatus.IGNORED, None

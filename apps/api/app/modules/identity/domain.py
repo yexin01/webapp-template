@@ -5,8 +5,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime
+from typing import ClassVar
 from uuid import UUID
 
+from app.kernel.events import DomainEvent
 from app.kernel.tenancy import Role
 
 _EXTERNAL_ORG_ID = re.compile(r"^org_[A-Za-z0-9]{1,64}$")
@@ -28,6 +30,17 @@ class MembershipRecord:
     external_org_id: str
     role: Role
     verified_at: datetime
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class UserDeleted(DomainEvent):
+    """The identity provider reports that the user's account was deleted.
+
+    Other modules end what the user left behind (billing ends the subscription); identity knows none of them.
+    """
+
+    event_type: ClassVar[str] = "identity.user_deleted"
+    user_id: UUID
 
 
 def role_from_external(value: str) -> Role:

@@ -24,6 +24,7 @@ describe("billing status copy", () => {
     [{ plan: "pro", state: "past_due" }, "payment failed"],
     [{ state: "processing" }, "being confirmed"],
     [{ state: "payment_required" }, "Payment is required"],
+    [{ state: "unrecognized" }, "could not match your subscription"],
     [{ state: "canceled" }, "has ended"],
   ] as const)("%o", (patch, text) => {
     expect(describeStatus({ ...base, ...patch } as Schemas["BillingStatus"])).toContain(text);

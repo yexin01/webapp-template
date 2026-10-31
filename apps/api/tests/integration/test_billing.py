@@ -21,6 +21,7 @@ import pytest
 from app.kernel.errors import DependencyUnavailableError, EntitlementRequiredError, InvalidRequestError
 from app.kernel.tenancy import ContextKind, TenantContext
 from app.modules.billing.adapters.fakes import InMemoryBillingProvider
+from app.modules.billing.adapters.repository import PgBillingRepository
 from app.modules.billing.adapters.stripe import to_snapshot
 from app.modules.billing.domain import (
     PRO_INSIGHT,
@@ -175,6 +176,37 @@ def test_checkout_rejects_unknown_plan_and_price_ids(harness: Harness) -> None:
 def test_checkout_requires_idempotency_key(harness: Harness) -> None:
     r = harness.client.post("/api/v1/billing/checkout", json={"plan": "pro_monthly"}, headers=harness.login("user_a"))
     assert r.status_code == 422
+
+
+@pytest.mark.parametrize(
+    ("key", "status", "code"),
+    [
+        ("bad key!!", 400, "INVALID_REQUEST"),
+        ("key with spaces", 400, "INVALID_REQUEST"),  # one offending character each, so a wider class is caught
+        ("dot.in.key.1", 400, "INVALID_REQUEST"),
+        ("slash/in/key1", 400, "INVALID_REQUEST"),
+        ("semi;colon:key", 400, "INVALID_REQUEST"),
+        ("short", 422, "VALIDATION_FAILED"),
+        ("k" * 65, 422, "VALIDATION_FAILED"),
+    ],
+)
+def test_checkout_refuses_an_idempotency_key_outside_8_to_64_letters_digits_hyphens_and_underscores(
+    harness: Harness, key: str, status: int, code: str
+) -> None:
+    """The key becomes part of the key sent to Stripe and of a stored row: nothing else is accepted, before any call."""
+    headers = {**harness.login("user_a"), "Idempotency-Key": key}
+    r = harness.client.post("/api/v1/billing/checkout", json={"plan": "pro_monthly"}, headers=headers)
+    assert (r.status_code, r.json()["code"]) == (status, code)
+    assert harness.billing.calls == []  # a refused key costs no Stripe call and no customer
+    assert superuser_query(harness.database_url, "SELECT count(*) FROM app.billing_customers") == [(0,)]
+
+
+def test_checkout_accepts_the_whole_idempotency_alphabet(harness: Harness) -> None:
+    headers = {**harness.login("user_a"), "Idempotency-Key": "Az09_-" + "x" * 58}
+    assert (
+        harness.client.post("/api/v1/billing/checkout", json={"plan": "pro_monthly"}, headers=headers).status_code
+        == 200
+    )
 
 
 def test_checkout_refused_when_already_pro(harness: Harness) -> None:
@@ -802,6 +834,50 @@ def test_a_sync_and_a_webhook_for_the_same_customer_converge_and_record_the_plan
     assert plan_changes(harness) == ["pro"]  # whichever came second found nothing to change
 
 
+def test_a_slow_user_re_read_cannot_overwrite_a_cancellation_that_landed_meanwhile(harness: Harness) -> None:
+    """BILL-10, BILL-22: the user's own re-read takes the customer lock, like a webhook does.
+
+    The re-read has read ``active`` from Stripe and is slow to store it. Stripe cancels, and the webhook for that
+    arrives. With the lock the webhook queues behind the re-read and then reads the cancellation. Without it the
+    webhook finishes first and the older read is stored over it: Pro would come back after a cancellation.
+    """
+    customer = make_pro(harness, "user_a")
+    headers = harness.login("user_a")
+    provider = harness.billing
+    original = InMemoryBillingProvider.list_customer_subscriptions
+    has_read, may_store = threading.Event(), threading.Event()
+
+    def slow_first_read(self: InMemoryBillingProvider, customer_id: str) -> list[SubscriptionSnapshot]:
+        seen = original(self, customer_id)  # Stripe still says active
+        if not has_read.is_set():
+            has_read.set()
+            assert may_store.wait(30)
+        return seen
+
+    provider.list_customer_subscriptions = slow_first_read.__get__(provider)  # type: ignore[method-assign]
+    answers: dict[str, Any] = {}
+    delivered = threading.Event()
+
+    def deliver() -> None:
+        answers["webhook"] = send_webhook(harness, event_payload(customer, "customer.subscription.deleted"))
+        delivered.set()
+
+    resync = threading.Thread(target=lambda: answers.__setitem__("sync", sync(harness, headers)))
+    webhook = threading.Thread(target=deliver)
+    resync.start()
+    assert has_read.wait(10)
+    provider.set_subscriptions(customer, [snapshot(customer, SubscriptionStatus.CANCELED)])
+    webhook.start()
+    wait_for_lock_wait(harness.database_url, timeout=20, or_until=delivered)  # queued behind the re-read, or done
+    may_store.set()
+    resync.join(30)
+    webhook.join(30)
+
+    assert (answers["sync"].status_code, answers["webhook"].status_code) == (200, 200)
+    plan = harness.client.get("/api/v1/billing/status", headers=headers).json()["plan"]
+    assert plan == "free", "a re-read that Stripe's cancellation overtook was stored over it"
+
+
 def test_a_sync_stripe_rejects_keeps_the_stored_state(harness: Harness, caplog: pytest.LogCaptureFixture) -> None:
     """Reconciliation owns a customer Stripe no longer lets us read; the user's click changes nothing."""
     customer = make_pro(harness, "user_a")
@@ -827,6 +903,227 @@ def test_sync_is_not_available_without_billing_or_in_an_organization(make_harnes
     r = sync(h, h.login("user_a"))
     assert (r.status_code, r.json()["code"]) == (503, "NOT_CONFIGURED")
     assert h.client.post("/api/v1/billing/sync").status_code == 401
+
+
+# -- A customer Stripe deleted (BILL-04) --------------------------------------
+
+
+def customer_gone(h: Harness, name: str = "user_a") -> tuple[dict[str, str], str]:
+    """A user with a customer (made by a first checkout) that Stripe has since deleted."""
+    headers = h.login(name)
+    assert start_checkout(h, headers).status_code == 200
+    customer = customer_of(h, name)
+    h.billing.delete_customer(customer)
+    return headers, customer
+
+
+def flagged_events(h: Harness) -> int:
+    rows = superuser_query(
+        h.database_url, "SELECT count(*) FROM app.billing_events WHERE status = 'needs_reconciliation'"
+    )
+    return int(rows[0][0])
+
+
+def test_a_user_whose_stripe_customer_was_deleted_gets_a_new_one_at_the_next_checkout(harness: Harness) -> None:
+    """Before: every checkout was rejected (400), for good: the stored customer could not be replaced."""
+    headers, old = customer_gone(harness)
+    user = user_id_of(harness, headers)
+    assert send_webhook(harness, event_payload(old, event_id="evt_before")).json()["status"] == "needs_reconciliation"
+    assert flagged_events(harness) == 1
+
+    r = start_checkout(harness, headers, plan="pro_yearly")
+
+    assert r.status_code == 200, r.text
+    new = customer_of(harness, "user_a")
+    assert new != old
+    assert harness.billing.customer_requests[-1] == {"user_id": user, "replaces": old}
+    assert harness.billing.checkout_requests[-1]["customer_id"] == new  # the session is the new customer's
+    assert r.json()["url"] in {
+        harness.billing.open_checkout_session_url(s) for s in harness.billing.open_sessions(user)
+    }
+    assert flagged_events(harness) == 0  # events about the deleted customer cannot be reconciled any more
+    assert superuser_query(
+        harness.database_url, "SELECT reconciled_at FROM app.billing_customers WHERE user_id = %s", (user,)
+    ) == [(harness.clock.now(),)]  # the new link joins the back of the reconciliation rotation
+    # The new customer works like any other: its subscription grants Pro.
+    harness.billing.set_subscriptions(new, [snapshot(new, SubscriptionStatus.ACTIVE)])
+    assert send_webhook(harness, event_payload(new)).json()["status"] == "processed"
+    assert harness.client.get("/api/v1/billing/status", headers=headers).json()["plan"] == "pro"
+
+
+def test_the_subscriptions_that_ended_under_the_deleted_customer_stay_as_history(harness: Harness) -> None:
+    headers = harness.login("user_a")
+    old = make_pro(harness, "user_a")
+    harness.billing.set_subscriptions(old, [snapshot(old, SubscriptionStatus.CANCELED)])
+    assert sync(harness, headers).json()["state"] == "canceled"
+    harness.billing.delete_customer(old)
+
+    assert start_checkout(harness, headers).status_code == 200
+
+    new = customer_of(harness, "user_a")
+    assert new != old
+    assert superuser_query(harness.database_url, "SELECT stripe_customer_id, status FROM app.subscriptions") == [
+        (old, "canceled")
+    ]
+    # Nothing is reported about it every day: the old customer is out of the rotation, and the history is not
+    # compared with the new customer's subscriptions.
+    report = harness.container.billing.service.reconcile(user_id=None, apply=False)
+    assert (report.customers_checked, report.divergences, report.rejected_customers) == (1, [], [])
+
+
+def test_two_checkouts_at_once_after_a_deletion_link_one_new_customer(harness: Harness) -> None:
+    """Both replace the customer with the one Stripe makes for the same key; the later link finds it already made."""
+    headers, old = customer_gone(harness)
+    both_created = threading.Barrier(2)
+    original = InMemoryBillingProvider.create_customer
+
+    def meet_then_create(self: InMemoryBillingProvider, user_id: uuid.UUID, *, replaces: str | None = None) -> str:
+        created = original(self, user_id, replaces=replaces)
+        both_created.wait(30)  # neither has linked yet
+        return created
+
+    harness.billing.create_customer = meet_then_create.__get__(harness.billing)  # type: ignore[method-assign]
+    answers: list[int] = []
+    threads = [
+        threading.Thread(target=lambda: answers.append(start_checkout(harness, headers).status_code)) for _ in "ab"
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(30)
+
+    assert answers == [200, 200]
+    assert customer_of(harness, "user_a") != old
+    assert superuser_query(harness.database_url, "SELECT count(*) FROM app.billing_customers") == [(1,)]
+    assert len(harness.billing.open_sessions()) == 1  # DEC-013: the later session closed the earlier one
+
+
+def test_a_link_that_another_request_already_replaced_is_kept(harness: Harness) -> None:
+    headers, old = customer_gone(harness)
+    user = user_id_of(harness, headers)
+    transactions = harness.container.kernel.transactions(PgBillingRepository)
+    with transactions.as_system() as t:
+        assert t.repo.relink_customer(user, old, "cus_first", harness.clock.now()) == "cus_first"
+    with transactions.as_system() as t:
+        assert t.repo.relink_customer(user, old, "cus_second", harness.clock.now()) == "cus_first"
+    assert customer_of(harness, "user_a") == "cus_first"
+
+
+def test_a_customer_stripe_still_has_is_never_replaced(harness: Harness) -> None:
+    """A rejection that is not a deleted customer stays a rejection: replacing a live customer could orphan its subscription."""
+    headers = harness.login("user_a")
+    assert start_checkout(harness, headers).status_code == 200
+    old = customer_of(harness, "user_a")
+
+    def rejected(customer_id: str) -> list[SubscriptionSnapshot]:
+        raise InvalidRequestError("The billing request was rejected.")
+
+    harness.billing.list_customer_subscriptions = rejected  # type: ignore[method-assign]
+    r = start_checkout(harness, headers)
+
+    assert (r.status_code, r.json()["code"]) == (400, "INVALID_REQUEST")
+    assert customer_of(harness, "user_a") == old
+    assert len(harness.billing.customer_requests) == 1  # only the first checkout made a customer
+
+
+def test_a_deleted_customer_with_a_subscription_that_is_not_over_is_never_replaced(
+    harness: Harness, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Keys of another Stripe account (a new sandbox, the database kept): nothing there can end the stored subscription."""
+    old = make_pro(harness, "user_a")
+    headers = harness.login("user_a")
+    harness.billing.delete_customer(old)
+    harness.billing.set_subscriptions(old, [])  # the subscription cannot be read by ID either
+    calls = list(harness.billing.calls)
+
+    with caplog.at_level("ERROR"):
+        r = harness.client.post("/api/v1/billing/portal", headers=headers)
+
+    assert (r.status_code, r.json()["code"]) == (409, "CONFLICT")
+    assert "contact support" in r.json()["detail"]
+    [record] = [rec for rec in caplog.records if rec.getMessage() == "billing_customer_gone_with_subscription"]
+    assert (
+        (record.levelname, record.stripe_customer_id, record.stripe_subscription_ids)
+        == (  # type: ignore[attr-defined]
+            "ERROR",
+            old,
+            f"sub_{old[4:]}",
+        )
+    )
+    assert customer_of(harness, "user_a") == old
+    assert "create_customer" not in harness.billing.calls[len(calls) :]
+
+
+def test_a_subscription_that_lands_while_the_customer_is_replaced_stops_the_replacement(
+    harness: Harness, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Read again under the customer's lock: a webhook stored a live subscription after the first look."""
+    headers, old = customer_gone(harness)
+    original = InMemoryBillingProvider.create_customer
+
+    def create_then_store_a_live_subscription(
+        self: InMemoryBillingProvider, user_id: uuid.UUID, *, replaces: str | None = None
+    ) -> str:
+        created = original(self, user_id, replaces=replaces)
+        superuser_query(
+            harness.database_url,
+            "INSERT INTO app.subscriptions (stripe_subscription_id, user_id, stripe_customer_id, status, plan_key) "
+            "VALUES ('sub_landed', %s, %s, 'active', 'pro_monthly')",
+            (user_id, replaces),
+        )
+        return created
+
+    harness.billing.create_customer = create_then_store_a_live_subscription.__get__(harness.billing)  # type: ignore[method-assign]
+    with caplog.at_level("ERROR"):
+        r = start_checkout(harness, headers)
+
+    assert (r.status_code, r.json()["code"]) == (409, "CONFLICT")
+    assert customer_of(harness, "user_a") == old
+    [record] = [rec for rec in caplog.records if rec.getMessage() == "billing_customer_gone_with_subscription"]
+    assert record.stripe_subscription_ids == "sub_landed"  # type: ignore[attr-defined]
+
+
+def test_the_portal_of_a_customer_stripe_deleted_says_there_is_nothing_to_manage(harness: Harness) -> None:
+    headers = harness.login("user_a")
+    old = make_pro(harness, "user_a")
+    harness.billing.set_subscriptions(old, [snapshot(old, SubscriptionStatus.CANCELED)])
+    assert sync(harness, headers).json()["state"] == "canceled"
+    harness.billing.delete_customer(old)
+
+    r = harness.client.post("/api/v1/billing/portal", headers=headers)
+
+    assert (r.status_code, r.json()["code"]) == (409, "CONFLICT")
+    assert "Start a new subscription" in r.json()["detail"]
+    assert customer_of(harness, "user_a") == old  # the portal replaces nothing: the next checkout does
+
+
+def test_a_portal_stripe_rejects_for_a_customer_it_has_stays_a_rejection(harness: Harness) -> None:
+    headers = harness.login("user_a")
+    make_pro(harness, "user_a")
+
+    def rejected(*, customer_id: str, return_url: str) -> str:
+        raise InvalidRequestError("The billing request was rejected.")
+
+    harness.billing.create_portal_session = rejected  # type: ignore[method-assign]
+    r = harness.client.post("/api/v1/billing/portal", headers=headers)
+    assert (r.status_code, r.json()["code"]) == (400, "INVALID_REQUEST")
+
+
+def test_only_the_worker_may_change_which_customer_a_user_has(harness: Harness) -> None:
+    """The API role (requests) can read and create its own link, never move it; the worker moves it for a replacement."""
+
+    def can_update(role: str) -> bool:
+        rows = superuser_query(
+            harness.database_url,
+            "SELECT has_column_privilege(%s, 'app.billing_customers', 'stripe_customer_id', 'UPDATE')",
+            (role,),
+        )
+        return bool(rows[0][0])
+
+    assert (can_update("app_worker"), can_update("app_api")) == (True, False)
+    assert superuser_query(
+        harness.database_url, "SELECT has_column_privilege('app_worker', 'app.billing_customers', 'user_id', 'UPDATE')"
+    ) == [(False,)]  # only the customer ID, never the owner of the link
 
 
 # -- Entitlement and presentation ---------------------------------------------
@@ -877,6 +1174,29 @@ def test_status_transitions_via_webhooks(harness: Harness, status: SubscriptionS
     assert (body["plan"], body["state"]) == (plan, state)
 
 
+@pytest.mark.parametrize(
+    ("status", "state", "blocked"),
+    [
+        (SubscriptionStatus.ACTIVE, "unrecognized", "subscription_exists"),
+        (SubscriptionStatus.PAST_DUE, "payment_required", "payment_required"),
+    ],
+)
+def test_a_paying_subscription_no_plan_matches_is_not_shown_as_an_ended_plan(
+    harness: Harness, status: SubscriptionStatus, state: str, blocked: str
+) -> None:
+    """A price of another product grants no Pro (BILL-03) but the user pays: the page must not say the plan ended."""
+    customer = make_pro(harness, "user_a")
+    harness.billing.set_subscriptions(
+        customer, [snapshot(customer, status, plan_key=PlanKey.UNKNOWN, price_id="price_other_product")]
+    )
+    assert send_webhook(harness, event_payload(customer)).json()["status"] == "processed"
+
+    body = harness.client.get("/api/v1/billing/status", headers=harness.login("user_a")).json()
+
+    assert (body["plan"], body["state"], body["checkout_blocked"]) == ("free", state, blocked)
+    assert harness.client.get("/api/v1/pro/insight", headers=harness.login("user_a")).status_code == 403
+
+
 def test_end_of_period_cancellation_keeps_pro_until_period_end(harness: Harness) -> None:
     customer = make_pro(harness, "user_a")
     harness.billing.set_subscriptions(
@@ -902,18 +1222,88 @@ def test_reactivation_restores_active_state(harness: Harness) -> None:
     assert harness.client.get("/api/v1/billing/status", headers=harness.login("user_a")).json()["state"] == "active"
 
 
+SWITCHABLE = {
+    "pro_monthly": {"plan_key": PlanKey.PRO_MONTHLY, "price_id": PRICE_MONTHLY, "current_period_end": FUTURE},
+    "pro_yearly": {
+        "plan_key": PlanKey.PRO_YEARLY,
+        "price_id": PRICE_YEARLY,
+        "current_period_end": FUTURE + timedelta(days=365),
+    },
+}
+
+
+@pytest.mark.parametrize(("start", "end"), [("pro_monthly", "pro_yearly"), ("pro_yearly", "pro_monthly")])
+def test_switching_between_monthly_and_yearly_follows_stripe_and_never_interrupts_pro(
+    harness: Harness, start: str, end: str
+) -> None:
+    """BILL-15: the Customer Portal switches the price; entitlement follows the synchronized state, Pro throughout."""
+    customer = make_pro(harness, "user_a")
+    headers = harness.login("user_a")
+    harness.billing.set_subscriptions(customer, [snapshot(customer, SubscriptionStatus.ACTIVE, **SWITCHABLE[start])])
+    send_webhook(harness, event_payload(customer))
+    assert harness.client.get("/api/v1/billing/status", headers=headers).json()["plan_key"] == start
+
+    harness.billing.set_subscriptions(customer, [snapshot(customer, SubscriptionStatus.ACTIVE, **SWITCHABLE[end])])
+    updated = send_webhook(harness, event_payload(customer, "customer.subscription.updated"))
+    assert updated.json()["status"] == "processed"
+
+    body = harness.client.get("/api/v1/billing/status", headers=headers).json()
+    assert (body["plan"], body["state"], body["plan_key"]) == ("pro", "active", end)
+    assert datetime.fromisoformat(body["current_period_end"]) == SWITCHABLE[end]["current_period_end"]
+    assert harness.client.get("/api/v1/pro/insight", headers=headers).status_code == 200
+    assert plan_changes(harness) == ["pro"]  # one grant, and no "free" in between
+
+
+def test_a_failed_renewal_keeps_pro_and_the_payment_that_follows_clears_it_with_one_plan_change(
+    harness: Harness,
+) -> None:
+    """BILL-18, DEC-010: past_due keeps Pro and asks for a payment method; invoice.paid recovers, with no second event."""
+    customer = make_pro(harness, "user_a")
+    headers = harness.login("user_a")
+
+    harness.billing.set_subscriptions(customer, [snapshot(customer, SubscriptionStatus.PAST_DUE)])
+    assert send_webhook(harness, event_payload(customer, "invoice.payment_failed")).json()["status"] == "processed"
+    failed = harness.client.get("/api/v1/billing/status", headers=headers).json()
+    assert (failed["plan"], failed["state"]) == ("pro", "past_due")
+
+    harness.billing.set_subscriptions(customer, [snapshot(customer, SubscriptionStatus.ACTIVE)])
+    assert send_webhook(harness, event_payload(customer, "invoice.paid")).json()["status"] == "processed"
+    recovered = harness.client.get("/api/v1/billing/status", headers=headers).json()
+    assert (recovered["plan"], recovered["state"], recovered["checkout_blocked"]) == ("pro", "active", "already_pro")
+    assert plan_changes(harness) == ["pro"]  # Pro never lapsed, so the plan changed once, at the first grant
+
+
 # -- Webhook trust model ------------------------------------------------------
 
 
-def test_forged_webhook_rejected_without_side_effects(harness: Harness) -> None:
+def test_forged_webhook_rejected_without_side_effects(harness: Harness, caplog: pytest.LogCaptureFixture) -> None:
     customer = make_pro(harness, "user_a")
     harness.billing.set_subscriptions(customer, [snapshot(customer, SubscriptionStatus.CANCELED)])
-    payload = event_payload(customer)
-    for signature in ("", "t=1,v1=abc", sign(payload, secret="whsec_attacker_secret_00000000000")):
-        r = send_webhook(harness, payload, signature)
-        assert r.status_code == 400
-        assert r.json()["code"] == "WEBHOOK_SIGNATURE_INVALID"
+    payload = event_payload(customer, event_id="evt_forged_canary")
+    forged = sign(payload, secret="whsec_attacker_secret_00000000000")
+    caplog.clear()
+    with caplog.at_level("INFO"):
+        for signature in ("", "t=1,v1=abc", forged):
+            r = send_webhook(harness, payload, signature)
+            assert r.status_code == 400
+            assert r.json()["code"] == "WEBHOOK_SIGNATURE_INVALID"
     assert harness.client.get("/api/v1/billing/status", headers=harness.login("user_a")).json()["plan"] == "pro"
+
+    # BILL-08: the refusal is logged, with its reason, and never with the body, its customer or the header.
+    rejected = [r for r in caplog.records if r.getMessage() == "stripe_webhook_rejected"]
+    assert [r.reason for r in rejected] == [
+        "missing_signature",
+        "SignatureVerificationError",
+        "SignatureVerificationError",
+    ]  # type: ignore[attr-defined]
+    secrets = [customer, "evt_forged_canary", "t=1,v1=abc", forged, forged.split("v1=")[1], payload.decode()]
+    leaked = [
+        (record.getMessage(), name)
+        for record in caplog.records
+        for name, value in vars(record).items()
+        if any(secret in str(value) for secret in secrets)
+    ]
+    assert leaked == []
 
 
 def test_a_signed_thin_delivery_is_answered_with_the_payload_style_to_choose_and_writes_nothing(
@@ -1279,6 +1669,36 @@ def test_reconcile_job_skips_customers_stripe_rejects(harness: Harness) -> None:
     assert (summary["customers"], summary["rejected"]) == (1, 1)
 
 
+RECONCILE_CRON_SECRET = "cron-secret-test_only-billing-reconcile-0123456789"  # test-only value
+SANDBOX_MODE = {"billing_mode": "sandbox", "stripe_secret_key": "sk_test_" + "o" * 24}
+
+
+@pytest.mark.parametrize(
+    ("settings", "applies"),
+    [
+        ({}, False),  # mock mode: nothing to compare with, so the job reports only
+        (SANDBOX_MODE, True),  # outside mock mode the default is to apply
+        ({**SANDBOX_MODE, "billing_reconcile_apply": False}, False),
+        ({"billing_reconcile_apply": True}, True),
+    ],
+    ids=["mock", "sandbox", "sandbox-report-only", "mock-apply"],
+)
+def test_the_scheduled_job_repairs_a_lost_cancellation_unless_it_is_set_to_only_report(
+    make_harness: Any, settings: dict[str, Any], applies: bool
+) -> None:
+    """BILL-19: the daily job is what ends Pro after a `customer.subscription.deleted` that never arrived."""
+    h = make_harness({"cron_secret": RECONCILE_CRON_SECRET, **settings})
+    customer = make_pro(h, "user_a")
+    h.billing.set_subscriptions(customer, [snapshot(customer, SubscriptionStatus.CANCELED)])  # the webhook was lost
+
+    r = h.client.get("/api/v1/jobs/reconcile-billing", headers={"Authorization": f"Bearer {RECONCILE_CRON_SECRET}"})
+
+    assert r.status_code == 200
+    assert r.json()["summary"] == {"customers": 1, "divergences": 1, "unlinked": 0, "rejected": 0, "applied": applies}
+    plan = h.client.get("/api/v1/billing/status", headers=h.login("user_a")).json()["plan"]
+    assert plan == ("free" if applies else "pro")
+
+
 def test_cli_reconcile_prints_divergences(
     harness: Harness, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1295,6 +1715,47 @@ def test_cli_reconcile_prints_divergences(
     report = json.loads(capsys.readouterr().out)
     assert report["divergences"][0]["kind"] == "differs"
     assert report["divergences"][0]["remote_status"] == "canceled"
+
+
+def test_reconcile_for_one_user_checks_and_repairs_only_that_users_customer(harness: Harness) -> None:
+    """BILL-19: `--user` narrows the run to one user's customer, and a user with no customer is checked for nothing."""
+    customer_a = make_pro(harness, "user_a")
+    customer_b = make_pro(harness, "user_b")
+    for customer in (customer_a, customer_b):
+        harness.billing.set_subscriptions(customer, [snapshot(customer, SubscriptionStatus.CANCELED)])
+    user_a = user_id_of(harness, harness.login("user_a"))
+    service = harness.container.billing.service
+
+    report = service.reconcile(user_id=user_a, apply=True)
+
+    assert report.customers_checked == 1
+    assert [(d.user_id, d.kind) for d in report.divergences] == [(user_a, "differs")]
+    assert harness.client.get("/api/v1/billing/status", headers=harness.login("user_a")).json()["plan"] == "free"
+    assert harness.client.get("/api/v1/billing/status", headers=harness.login("user_b")).json()["plan"] == "pro"
+    nobody = user_id_of(harness, harness.login("user_c"))  # signed in, never started a checkout
+    assert service.reconcile(user_id=nobody, apply=True).customers_checked == 0
+
+
+def test_cli_reconcile_with_a_user_checks_only_that_user(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import argparse
+
+    import app.bootstrap
+    from app import cli
+
+    customers = [make_pro(harness, name) for name in ("user_a", "user_b")]
+    for customer in customers:
+        harness.billing.set_subscriptions(customer, [snapshot(customer, SubscriptionStatus.CANCELED)])
+    user_b = user_id_of(harness, harness.login("user_b"))
+    monkeypatch.setattr(app.bootstrap, "bootstrap", lambda: harness.container)
+    monkeypatch.setattr(harness.container, "close", lambda: None)
+
+    assert cli.cmd_reconcile(argparse.Namespace(user=str(user_b), apply=False)) == 0
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["customers_checked"] == 1
+    assert [d["user_id"] for d in report["divergences"]] == [str(user_b)]
 
 
 def test_trialing_and_duplicate_subscriptions_are_logged(harness: Harness, caplog: pytest.LogCaptureFixture) -> None:

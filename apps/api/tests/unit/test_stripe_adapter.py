@@ -19,8 +19,16 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 import stripe
+from stripe.params import SubscriptionUpdateParams
+from stripe.params.checkout import SessionCreateParams
 
-from app.kernel.errors import DependencyUnavailableError, ForbiddenError, InvalidRequestError, NotConfiguredError
+from app.kernel.errors import (
+    DependencyUnavailableError,
+    ForbiddenError,
+    InvalidRequestError,
+    NotConfiguredError,
+    ProviderRejectedError,
+)
 from app.kernel.infrastructure.observability import JsonFormatter
 from app.kernel.request_context import request_id_var
 from app.modules.billing.adapters.stripe import StripeBillingProvider, _configuration_error
@@ -112,8 +120,31 @@ class TestRequests:
             "success_url": ["https://app.test/billing/success?session_id={CHECKOUT_SESSION_ID}"],
             "cancel_url": ["https://app.test/billing?checkout=canceled"],
             "subscription_data[metadata][app_user_id]": [str(USER)],
+            "allowed_payment_method_types[0]": ["card"],
         }
         assert request.headers["idempotency-key"] == "checkout-key-1"
+
+    def test_a_checkout_session_sends_only_parameters_the_pinned_sdk_and_api_version_accept(self) -> None:
+        """Pro follows a subscription's status, so Checkout offers cards only: a bank debit can read ``active`` before the
+        money arrives. API version 2026-09-30.endive removed ``payment_method_types`` from Checkout Session creation (a
+        request that carries it is answered 400) and added ``allowed_payment_method_types``, a filter
+        (https://docs.stripe.com/changelog/endive/2026-09-30/remove-payment-method-types-checkout-sessions).
+        A stub cannot tell a wrong name from a right one; the installed SDK's own parameter list can.
+        """
+        session = {"id": "cs_1", "object": "checkout.session", "url": "https://checkout.stripe.com/c/pay/cs_1"}
+        with stub_server(lambda req: (200, session)) as stub:
+            provider(stub.url).create_checkout_session(
+                customer_id="cus_1",
+                price_id="price_m",
+                user_id=USER,
+                success_url="https://app.test/s",
+                cancel_url="https://app.test/c",
+                idempotency_key="checkout-key-1",
+            )
+        sent = {name.split("[")[0] for name in form(stub.requests[0])}
+        assert sent <= set(SessionCreateParams.__annotations__), sent - set(SessionCreateParams.__annotations__)
+        assert "payment_method_types" not in sent
+        assert form(stub.requests[0])["allowed_payment_method_types[0]"] == ["card"]
 
     def test_a_checkout_session_without_a_url_is_an_outage(self) -> None:
         session = {"id": "cs_1", "object": "checkout.session", "url": None}
@@ -134,6 +165,35 @@ class TestRequests:
         assert (request.method, request.path) == ("POST", "/v1/customers")
         assert form(request) == {"metadata[app_user_id]": [str(USER)]}
         assert request.headers["idempotency-key"] == f"customer-create-{USER}"
+
+    def test_a_replacement_customer_has_an_idempotency_key_of_its_own(self) -> None:
+        """Stripe replays a response for 24 hours per key, a deleted customer's too: the key names the one replaced."""
+        with stub_server(lambda req: (200, {"id": "cus_new", "object": "customer"})) as stub:
+            assert provider(stub.url).create_customer(USER, replaces="cus_old") == "cus_new"
+        [request] = stub.requests
+        assert form(request) == {"metadata[app_user_id]": [str(USER)]}
+        assert request.headers["idempotency-key"] == f"customer-create-{USER}-replaces-cus_old"
+
+    def test_a_subscription_is_set_to_end_with_the_period_it_paid_for_and_nothing_else_changes(self) -> None:
+        """BILL-16: `cancel_at_period_end` is what the Update Subscription call documents for ending at the period's end
+        (https://docs.stripe.com/api/subscriptions/update, API 2026-10-28.endive; the SDK pins 2026-09-30.endive)."""
+        ending = subscription(cancel_at_period_end=True)
+        with stub_server(lambda req: (200, ending)) as stub:
+            snap = provider(stub.url).cancel_subscription_at_period_end("sub_1")
+        [request] = stub.requests
+        assert (request.method, request.path) == ("POST", "/v1/subscriptions/sub_1")
+        assert form(request) == {"cancel_at_period_end": ["true"]}
+        assert {name.split("[")[0] for name in form(request)} <= set(SubscriptionUpdateParams.__annotations__)
+        assert (snap.status, snap.cancel_at_period_end) == (SubscriptionStatus.ACTIVE, True)  # runs to the period's end
+
+    @pytest.mark.parametrize(
+        ("status", "error"),
+        [(404, InvalidRequestError), (401, ProviderRejectedError), (500, DependencyUnavailableError)],
+    )
+    def test_a_failure_to_set_the_end_is_mapped_like_every_other_call(self, status: int, error: type) -> None:
+        body = MISSING if status == 404 else {"error": {"type": "api_error", "message": "m"}}
+        with stub_server(lambda req: (status, body)) as stub, pytest.raises(error):
+            provider(stub.url).cancel_subscription_at_period_end("sub_1")
 
     def test_a_portal_session_returns_to_the_given_url(self) -> None:
         session = {
@@ -277,6 +337,37 @@ class TestErrors:
             provider(f"http://127.0.0.1:{port}").list_customer_subscriptions("cus_1")
 
 
+class TestCustomerExists:
+    """A customer Stripe deleted answers 200 with ``deleted: true``, or is missing: both mean it no longer exists."""
+
+    @pytest.mark.parametrize(
+        ("status", "body", "expected"),
+        [
+            (200, {"id": "cus_1", "object": "customer"}, True),
+            (200, {"id": "cus_1", "object": "customer", "deleted": True}, False),
+            (404, MISSING, False),
+        ],
+        ids=["live", "deleted", "missing"],
+    )
+    def test_only_a_customer_stripe_still_has_exists(self, status: int, body: dict[str, Any], expected: bool) -> None:
+        with stub_server(lambda req: (status, body)) as stub:
+            assert provider(stub.url).customer_exists("cus_1") is expected
+        assert (stub.requests[0].method, stub.requests[0].path) == ("GET", "/v1/customers/cus_1")
+
+    def test_another_rejection_is_not_a_deleted_customer(self) -> None:
+        body = {"error": {"type": "invalid_request_error", "code": "parameter_invalid_empty", "message": "m"}}
+        with stub_server(lambda req: (400, body)) as stub, pytest.raises(InvalidRequestError):
+            provider(stub.url).customer_exists("cus_1")
+
+    def test_a_rejected_key_and_an_outage_are_not_a_deleted_customer_either(self) -> None:
+        rejected = {"error": {"type": "invalid_request_error", "message": "m"}}
+        with stub_server(lambda req: (401, rejected)) as stub, pytest.raises(ProviderRejectedError):
+            provider(stub.url).customer_exists("cus_1")
+        outage = {"error": {"type": "api_error", "message": "m"}}
+        with stub_server(lambda req: (500, outage)) as stub, pytest.raises(DependencyUnavailableError):
+            provider(stub.url).customer_exists("cus_1")
+
+
 class TestCustomerAdoption:
     """Adoption links a customer to the user named in metadata this server wrote, re-read from Stripe."""
 
@@ -331,12 +422,12 @@ class TestConfigurationErrors:
         ],
         ids=lambda a: a[0],
     )
-    def test_each_is_a_503_not_configured_and_one_warning_without_stripes_message(
+    def test_each_is_a_503_not_configured_reported_as_an_error_with_one_warning_log_without_stripes_message(
         self, call: str, answer: tuple[str, tuple[int, str]], caplog: pytest.LogCaptureFixture
     ) -> None:
         status, error_type = answer[1]
         respond = lambda req: self.stripe_says(status, error_type, code="x_code", param="line_items")  # noqa: E731
-        with stub_server(respond) as stub, caplog.at_level(logging.WARNING), pytest.raises(NotConfiguredError):
+        with stub_server(respond) as stub, caplog.at_level(logging.WARNING), pytest.raises(ProviderRejectedError):
             self.CALLS[call](provider(stub.url))
         errors = [r for r in caplog.records if r.levelno >= logging.WARNING]
         assert [r.getMessage() for r in errors] == ["stripe_configuration_error"]
@@ -387,7 +478,7 @@ class TestConfigurationErrors:
         with (
             stub_server(lambda req: rejected) as stub,
             caplog.at_level(logging.WARNING),
-            pytest.raises(NotConfiguredError),
+            pytest.raises(ProviderRejectedError),
         ):
             READS[read](provider(stub.url))
         assert [r.getMessage() for r in caplog.records] == ["stripe_configuration_error"]
@@ -463,6 +554,34 @@ class TestPortalConfiguration:
         body = {"error": {"type": "invalid_request_error" if status < 500 else "api_error", "message": FAKE_KEY}}
         with stub_server(lambda req: (status, body)) as stub, pytest.raises(error) as caught:
             provider(stub.url).describe_portal()
+        assert message in caught.value.public_message  # type: ignore[attr-defined]
+        assert FAKE_KEY not in caught.value.public_message  # type: ignore[attr-defined]
+
+
+class TestSubscriptionsReadable:
+    """The Stripe check reads one subscription listing, so a key that cannot read subscriptions is found at setup."""
+
+    def test_one_listing_is_read_and_nothing_is_written(self) -> None:
+        listing = {"object": "list", "url": "/v1/subscriptions", "has_more": False, "data": []}
+        with stub_server(lambda req: (200, listing)) as stub:
+            assert provider(stub.url).check_subscriptions_readable() is None
+        [request] = stub.requests
+        assert (request.method, urlsplit(request.path).path) == ("GET", "/v1/subscriptions")
+        assert parse_qs(urlsplit(request.path).query) == {"limit": ["1"]}
+
+    @pytest.mark.parametrize(
+        ("status", "error", "message"),
+        [
+            (401, DependencyUnavailableError, "rejected the API key"),
+            (403, ForbiddenError, "cannot read Subscriptions"),
+            (400, InvalidRequestError, "list subscriptions"),
+            (500, DependencyUnavailableError, "temporarily unavailable"),
+        ],
+    )
+    def test_errors_are_specific_and_never_echo_the_key(self, status: int, error: type, message: str) -> None:
+        body = {"error": {"type": "invalid_request_error" if status < 500 else "api_error", "message": FAKE_KEY}}
+        with stub_server(lambda req: (status, body)) as stub, pytest.raises(error) as caught:
+            provider(stub.url).check_subscriptions_readable()
         assert message in caught.value.public_message  # type: ignore[attr-defined]
         assert FAKE_KEY not in caught.value.public_message  # type: ignore[attr-defined]
 

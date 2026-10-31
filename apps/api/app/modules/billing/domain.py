@@ -58,6 +58,8 @@ class BillingState(StrEnum):
     PAST_DUE = "past_due"
     PROCESSING = "processing"
     PAYMENT_REQUIRED = "payment_required"
+    # A paying subscription that no plan matches (a price of another product): not an ended plan, and not Pro.
+    UNRECOGNIZED = "unrecognized"
     CANCELED = "canceled"
 
 
@@ -154,6 +156,11 @@ def decide(
     return EntitlementDecision(Plan.FREE, "no_entitling_subscription")
 
 
+def live_subscriptions(subscriptions: Sequence[SubscriptionSnapshot], now: datetime) -> list[SubscriptionSnapshot]:
+    """The subscriptions that are not over: not final, and not past a scheduled end."""
+    return [s for s in subscriptions if s.status not in FINAL_STATUSES and not _has_ended(s, now)]
+
+
 def checkout_block(subscriptions: Sequence[SubscriptionSnapshot], now: datetime) -> CheckoutBlock | None:
     """Why a new checkout must be refused, or ``None`` when starting one cannot buy a second subscription.
 
@@ -165,8 +172,7 @@ def checkout_block(subscriptions: Sequence[SubscriptionSnapshot], now: datetime)
     """
     if entitling_subscriptions(subscriptions, now):
         return CheckoutBlock.ALREADY_PRO
-    live = [s for s in subscriptions if s.status not in FINAL_STATUSES and not _has_ended(s, now)]
-    statuses = {s.status for s in live}
+    statuses = {s.status for s in live_subscriptions(subscriptions, now)}
     if statuses & {SubscriptionStatus.UNPAID, SubscriptionStatus.PAUSED, SubscriptionStatus.PAST_DUE}:
         return CheckoutBlock.PAYMENT_REQUIRED
     if statuses & {SubscriptionStatus.ACTIVE, SubscriptionStatus.TRIALING}:
@@ -201,6 +207,13 @@ def summarize(
         else:
             state = BillingState.ACTIVE
         return BillingSummary(Plan.PRO, state, sub.plan_key, sub.current_period_end, end, block)
+
+    # Nothing entitles here, so a live subscription that is paid (or retried) has no plan; calling it ended hides it.
+    unmatched = [s for s in live_subscriptions(subscriptions, now) if s.status in _ENTITLED_STATUSES]
+    if unmatched:
+        u = _latest(unmatched)
+        state = BillingState.PAYMENT_REQUIRED if u.status is SubscriptionStatus.PAST_DUE else BillingState.UNRECOGNIZED
+        return BillingSummary(Plan.FREE, state, u.plan_key, u.current_period_end, None, block)
 
     pending = [s for s in subscriptions if s.status in _PENDING_STATES]
     if pending:

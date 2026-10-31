@@ -612,7 +612,7 @@ Since ADR-0003, the API layers below apply **inside every feature module** (`app
   - `GET /api/v1/health` is a liveness check with no dependency calls.
   - `GET /api/v1/ready` checks dependencies with bounded timeouts and never reveals configuration or secrets.
   - Semantics are adjusted to the runtime model established by DEC-001.
-- **API-07** A module declares its own error outcomes. A `DomainError` subclass declares `status`, a client error (4xx) or 503, or the class cannot be defined; the error handler maps it with no kernel change. A request transaction keeps its writes for such an error and rolls back for anything else. A 5xx `DomainError` is reported to the error tracker with its code, at most once a minute per cause per instance; `NOT_CONFIGURED` is reported at warning level.
+- **API-07** A module declares its own error outcomes. A `DomainError` subclass declares `status`, a client error (4xx) or 503, or the class cannot be defined; the error handler maps it with no kernel change. A request transaction keeps its writes for such an error and rolls back for anything else. A 5xx `DomainError` is reported to the error tracker with its code, at most once a minute per cause per instance; `NOT_CONFIGURED` is reported at warning level, except a key or request that the provider refuses (a `ProviderRejectedError`, the same answer), which is reported at error level.
 - **API-08** Every response conforms to the OpenAPI document. The committed document declares each operation's errors as `application/problem+json`, and a test session fails when any response differs from it in status, content type, or body. A test that makes a route raise an error it cannot raise is marked `contract_exempt`.
 
 ---
@@ -770,8 +770,8 @@ Clerk provides authentication. It does not replace application authorization.
 | `users` | Internal user mapped to the Clerk user | Unique Clerk user ID |
 | `organizations` | Organization tenant | Unique external organization ID (if DEC-009 option A) |
 | `organization_memberships` | User ↔ organization with role | Unique (organization, user); role check constraint; foreign keys |
-| `billing_customers` | User ↔ Stripe customer | Unique user; unique Stripe customer ID |
-| `subscriptions` | Synchronized Stripe subscription state for one user | Unique Stripe subscription ID; status check constraint; price, interval, current period end, cancel-at-period-end, last-synchronized marker |
+| `billing_customers` | User ↔ Stripe customer | Unique user; unique Stripe customer ID. The ID can be replaced after Stripe deleted the customer (BILL-04) |
+| `subscriptions` | Synchronized Stripe subscription state for one user | Unique Stripe subscription ID; status check constraint; price, interval, current period end, cancel-at-period-end, last-synchronized marker. The customer ID it ended under stays on the row, with no reference to `billing_customers` (BILL-04) |
 | `billing_events` | Webhook ledger for idempotency | Primary key is the Stripe event ID; type; object ID; received/processed timestamps; processing status. No full payload stored by default (DEC-004) |
 | `billing_checkout_sessions` | The user's open Stripe Checkout Session (BILL-07) | One row per user (primary key, removed with the user); session ID, request key, expiry; no URL. Readable and writable by the API role only |
 | `audit_log` | Administrative and security-relevant actions | Append-only for the application role. Names the impersonating actor when impersonation is allowed (ADM-03) |
@@ -837,13 +837,13 @@ Clerk provides authentication. It does not replace application authorization.
   - The server validates the plan key against an allowlist.
   - Sandbox integration tests verify that the configured prices exist and match the key mode.
   - Pro is granted by the Pro product, also from server configuration (`STRIPE_PRODUCT_PRO`, required when billing is not mocked). A configured price, or any other price of that product that bills every month or every year, maps to `pro_monthly` or `pro_yearly`; any other price has no plan. Checkout still sells only the two configured prices. The `/integrations` Stripe check fails when a configured price belongs to another product ([ADR-0004 §16](adr/0004-cycle-1-adopted-decisions.md)).
-- **BILL-23** The template never creates or changes the Customer Portal configuration (ADR-0001, DEC-010). It reads it (`describe_portal()`). The `/integrations` Stripe check fails (`portal_mismatch`) when the default configuration is missing or inactive, payment-method update or invoice history is off, cancellation is off or not at period end, switching is off or lacks `price`, or the switchable prices are not exactly the two Pro prices; a key that cannot read portal configurations gives "not checked", not a failure. A rejected API key or a rejected create call is `503 NOT_CONFIGURED` with one ERROR log, and so is a Checkout or portal URL outside `stripe.com` and the optional `STRIPE_CUSTOM_DOMAIN`. `pnpm setup:stripe` creates only the Pro product and the missing prices, in a sandbox, and never writes `.env`.
+- **BILL-23** The template never creates or changes the Customer Portal configuration (ADR-0001, DEC-010). It reads it (`describe_portal()`). The `/integrations` Stripe check also lists one page of subscriptions and fails (`permission_denied`) when the key cannot read them, because every synchronization would fail; it fails (`portal_mismatch`) when the default configuration is missing or inactive, payment-method update or invoice history is off, cancellation is off or not at period end, switching is off or lacks `price`, or the switchable prices are not exactly the two Pro prices; a key that cannot read portal configurations gives "not checked", not a failure. A rejected API key or a rejected create call is `503 NOT_CONFIGURED`, reported once at error level (details in one warning log line, `stripe_configuration_error`); a Checkout or portal URL outside `stripe.com` and the optional `STRIPE_CUSTOM_DOMAIN` is `503 NOT_CONFIGURED` with one ERROR log. `pnpm setup:stripe` creates only the Pro product and the missing prices, in a sandbox, and never writes `.env`.
 
 ### 9.3 Checkout and association
 
-- **BILL-04** Each user has one Stripe customer, created server-side and stored under unique constraints. Stripe metadata carries the internal user ID only, with no additional personal data.
+- **BILL-04** Each user has one Stripe customer, created server-side and stored under unique constraints. Stripe metadata carries the internal user ID only, with no additional personal data. When Stripe has deleted the customer, the user's next checkout replaces it: the worker points the user's link at a new customer (the Stripe idempotency key names the old one), unless a subscription of the old customer is not over, which is `409` with an ERROR log. Subscriptions that ended under the old customer keep its ID, so `subscriptions` has no reference to `billing_customers` ([ADR-0004 §20](adr/0004-cycle-1-adopted-decisions.md), migration `20261031000070`).
 - **BILL-05** The server creates Checkout Sessions for the authenticated user only.
-  - Sessions carry the internal user reference and that user's customer.
+  - Sessions carry the internal user reference and that user's customer, and offer cards only (`allowed_payment_method_types`; since API version 2026-09-30.endive `payment_method_types` is removed from this call): Pro follows the subscription's status, and a delayed bank debit reads `active` before the funds arrive (docs/limitations.md).
   - Success and cancel URLs are built from the configured application base URL, never from client input.
 - **BILL-06** The checkout success page shows a "confirming" state, polls the billing-status endpoint, and after 3 s asks the server once to re-read from Stripe (BILL-22). Redirect parameters never grant entitlement. *(Changed 2026-10-30. This is a billing behavior change that awaits the owner's approval, §23.)*
 - **BILL-07** Checkout is refused while the user has any subscription that is not over, and the user is directed to plan management instead (DEC-013 option B, adopted by delegation: [ADR-0004 §2](adr/0004-cycle-1-adopted-decisions.md)). The states: an entitled subscription (`already_pro`); `unpaid` or `paused`, or `past_due` on a price outside the catalog (`payment_required`); `trialing`, or `active` on a price outside the catalog (`subscription_exists`); `incomplete` (`payment_pending`, defensive: no plan-management button). The refusal is decided from stored state with no Stripe call (`409 CONFLICT`).
@@ -884,13 +884,14 @@ Clerk provides authentication. It does not replace application authorization.
 | `canceled` | Ended | Free | Re-subscribe through a new checkout |
 | `paused` | Paused (for example, a trial ended without a payment method) | Free | — |
 | Pending update (`pending_update` present) | A change awaits payment confirmation | Entitlement follows the current, not the pending, items | Stripe has no "pending" subscription status; "pending" refers to pending updates |
+| `active` or `past_due` on a price no plan matches (BILL-03) | Paid, but not a Pro price of `STRIPE_PRODUCT_PRO` | Free | UI says the subscription could not be matched (`unrecognized`; `past_due`: payment required) and offers Manage billing, not Upgrade; `billing_unknown_price` is logged at ERROR |
 
 ### 9.6 Plan changes, cancellation, and reactivation
 
 - **BILL-15** Free → Pro goes through Checkout. Monthly ↔ yearly switching follows DEC-010 (Customer Portal or API), including proration and effective dates. Entitlement always follows synchronized state.
-- **BILL-16** The billing adapter supports both immediate and end-of-period cancellation.
-  - End-of-period: Pro continues until `current_period_end`.
-  - Immediate: Free after synchronization.
+- **BILL-16** The billing adapter supports end-of-period cancellation (`cancel_subscription_at_period_end`: Stripe's `cancel_at_period_end`). Immediate cancellation is not built.
+  - End-of-period: Pro continues until `current_period_end`. The Customer Portal does it for the user. The API does it for a user the identity provider reports as deleted, because nobody can reach the portal after that: identity records `identity.user_deleted` with the revocation, and billing ends the user's subscriptions that are not over at the end of their period (`BILLING_ON_USER_DELETED`, default `cancel_at_period_end` outside mock mode, adopted by delegation and reversible: [ADR-0004 §21](adr/0004-cycle-1-adopted-decisions.md)). A subscription that cannot be ended is an ERROR naming the customer, and the outbox retries.
+  - Immediate: Free after synchronization. Not built; it is an adopter decision together with refunds.
 - **BILL-17** Reactivation:
   - Before period end, the scheduled cancellation is removed.
   - After a subscription is `canceled`, the user goes through a new checkout.
@@ -900,13 +901,13 @@ Clerk provides authentication. It does not replace application authorization.
 
 - **BILL-19** A reconciliation command compares billing records with Stripe for one user, or for all flagged or recently changed records.
   - It is idempotent.
-  - It defaults to dry-run and reports divergences.
-  - Applying corrections is explicit.
+  - The command defaults to dry-run and reports divergences. Applying corrections is explicit (`--apply`).
+  - The scheduled job (`reconcile-billing`, a daily cron) applies Stripe's state when `BILLING_MODE` is `sandbox` or `live`, and only reports in `mock`; `BILLING_RECONCILE_APPLY` forces either. A lost `customer.subscription.deleted` would otherwise leave Pro in place until someone ran the command (adopted by delegation, reversible: [ADR-0004 §20](adr/0004-cycle-1-adopted-decisions.md)). It is tested through `/api/v1/jobs/reconcile-billing` with the setting on and off.
   - Scheduling it (for example with a platform cron) is part of DEC-001 verification and requires approval.
 
 ### 9.8 Presentation
 
-- **BILL-20** A single billing-status endpoint feeds the paywall, settings, and navigation. The states are: Free, Pro (renews on <date>), Pro (cancels on <date>), payment issue, and processing. It carries `checkout_blocked` (BILL-07); the page offers Upgrade only when that is null.
+- **BILL-20** A single billing-status endpoint feeds the paywall, settings, and navigation. The states are: Free, Pro (renews on <date>), Pro (cancels on <date>), payment issue, processing, and a subscription no plan matches (`unrecognized`: the user pays and Pro is not active; `past_due` on such a price is a payment issue). It carries `checkout_blocked` (BILL-07); the page offers Upgrade only when that is null.
 - **BILL-21** Pro-gated APIs return `403` with `code: ENTITLEMENT_REQUIRED`, which the frontend maps to the dedicated paywall. The paywall and status presentation stay consistent across all surfaces.
 
 ### 9.9 Organization context (DEC-002)
@@ -1466,6 +1467,7 @@ Status as of 2026-10-30. Evidence: [`dev-docs/evidence/2026-10-14-local-verifica
 | BILL-02 to BILL-05, BILL-08 to BILL-11, BILL-13 to BILL-19, BILL-21 | Entitlements, checkout, webhooks, transitions, reconciliation, presentation | Unit matrix; billing integration tests; web unit tests | B, C | — | PASS (mocked Stripe API; real signature verification) |
 | BILL-06, BILL-07, BILL-12, BILL-20, BILL-22 | Success-page re-read, checkout refusal (DEC-013 option B), Snapshot payloads, `checkout_blocked`, the user's re-read | `test_billing.py`, `test_stripe_adapter.py`, `test_entitlements.py`, `test_rls.py`; web `features/billing` tests. Mutation-checked: expire before create, live re-read, retry replay, failure to close, replaced-session cleanup, users never take the last slot, a re-read counts against the Stripe-call bound, no shared bucket. [cycle 1: stripe](evidence/2026-10-30-cycle-1-fix-round.md#stripe) | B, C | The owner's approval of the behavior change (§23); DEC-006 for the sandbox run | PASS (mocked Stripe API); sandbox NOT RUN |
 | BILL-23 | Portal configuration verified read-only; a misconfigured Stripe is visible | `test_portal_policy.py`, `test_stripe_adapter.py`, `test_stripe_setup.py`. Field names come from the installed SDK's types and ran against loopback stubs only. [cycle 1: stripe](evidence/2026-10-30-cycle-1-fix-round.md#stripe) | B, E | DEC-006 | PASS (mocked); a real portal configuration, `setup:stripe`, and the restricted-key permission NOT VERIFIED |
+| BILL-16 (deleted user) | A user Clerk reports as deleted has their subscription set to end at the period's end; identity does not import billing | `test_user_deleted.py` (the event recorded once with the revocation, none for an unknown user; the handler ends the subscription, leaves a scheduled one alone, retries and alerts on a failure, and only logs with `log`), `test_stripe_adapter.py` (the exact request, every key checked against the SDK's `SubscriptionUpdateParams`), `test_billing_settings.py` (the default by mode), `test_modules.py` (the cross-module rule). Mutation-checked: no event, no subscription, a repeat, a subscription that is over, a swallowed failure, the default | B, C | DEC-004 for the rest of deletion | PASS (mocked Stripe API; loopback stub). The real call is NOT RUN; Clerk's `delete_self` default and the Dashboard step are NOT VERIFIED |
 | BILL-* sandbox | Real Stripe test-mode behavior (test clocks, portal) | `pnpm test:stripe-sandbox` (`apps/api/tests/sandbox/`, 5 tests: collects, and skips without a key); sandbox procedure in docs/integrations.md. Retry exhaustion is not covered. [cycle 1: stripe](evidence/2026-10-30-cycle-1-fix-round.md#stripe) | E | DEC-006 | NOT VERIFIED (the suite exists and has NOT been run) |
 | BILL-ORG-01 | Interim organization gating | — | C | — | RETIRED (superseded by BILL-ORG-02, ADR-0002) |
 | BILL-ORG-02 | Organization entitlement policy, DEC-002 (b) | Truth-table tests (`test_org_entitlements.py`); NT-12 | C | — | PASS |
@@ -1579,6 +1581,7 @@ The report clearly distinguishes verified behavior from assumptions, mocks, and 
   - **Awaiting owner approval:**
     - granting Pro by the Stripe product (`STRIPE_PRODUCT_PRO`, in place of the retained-price settings; a billing-related choice, §17 rule 5; [ADR-0004 §16](adr/0004-cycle-1-adopted-decisions.md)), and the defaults and choices listed under "Not fixed" in both second-review records;
     - the billing behavior change of BILL-06: the success page, the portal return, and a refused checkout ask the server to re-read from Stripe once (BILL-22);
+    - the billing behavior changes of fix round 2 (§17 rule 5; [ADR-0004 §20 and §21](adr/0004-cycle-1-adopted-decisions.md)): the scheduled job applies Stripe's state outside mock mode (BILL-19), Checkout offers cards only (BILL-05), a deleted Stripe customer is replaced at the user's next checkout (BILL-04), and a deleted user's subscription is set to end at the period's end (BILL-16);
     - the other decisions of ADR-0004, including the departure from FE-02 at the environment level under Services, and the AUTH-06 wording deviation (a sign-in link the user clicks, not an automatic redirect).
 - **Deviations:** D-001 to D-004 (§18).
 - **Remote actions:** none. No push, publication, deployment, or release has occurred. One disclosed accident: during a manual run, the real Stripe CLI ran once with a synthetic, invalid key and Stripe rejected it; nothing was created or changed.

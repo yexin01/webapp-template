@@ -16,6 +16,7 @@ from app.kernel.errors import (
     ForbiddenError,
     InvalidRequestError,
     NotConfiguredError,
+    ProviderRejectedError,
     WebhookSignatureError,
 )
 from app.modules.billing.domain import (
@@ -94,9 +95,9 @@ def to_snapshot(sub: Any, catalog: PriceCatalog) -> SubscriptionSnapshot:
     )
 
 
-def _configuration_error(exc: stripe.StripeError) -> NotConfiguredError:
-    # The NOT_CONFIGURED this returns is the error report (the kernel error handler sends it once, scrubbed).
-    # An ERROR record here would be a second event. Stripe's message text never leaves: it can quote request values.
+def _configuration_error(exc: stripe.StripeError) -> ProviderRejectedError:
+    # The error handler reports this once, scrubbed, at error level; an ERROR record here would be a second
+    # event. Stripe's message text never leaves: it can quote request values.
     logger.warning(
         "stripe_configuration_error",
         extra={
@@ -107,7 +108,7 @@ def _configuration_error(exc: stripe.StripeError) -> NotConfiguredError:
             "stripe_request_id": exc.request_id,
         },
     )
-    return NotConfiguredError("Billing is not configured correctly for this Stripe account.")
+    return ProviderRejectedError("Billing is not configured correctly for this Stripe account.")
 
 
 class StripeBillingProvider:
@@ -153,14 +154,27 @@ class StripeBillingProvider:
             logger.warning("stripe_error", extra={"error_type": type(exc).__name__, "http_status": exc.http_status})
             raise DependencyUnavailableError("Billing is temporarily unavailable.") from exc
 
-    def create_customer(self, user_id: UUID) -> str:
+    def create_customer(self, user_id: UUID, *, replaces: str | None = None) -> str:
+        # Stripe replays a response for 24 hours per idempotency key, a deleted customer's included: a replacement
+        # needs a key of its own, and a repeat of the same replacement gets the customer it made.
+        key = f"customer-create-{user_id}" if replaces is None else f"customer-create-{user_id}-replaces-{replaces}"
         customer = self._call(
             self._client.v1.customers.create,
             params={"metadata": {_METADATA_USER_KEY: str(user_id)}},
-            options={"idempotency_key": f"customer-create-{user_id}"},
+            options={"idempotency_key": key},
             server_built=True,
         )
         return str(customer.id)
+
+    def customer_exists(self, customer_id: str) -> bool:
+        try:
+            customer = self._call(self._client.v1.customers.retrieve, customer_id)
+        except InvalidRequestError as exc:
+            cause = exc.__cause__
+            if isinstance(cause, stripe.InvalidRequestError) and cause.code == "resource_missing":
+                return False
+            raise
+        return not _get(customer, "deleted")
 
     def create_checkout_session(
         self,
@@ -182,6 +196,8 @@ class StripeBillingProvider:
                 "success_url": success_url,
                 "cancel_url": cancel_url,
                 "subscription_data": {"metadata": {_METADATA_USER_KEY: str(user_id)}},
+                # Cards only: a bank debit reads "active" before the funds arrive (docs/limitations.md).
+                "allowed_payment_method_types": ["card"],
             },
             options={"idempotency_key": idempotency_key},
             server_built=True,
@@ -238,6 +254,13 @@ class StripeBillingProvider:
     def retrieve_subscription(self, subscription_id: str) -> SubscriptionSnapshot:
         return to_snapshot(self._call(self._client.v1.subscriptions.retrieve, subscription_id), self._catalog)
 
+    def cancel_subscription_at_period_end(self, subscription_id: str) -> SubscriptionSnapshot:
+        # A natural repeat: no idempotency key, because Stripe replays even a failed response for 24 hours per key.
+        updated = self._call(
+            self._client.v1.subscriptions.update, subscription_id, params={"cancel_at_period_end": True}
+        )
+        return to_snapshot(updated, self._catalog)
+
     def describe_price(self, price_id: str) -> PriceDescription:
         # Diagnostics only: unlike customer-facing calls, failures are specific
         # so that an operator can tell a bad key from a missing price.
@@ -293,6 +316,20 @@ class StripeBillingProvider:
                 str(price) for product in _get(update, "products") or [] for price in _get(product, "prices") or []
             ),
         )
+
+    def check_subscriptions_readable(self) -> None:
+        # Diagnostics only, like describe_portal. A restricted key without Subscriptions read access passes the
+        # price and portal checks, and then every synchronization fails.
+        try:
+            self._client.v1.subscriptions.list(params={"limit": 1})
+        except stripe.AuthenticationError as exc:
+            raise DependencyUnavailableError("Stripe rejected the API key.") from exc
+        except stripe.PermissionError as exc:
+            raise ForbiddenError("The Stripe API key cannot read Subscriptions.") from exc
+        except stripe.InvalidRequestError as exc:
+            raise InvalidRequestError("Stripe rejected the request to list subscriptions.") from exc
+        except stripe.StripeError as exc:
+            raise DependencyUnavailableError("Stripe is temporarily unavailable.") from exc
 
     def get_customer_app_user_id(self, customer_id: str) -> UUID | None:
         customer = self._call(self._client.v1.customers.retrieve, customer_id)

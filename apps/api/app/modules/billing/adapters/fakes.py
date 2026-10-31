@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from uuid import UUID
 
 from app.kernel.errors import InvalidRequestError
-from app.modules.billing.domain import PortalConfiguration, SubscriptionSnapshot
+from app.modules.billing.domain import PortalConfiguration, SubscriptionSnapshot, SubscriptionStatus
 from app.modules.billing.ports import CheckoutSession, PriceDescription
 
 
@@ -32,6 +33,7 @@ class InMemoryBillingProvider:
         self._prices: dict[str, PriceDescription] = {}
         self._deleted_customers: set[str] = set()
         self._portal: PortalConfiguration | Exception | None = None
+        self._subscriptions_access: Exception | None = None
         self._sessions: dict[str, _Session] = {}
         self._session_by_key: dict[str, str] = {}
         # When the sessions created from now on expire.
@@ -40,6 +42,9 @@ class InMemoryBillingProvider:
         # The arguments of each session created, so tests can check what Stripe would be asked for.
         self.checkout_requests: list[dict[str, object]] = []
         self.portal_requests: list[dict[str, object]] = []
+        self.customer_requests: list[dict[str, object]] = []
+        # The IDs of the subscriptions set to end at the period's end, in order.
+        self.cancellations: list[str] = []
         self.fail_with: Callable[[], Exception] | None = None
 
     def _maybe_fail(self, call: str) -> None:
@@ -48,12 +53,20 @@ class InMemoryBillingProvider:
         if self.fail_with is not None:
             raise self.fail_with()
 
-    def create_customer(self, user_id: UUID) -> str:
+    def create_customer(self, user_id: UUID, *, replaces: str | None = None) -> str:
         self._maybe_fail("create_customer")
-        customer_id = f"cus_mock{user_id.hex[:12]}"
+        # Like Stripe's idempotency key: the same replacement gets the customer it made, another gets a new one.
+        suffix = "" if replaces is None else f"r{hashlib.sha256(replaces.encode()).hexdigest()[:8]}"
+        customer_id = f"cus_mock{user_id.hex[:12]}{suffix}"
         with self._lock:
+            self.customer_requests.append({"user_id": user_id, "replaces": replaces})
             self._customers[customer_id] = user_id
         return customer_id
+
+    def customer_exists(self, customer_id: str) -> bool:
+        self._maybe_fail("customer_exists")
+        with self._lock:
+            return customer_id not in self._deleted_customers
 
     def create_checkout_session(
         self,
@@ -67,6 +80,8 @@ class InMemoryBillingProvider:
     ) -> CheckoutSession:
         self._maybe_fail("create_checkout_session")
         with self._lock:
+            if customer_id in self._deleted_customers:
+                raise InvalidRequestError("The billing request was rejected.")
             self.checkout_requests.append(
                 {
                     "customer_id": customer_id,
@@ -112,6 +127,8 @@ class InMemoryBillingProvider:
     def create_portal_session(self, *, customer_id: str, return_url: str) -> str:
         self._maybe_fail("create_portal_session")
         with self._lock:
+            if customer_id in self._deleted_customers:
+                raise InvalidRequestError("The billing request was rejected.")
             self.portal_requests.append({"customer_id": customer_id, "return_url": return_url})
         return return_url
 
@@ -129,6 +146,20 @@ class InMemoryBillingProvider:
                 for sub in subs:
                     if sub.stripe_subscription_id == subscription_id:
                         return sub
+        raise InvalidRequestError("The billing request was rejected.")
+
+    def cancel_subscription_at_period_end(self, subscription_id: str) -> SubscriptionSnapshot:
+        self._maybe_fail("cancel_subscription_at_period_end")
+        with self._lock:
+            for customer_id, subs in self._subscriptions.items():
+                for index, sub in enumerate(subs):
+                    if sub.stripe_subscription_id == subscription_id:
+                        if sub.status in (SubscriptionStatus.CANCELED, SubscriptionStatus.INCOMPLETE_EXPIRED):
+                            raise InvalidRequestError("The billing request was rejected.")
+                        updated = replace(sub, cancel_at_period_end=True)
+                        self._subscriptions[customer_id][index] = updated
+                        self.cancellations.append(subscription_id)
+                        return updated
         raise InvalidRequestError("The billing request was rejected.")
 
     def get_customer_app_user_id(self, customer_id: str) -> UUID | None:
@@ -152,6 +183,13 @@ class InMemoryBillingProvider:
             raise portal
         return portal
 
+    def check_subscriptions_readable(self) -> None:
+        self._maybe_fail("check_subscriptions_readable")
+        with self._lock:
+            refusal = self._subscriptions_access
+        if refusal is not None:
+            raise refusal
+
     # Test helpers -----------------------------------------------------------
 
     def open_sessions(self, user_id: UUID | None = None) -> list[str]:
@@ -173,6 +211,11 @@ class InMemoryBillingProvider:
     def set_portal(self, portal: PortalConfiguration | Exception | None) -> None:
         with self._lock:
             self._portal = portal
+
+    def refuse_subscriptions_access(self, error: Exception | None) -> None:
+        """Make the subscription listing the check performs fail, or (``None``) work again."""
+        with self._lock:
+            self._subscriptions_access = error
 
     def set_price(self, price: PriceDescription) -> None:
         with self._lock:

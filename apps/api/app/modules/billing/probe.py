@@ -1,4 +1,5 @@
-"""Diagnostics probe for Stripe: the key works, the Pro prices belong to the Pro product, the portal matches DEC-010."""
+"""Diagnostics probe for Stripe: the key works and reads subscriptions, the Pro prices belong to the Pro product,
+and the portal matches DEC-010."""
 
 from __future__ import annotations
 
@@ -53,17 +54,23 @@ class BillingProbe:
             found.append(f"{label.lower()} ({price.recurring_interval or 'one-time'}, {price.currency or '?'})")
         if len(currencies) > 1:
             problems.append("the monthly and yearly prices use different currencies")
+        access: list[str] = []
+        try:
+            self._provider.check_subscriptions_readable()
+        except ForbiddenError:
+            access.append("the API key cannot read Subscriptions, so no subscription could be synchronized")
         portal_note = "Customer Portal default configuration matches DEC-010"
         portal_issues: list[str] = []
         try:
             portal_issues = portal_problems(self._provider.describe_portal(), self._catalog)
         except ForbiddenError:
             portal_note = "Customer Portal: not checked (the API key cannot read portal configurations)"
-        if problems or portal_issues:
-            summary = "Stripe is reachable, but " + "; ".join([*problems, *portal_issues]) + "."
-            return Verdict(Outcome.FAILED, summary, "price_mismatch" if problems else "portal_mismatch")
+        if problems or portal_issues or access:
+            summary = "Stripe is reachable, but " + "; ".join([*problems, *portal_issues, *access]) + "."
+            code = "price_mismatch" if problems else "portal_mismatch" if portal_issues else "permission_denied"
+            return Verdict(Outcome.FAILED, summary, code)
         return Verdict(
             Outcome.PASSED,
-            "API key accepted; Pro prices verified: " + ", ".join(found) + f". {portal_note}."
+            "API key accepted; Pro prices verified: " + ", ".join(found) + f". Subscriptions readable. {portal_note}."
             " Webhook endpoint and signing secret: not checked (confirm with a test checkout).",
         )
