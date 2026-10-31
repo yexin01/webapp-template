@@ -12,12 +12,7 @@ Reference material is elsewhere: what each provider does and how it fails is in 
 
 Everything in this guide is a command, except the steps below. Only a person can do these: create an account, copy a key, change a dashboard-only setting, or authorize a change to a remote service. Everything else is automated: the template renames itself, creates `.env`, migrates the database, creates the Stripe product and prices, starts the Stripe listener, and verifies each integration. The commands that change a provider account or a hosted database also need the owner's authorization (A3).
 
-Each row has an ID. The step in the guide that does it carries a bold tag made of `YOU` and the same ID, so the checklist and the guide cannot drift. To check that they agree, run from the repository root (it prints nothing but the confirmation when every ID appears once in the checklist and once in the guide):
-
-```bash
-diff <(grep -ohE '\*\*\[YOU [A-Z][0-9]+\]\*\*' docs/setup.md docs/deployment.md | grep -oE '[A-Z][0-9]+' | sort) \
-     <(grep -ohE '^\| [A-Z][0-9]+ ' docs/setup.md | grep -oE '[A-Z][0-9]+' | sort) && echo "checklist and guide agree"
-```
+Each row has an ID. The step in the guide that does it carries a bold tag made of `YOU` and the same ID. `pnpm test:scripts`, which `pnpm verify` and CI run, fails and names the ID when a row has no tag, a tag has no row, or an ID appears twice on either side (`scripts/tests/manual-steps.test.mjs`).
 
 ### Needed to run locally
 
