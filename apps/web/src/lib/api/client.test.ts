@@ -505,10 +505,20 @@ describe("redirect allowlist", () => {
   it.each([
     ["https://checkout.stripe.com/c/pay/cs_test_1", true],
     ["https://billing.stripe.com/p/session/1", true],
+    ["https://stripe.com/x", true],
+    ["https://CHECKOUT.Stripe.com/x", true],
     ["/billing", true],
+    ["http://localhost:3000/billing", true],
     ["http://checkout.stripe.com/x", false],
     ["https://stripe.com.evil.example/x", false],
+    ["https://checkout.stripe.com.evil.example/x", false],
+    // A name that only ends in "stripe.com" is not a subdomain of it.
+    ["https://evilstripe.com/x", false],
+    ["https://checkout.evilstripe.com/x", false],
+    // The host is what follows the "@", not what precedes it.
+    ["https://checkout.stripe.com@evil.example/x", false],
     ["https://evil.example/?https://checkout.stripe.com", false],
+    ["http://localhost:3001/billing", false],
     ["javascript:alert(1)", false],
   ])("%s -> %s", (url, allowed) => {
     expect(isAllowedRedirect(url, origin)).toBe(allowed);
