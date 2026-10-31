@@ -16,21 +16,21 @@ Instructions for AI coding agents and for contributors. Add this project's own c
 ## Where things are
 
 - Architecture and module boundaries: [`docs/architecture.md`](docs/architecture.md) and the ADRs in [`dev-docs/adr/`](dev-docs/adr/) (ADR-0003: modular monolith). Add a feature module with `pnpm new:module <name>`; never hand-wire a module differently.
-- Setup and integrations: [`docs/integrations.md`](docs/integrations.md). Operations: [`docs/operations.md`](docs/operations.md). Personal data: [`docs/data-inventory.md`](docs/data-inventory.md).
+- Integrations: [`docs/integrations.md`](docs/integrations.md). Operations: [`docs/operations.md`](docs/operations.md). Personal data: [`docs/data-inventory.md`](docs/data-inventory.md).
 - Inherited reference: [`dev-docs/engineering-implementation-plan.md`](dev-docs/engineering-implementation-plan.md) is the specification this code was built against. Requirement IDs in code and tests (for example `ENV-02`) refer to it. Its open-decisions register, phase plan, and status describe the template's own history: they do not block work here.
 - This project's verification evidence: [`dev-docs/evidence/`](dev-docs/evidence/README.md).
 
 ## Verify before claiming anything works
 
 ```bash
-pnpm db:up                       # local PostgreSQL for API tests
-pnpm lint && pnpm typecheck
-pnpm test && pnpm test:e2e       # API + web; e2e browser/sandbox suites need E2E_SANDBOX=1
-pnpm contracts:check && pnpm test:init-template && pnpm check:placeholders && pnpm test:new-module
-pnpm test:scripts && pnpm check:links
-pnpm build:check                 # account-free build and bundle secret scan; `pnpm build` needs your Clerk keys
-pnpm security:audit && pnpm security:licenses
-pnpm check:setup                 # configuration and integration checks, with an evidence block
+pnpm db:up            # local PostgreSQL; the API tests fail without a database
+pnpm verify           # everything CI requires for the api, web, and secrets jobs, in CI's order, ending in a PASS/FAIL table
+pnpm verify:quick     # while iterating: lint, format, types, and the API and web tests
+pnpm hooks:install    # once per clone: scans staged changes for secrets before each commit (Docker is enough without gitleaks)
 ```
+
+- First-time setup, from clone to a running app, is in [`docs/setup.md`](docs/setup.md).
+- `pnpm verify --help` lists its options and `pnpm verify --list` its steps. A step that cannot run (gitleaks not installed, `--offline`, `--no-db`) is reported as SKIPPED with the reason, never as PASS.
+- `pnpm check:setup` checks the configuration and the integration probes without signing in; it contacts only the providers whose mode is `sandbox`. Commands that contact a provider or create objects in an account need the owner's authorization (rule 1): `pnpm setup:stripe`, `pnpm verify:sandbox`, `pnpm test:stripe-sandbox`, `pnpm check:setup --send-test-events`, and anything with `--allow-remote`.
 
 Record results in `dev-docs/evidence/` and label each integration as mocked, sandbox, or live. With sandbox keys in `.env`, the `/integrations` page runs a live check per service.
