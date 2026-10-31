@@ -149,9 +149,9 @@ def test_a_customer_deleted_in_stripe_is_replaced_at_the_next_checkout(
     world: Harness, admin: stripe.StripeClient, provider: StripeBillingProvider, cleanup: Cleanup
 ) -> None:
     """BILL-04 against Stripe's own objects. Stripe documents only that a deleted customer takes no further operation
-    (https://docs.stripe.com/api/customers/delete), not what listing its subscriptions answers: a rejection, or an empty
-    list. The service replaces the customer on either answer (the rejection of the listing, or of the new session), so
-    this accepts both and reports which one Stripe gave."""
+    (https://docs.stripe.com/api/customers/delete), not what listing its subscriptions or its open sessions answers: a
+    rejection, or a list. The service replaces the customer on either answer (the rejection of the listing, or of the
+    new session), so this accepts both and reports which one Stripe gave as warnings."""
     headers, user = new_user(world)
     cleanup.append(lambda: forget_customer_of(admin, world, user))
 
@@ -174,11 +174,20 @@ def test_a_customer_deleted_in_stripe_is_replaced_at_the_next_checkout(
     admin.v1.customers.delete(old)
 
     assert provider.customer_exists(old) is False
-    try:
-        listed = f"answers with {len(provider.list_customer_subscriptions(old))} subscriptions"
-    except InvalidRequestError:
-        listed = "is rejected"
-    warnings.warn(f"Listing the subscriptions of a deleted customer {listed} (BILL-04).", stacklevel=1)
+
+    def subscriptions() -> str:
+        return f"answers with {len(provider.list_customer_subscriptions(old))} of them"
+
+    def open_sessions() -> str:
+        provider.expire_open_checkout_sessions(old)
+        return "answers"
+
+    for what, read in (("subscriptions", subscriptions), ("open Checkout Sessions", open_sessions)):
+        try:
+            answer = read()
+        except InvalidRequestError:
+            answer = "is rejected"
+        warnings.warn(f"Listing the {what} of a deleted customer {answer} (BILL-04, BILL-16).", stacklevel=1)
 
     url = checkout("pro_yearly")  # the one that must not answer 400 for good
     assert url.startswith("https://checkout.stripe.com/")
