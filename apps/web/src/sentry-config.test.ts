@@ -240,6 +240,43 @@ describe.each([
   });
 });
 
+/**
+ * What each configuration gives Sentry: collect nothing personal or request-derived (the hooks above are a second
+ * line of defense), so a flag flipped to true, a data class switched on, or an option added fails here by name.
+ * Session replay is not among the options: it would need an approved privacy review.
+ */
+describe.each([
+  ["browser", "./instrumentation-client", {}],
+  ["server", "./sentry.server.config", { tracesSampleRate: 0 }],
+])("%s Sentry options (OBS-02)", (_name, module, only) => {
+  it("collects nothing personal or request-derived, and sets only the options listed here", async () => {
+    const options = await optionsOf(module);
+    expect(
+      options,
+      "an option given to Sentry.init changed, was added, or was removed: the configuration collects nothing personal or request-derived",
+    ).toEqual({
+      dsn: "https://key@o1.ingest.sentry.io/1",
+      environment: "test",
+      dataCollection: {
+        userInfo: false,
+        cookies: false,
+        httpHeaders: false,
+        httpBodies: [],
+        urlQueryParams: false,
+        graphQL: { document: false, variables: false },
+        genAI: { inputs: false, outputs: false },
+        databaseQueryData: false,
+        queues: false,
+        stackFrameVariables: false,
+      },
+      beforeSend: expect.any(Function),
+      beforeBreadcrumb: expect.any(Function),
+      beforeSendSpan: expect.any(Function),
+      ...only,
+    });
+  });
+});
+
 describe("browser tracing decision (OBS-02)", () => {
   it("leaves the sampling decision of the API's requests to the API", async () => {
     // Any defined rate, even 0, makes the browser send "not sampled" with its /api/v1 requests, and the
