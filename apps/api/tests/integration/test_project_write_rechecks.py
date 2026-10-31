@@ -72,6 +72,25 @@ def test_create_outside_a_request_scope_rechecks_the_membership(harness: Harness
     assert project_count(harness, "name", "after removal") == 0
 
 
+def test_writes_in_an_organization_deleted_after_resolution_are_not_found(
+    harness: Harness, acme: dict[str, Any]
+) -> None:
+    """organization.deleted can land between resolution and the write while a membership row remains (a refresh that
+    raced the webhook): the locked re-check counts a deleted organization as no membership (TEN-05)."""
+    ctx = harness.container.identity.resolver.organization(VerifiedIdentity("user_alice"), ACME)
+    superuser_query(
+        harness.database_url, "UPDATE app.organizations SET deleted_at = now() WHERE id = %s", (ctx.org_id,)
+    )
+    service = harness.container.projects.service
+    with pytest.raises(NotFoundError):
+        service.create(ctx, "after deletion")
+    assert project_count(harness, "name", "after deletion") == 0
+    with pytest.raises(NotFoundError):
+        service.delete(ctx, UUID(acme["project"]), "req-deleted-org")
+    assert project_count(harness, "id", acme["project"]) == 1
+    assert audit(harness) == [("project:delete", acme["project"], "denied")]
+
+
 def test_delete_refused_by_the_role_recheck_is_audited(
     harness: Harness, acme: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
