@@ -5,7 +5,13 @@ import { ApiError } from "@/lib/api/errors";
 
 import { ErrorState, LoadingState } from "./state-views";
 
-vi.mock("next/navigation", () => ({ usePathname: () => "/dashboard" }));
+const navigation = vi.hoisted(() => ({ pathname: "/dashboard" }));
+vi.mock("next/navigation", () => ({ usePathname: () => navigation.pathname }));
+
+afterEach(() => {
+  navigation.pathname = "/dashboard";
+  window.history.replaceState(null, "", "/");
+});
 
 describe("state views", () => {
   it("announces loading politely", () => {
@@ -19,6 +25,29 @@ describe("state views", () => {
     expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute(
       "href",
       "/sign-in?redirect_url=%2Fdashboard",
+    );
+  });
+
+  it("sends the visitor back to the page they were on, query string included, as a relative path (SEC-14)", () => {
+    navigation.pathname = "/billing";
+    window.history.replaceState(null, "", "/billing?from=portal");
+    render(<ErrorState error={new ApiError(401, "UNAUTHENTICATED", "x", null)} />);
+    expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute(
+      "href",
+      "/sign-in?redirect_url=%2Fbilling%3Ffrom%3Dportal",
+    );
+  });
+
+  it.each([
+    ["a path that names another origin", "//evil.example.com/dashboard", "/"],
+    ["a path with a backslash", "/\\evil.example.com", "/"],
+    ["an absolute URL", "https://evil.example.com/", "/"],
+  ])("never returns the visitor to %s", (_label, pathname, returnTo) => {
+    navigation.pathname = pathname;
+    render(<ErrorState error={new ApiError(401, "UNAUTHENTICATED", "x", null)} />);
+    expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute(
+      "href",
+      `/sign-in?redirect_url=${encodeURIComponent(returnTo)}`,
     );
   });
 

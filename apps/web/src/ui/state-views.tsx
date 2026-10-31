@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 
 import { ApiError, presentError } from "@/lib/api/errors";
+import { signInUrlFor } from "@/lib/page-access";
 
 export function LoadingState({ label = "Loading…" }: { label?: string }) {
   return (
@@ -36,7 +37,7 @@ export function ErrorState({ error, onRetry }: { error: unknown; onRetry?: () =>
         <p className="muted">Reference: {error.requestId}</p>
       )}
       {view.action === "sign-in" && (
-        <Link className="button" href={`/sign-in?redirect_url=${encodeURIComponent(pathname)}`}>
+        <Link className="button" href={signInUrlFor(pathname, window.location.search)}>
           Sign in
         </Link>
       )}
