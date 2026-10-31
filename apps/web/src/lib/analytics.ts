@@ -57,6 +57,9 @@ const PINNED_OFF = {
   disable_web_experiments: true,
 } as const;
 
+/** OBS-07: the SDK's own limit per browser (10 events a second, bursts of 100), written out so a change is a decision. */
+const RATE_LIMITING = { events_per_second: 10, events_burst_limit: 100 } as const;
+
 /**
  * The events the SDK sends on its own: a pageview on every navigation, and
  * the identification of the signed-in user. Switching a feature in PINNED_OFF
@@ -209,6 +212,7 @@ export function startAnalytics(): void {
       mask_all_text: true,
       mask_all_element_attributes: true,
       persistence: "localStorage",
+      rate_limiting: RATE_LIMITING,
       // The SDK keeps the first-seen URL and each session's entry URL in storage, where
       // before_send never reaches: token parameters (and ad click IDs) are masked there.
       // The referrers stored with them are not masked; scrubStoredReferrers strips them.
