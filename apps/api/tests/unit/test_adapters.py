@@ -148,6 +148,19 @@ class TestSubscriptionMapping:
         assert snap.current_period_end is not None
         assert int(snap.current_period_end.timestamp()) == 1_790_000_000
 
+    def test_a_pending_update_changes_nothing_until_stripe_applies_it(self) -> None:
+        """Spec 9.5: while a change awaits payment confirmation, entitlement follows the current items, not the pending."""
+        pending = {
+            "expires_at": 1_790_100_000,
+            "subscription_items": [{"price": {"id": "price_other"}, "quantity": 1}],
+        }
+        current = {"data": [{"price": {"id": "price_m"}, "current_period_end": 1_790_000_000}]}
+        snap = to_snapshot(self.raw(items=current, pending_update=pending), CATALOG)
+        assert (snap.plan_key, snap.price_id) == (PlanKey.PRO_MONTHLY, "price_m")
+        assert snap.current_period_end is not None
+        assert int(snap.current_period_end.timestamp()) == 1_790_000_000
+        assert snap == to_snapshot(self.raw(items=current), CATALOG)  # the pending update leaves no trace
+
     def test_unknown_price_is_unknown_plan(self) -> None:
         raw = self.raw(items={"data": [{"price": {"id": "price_other"}, "current_period_end": 1}]})
         assert to_snapshot(raw, CATALOG).plan_key is PlanKey.UNKNOWN
