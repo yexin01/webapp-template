@@ -1,5 +1,7 @@
 # Required checks (spec §16.1). No job in this workflow receives secrets, so
 # it is safe for pull requests from forks (CI-SEC-03).
+# It runs for every pull request and for every push to main. A push to any other
+# branch runs nothing until a pull request is opened for it.
 name: CI
 
 on:

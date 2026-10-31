@@ -1,3 +1,5 @@
+# Runs for every pull request, every push to main, and weekly. A push to any other
+# branch runs nothing until a pull request is opened for it.
 name: CodeQL
 
 on:
