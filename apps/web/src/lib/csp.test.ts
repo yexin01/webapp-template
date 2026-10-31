@@ -14,6 +14,16 @@ function directive(csp: string, name: string): string[] {
   );
 }
 
+/** Every directive of a policy with its tokens, in the order the policy lists them. */
+function policy(csp: string): Record<string, string[]> {
+  return Object.fromEntries(
+    csp.split("; ").map((entry) => {
+      const [name = "", ...tokens] = entry.split(" ");
+      return [name, tokens];
+    }),
+  );
+}
+
 describe("content security policy", () => {
   it("derives the Clerk Frontend API origin from the publishable key", () => {
     expect(clerkFrontendApiOrigin(key)).toBe("https://example-app.clerk.accounts.dev");
@@ -110,6 +120,122 @@ describe("content security policy", () => {
     expect(directive(csp, "frame-ancestors")).toEqual(["'none'"]);
     // Only connect-src takes the port wildcard.
     expect(directive(csp, "script-src").some((source) => source.includes(":*"))).toBe(false);
+  });
+
+  // The whole policy, token by token: a source added to any directive, or a directive removed, fails here.
+  // `https:` or `*` in script-src, connect-src, img-src, frame-src, default-src or style-src would let the
+  // page load from or send to any host, and a missing form-action or base-uri leaves forms and relative URLs open.
+  describe("is exactly this policy", () => {
+    const EU = {
+      posthogHost: "https://eu.i.posthog.com",
+      sentryDsn: "https://public@o123.ingest.de.sentry.io/456",
+    };
+    const PRODUCTION = {
+      "default-src": ["'self'"],
+      "script-src": [
+        "'self'",
+        "'unsafe-inline'",
+        FAPI,
+        "https://challenges.cloudflare.com",
+        "https://*.protect.clerk.com",
+      ],
+      "connect-src": ["'self'", FAPI, "https://*.protect.clerk.com:*", "https://clerk-telemetry.com"],
+      "img-src": ["'self'", "data:", "https://img.clerk.com"],
+      "style-src": ["'self'", "'unsafe-inline'"],
+      "font-src": ["'self'", "data:"],
+      "frame-src": ["https://challenges.cloudflare.com", "https://*.protect.clerk.com"],
+      "worker-src": ["'self'", "blob:"],
+      "form-action": ["'self'"],
+      "base-uri": ["'self'"],
+      "object-src": ["'none'"],
+      "frame-ancestors": ["'none'"],
+      "upgrade-insecure-requests": [],
+    };
+    // The browser is allowed to stay on http while developing, so nothing is upgraded.
+    const DEVELOPMENT = Object.fromEntries(
+      Object.entries(PRODUCTION).filter(([name]) => name !== "upgrade-insecure-requests"),
+    );
+
+    it.each([
+      ["in production without telemetry", { isDev: false }, PRODUCTION],
+      [
+        "in production with PostHog and Sentry",
+        { isDev: false, ...EU },
+        {
+          ...PRODUCTION,
+          "script-src": [
+            "'self'",
+            "'unsafe-inline'",
+            FAPI,
+            "https://challenges.cloudflare.com",
+            "https://*.protect.clerk.com",
+            "https://eu-assets.i.posthog.com",
+          ],
+          "connect-src": [
+            "'self'",
+            FAPI,
+            "https://*.protect.clerk.com:*",
+            "https://clerk-telemetry.com",
+            "https://eu.i.posthog.com",
+            "https://eu-assets.i.posthog.com",
+            "https://o123.ingest.de.sentry.io",
+          ],
+        },
+      ],
+      [
+        "in development without telemetry",
+        { isDev: true },
+        {
+          ...DEVELOPMENT,
+          "script-src": [
+            "'self'",
+            "'unsafe-inline'",
+            "'unsafe-eval'",
+            FAPI,
+            "https://challenges.cloudflare.com",
+            "https://*.protect.clerk.com",
+          ],
+          "connect-src": [
+            "'self'",
+            FAPI,
+            "https://*.protect.clerk.com:*",
+            "https://clerk-telemetry.com",
+            "ws:",
+          ],
+        },
+      ],
+      [
+        "in development with PostHog and Sentry",
+        { isDev: true, ...EU },
+        {
+          ...DEVELOPMENT,
+          "script-src": [
+            "'self'",
+            "'unsafe-inline'",
+            "'unsafe-eval'",
+            FAPI,
+            "https://challenges.cloudflare.com",
+            "https://*.protect.clerk.com",
+            "https://eu-assets.i.posthog.com",
+          ],
+          "connect-src": [
+            "'self'",
+            FAPI,
+            "https://*.protect.clerk.com:*",
+            "https://clerk-telemetry.com",
+            "https://eu.i.posthog.com",
+            "https://eu-assets.i.posthog.com",
+            "https://o123.ingest.de.sentry.io",
+            "ws:",
+          ],
+        },
+      ],
+    ])("%s", (_case, input, expected) => {
+      expect(
+        policy(buildContentSecurityPolicy({ clerkPublishableKey: key, ...input })),
+        "the policy is not the one pinned here: a source was added to or dropped from a directive, or a directive was added or removed",
+      ).toEqual(expected);
+    });
   });
 
   it("keeps inline scripts (no nonce setup) and allows eval only in development", () => {
