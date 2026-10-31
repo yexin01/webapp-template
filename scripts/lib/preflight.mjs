@@ -61,6 +61,8 @@ export function webProblems({ stdout, code }) {
 
 const CLERK_LEGACY =
   "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY and CLERK_SECRET_KEY still hold the old `replace_me` placeholders: paste your Clerk development keys, or copy the current placeholder pair from .env.example to run without an account";
+const CLERK_MISSING =
+  "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY and CLERK_SECRET_KEY are not set: paste your Clerk development keys (docs/integrations.md#clerk), or copy the current placeholder pair from .env.example to run without an account";
 const CLERK_PLACEHOLDER =
   "Clerk is not configured (the placeholder keys from .env.example), so sign-in is unavailable. Paste your Clerk development keys into .env (docs/integrations.md#clerk).";
 // Clerk's development mode sends every page request to its Frontend API first, which a placeholder key cannot reach.
@@ -84,7 +86,8 @@ export async function runPreflight({ root, env, childEnv, run = capture, require
     };
   }
   const clerk = clerkKeyState(env);
-  if (clerk === "legacy-placeholder" || clerk === "missing") problems.push(CLERK_LEGACY);
+  if (clerk === "legacy-placeholder") problems.push(CLERK_LEGACY);
+  if (clerk === "missing") problems.push(CLERK_MISSING);
   if (clerk === "placeholder") (requireClerk ? problems : warnings).push(requireClerk ? CLERK_NEEDED_FOR_PAGES : CLERK_PLACEHOLDER);
 
   const [api, web] = await Promise.all([
@@ -95,8 +98,9 @@ export async function runPreflight({ root, env, childEnv, run = capture, require
       env: { ...childEnv, NEXT_TELEMETRY_DISABLED: "1" },
     }),
   ]);
-  // The message about the old placeholders already names both keys.
-  const covered = (problem) => clerk === "legacy-placeholder" && /^(?:NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY|CLERK_SECRET_KEY) /.test(problem);
+  // The message about the old placeholders, or about missing keys, already names both keys.
+  const covered = (problem) =>
+    (clerk === "legacy-placeholder" || clerk === "missing") && /^(?:NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY|CLERK_SECRET_KEY) /.test(problem);
   for (const problem of [...apiProblems(api), ...webProblems(web)]) {
     if (!problems.includes(problem) && !covered(problem)) problems.push(problem);
   }

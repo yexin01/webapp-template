@@ -76,6 +76,19 @@ test("the older replace_me pair is a problem that says what to paste", async (t)
   assert.equal(result.problems[1], "OTHER_VAR is required");
 });
 
+test("keys that are not set at all are a problem that says they are missing, not that they hold the old placeholders", async (t) => {
+  const run = async (command) =>
+    command === "uv"
+      ? { code: 1, stdout: "", stderr: "  - NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY is required\n  - CLERK_SECRET_KEY is required\n  - OTHER_VAR is required\n", missing: false }
+      : { code: 0, stderr: "", stdout: 'WEBCONFIG:{"ok":false,"problems":["NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY is required"]}\n' };
+  const result = await runPreflight({ root: withRoot(t, ""), env: {}, childEnv: {}, run });
+  assert.equal(result.ok, false);
+  assert.equal(result.problems.length, 2);
+  assert.match(result.problems[0], /^NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY and CLERK_SECRET_KEY are not set: paste your Clerk development keys/);
+  assert.doesNotMatch(result.problems[0], /replace_me|the old/);
+  assert.equal(result.problems[1], "OTHER_VAR is required");
+});
+
 test("real keys pass without a warning, and both apps' problems are collected once each", async (t) => {
   const env = { NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: realPublishable, CLERK_SECRET_KEY: `sk_${"test"}_${"c".repeat(30)}` };
   const root = withRoot(t, "");
