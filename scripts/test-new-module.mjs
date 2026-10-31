@@ -13,7 +13,10 @@
  *   DB-07 row-level security tests;
  * - contracts: regeneration, before the tests, which compare every response
  *   with the document;
- * - web: types, lint, formatting, and the whole test suite.
+ * - web: types, lint, formatting, and the whole test suite;
+ * - each module's own API test file and web feature folder, run alone after
+ *   the whole suites: all of the template's tests pass and none is skipped
+ *   (a skip would otherwise hide behind the thousands of other tests).
  * Three modules are generated: a typical one, a one-letter name (the shortest
  * allowed), and the longest name and entity allowed.
  *
@@ -25,6 +28,11 @@
  * modules an adopter has generated. A few fixed names (logs, tmp, ...) check
  * the template's own ignore rules: they fail only when those rules hide them,
  * in the template itself, and are skipped where a copy already uses them.
+ *
+ * Stops at once, naming the files, when any exist that git neither tracks nor
+ * ignores (`git add -A` first): the generator edits tracked files to name the
+ * files it creates, so a copy without a module's new files fails with import
+ * errors that do not say why.
  *
  * Never touches the working tree: the API runs in its own virtual environment
  * inside the copy (built from uv.lock and uv's cache), and the web tools reuse
@@ -47,11 +55,18 @@ import {
 import { devNull } from "node:os";
 import path from "node:path";
 
+import { resultCounts } from "./lib/steps.mjs";
 import { ORIGINAL_SLUG } from "./lib/template.mjs";
-import { copyTrackedFiles, requireGitRepository, untrackedFiles } from "./lib/tracked-copy.mjs";
+import { copyTrackedFiles, requireGitRepository, untrackedFilesProblem } from "./lib/tracked-copy.mjs";
 
 const repo = path.resolve(import.meta.dirname, "..");
 requireGitRepository(repo, "test:new-module");
+// Before any work: see the header for why a copy without the untracked files is no use.
+const unstaged = untrackedFilesProblem(repo);
+if (unstaged) {
+  console.error(`test:new-module: ${unstaged}`);
+  process.exit(1);
+}
 const failures = [];
 const check = (ok, message) => ok || failures.push(message);
 
@@ -97,10 +112,15 @@ function run(dir, cwd, cmd, args, label, extraEnv = {}) {
   return { ...result, stdout: result.stdout ?? "" };
 }
 
-const untracked = untrackedFiles(repo);
-if (untracked.length) {
-  const shown = untracked.slice(0, 5).join(", ") + (untracked.length > 5 ? ", ..." : "");
-  console.warn(`Note: ${untracked.length} untracked file(s) are not part of the copy (git add to include): ${shown}`);
+// The whole suites have thousands of tests, so a floor on their total holds while a generated module's own
+// tests are all skipped. Each module's tests also run alone: at least the template's count must pass, none skipped.
+function ownTests(label, kind, result, minimum) {
+  const counts = resultCounts(kind, result.stdout.split("\n"));
+  const others = Object.entries(counts ?? {}).filter(([outcome, count]) => outcome !== "passed" && count > 0);
+  check(
+    counts && counts.passed >= minimum && others.length === 0,
+    `${label}: expected at least ${minimum} passed and nothing skipped or failed, got ${counts ? JSON.stringify(counts) : "no result line"}:\n${result.stdout.slice(-800)}`,
+  );
 }
 
 const dir = copyRepo();
@@ -352,6 +372,7 @@ try {
   for (const [name, args] of modules) {
     const result = gen([name, ...args]);
     check(result.status === 0, `generator failed for ${name}: ${result.stderr}`);
+    check(/^\s+\d+\. git add -A\b/m.test(result.stdout), `the next steps for ${name} do not tell the adopter to git add -A before pnpm verify`);
   }
   check(/is an existing module/.test(gen([MAIN]).stderr), "generating the same module twice was accepted");
 
@@ -376,6 +397,10 @@ try {
     passed >= modules.length * perModule && !/\b\d+ (failed|errors?)\b/.test(pytest.stdout),
     `API tests did not all run:\n${pytest.stdout.slice(-800)}`,
   );
+  for (const [name] of modules) {
+    const own = uv(["pytest", "-q", "-p", "no:cacheprovider", "-rfEs", "--require-db", `tests/integration/test_${name}.py`], `API tests of ${name}`, { STRIPE_SANDBOX_TESTS: "" });
+    ownTests(`API tests of ${name}`, "pytest", own, perModule);
+  }
 
   run(dir, "apps/web", "node_modules/.bin/tsc", ["--noEmit"], "web typecheck");
   run(dir, "apps/web", "node_modules/.bin/eslint", [".", "--max-warnings=0"], "web lint");
@@ -388,6 +413,11 @@ try {
     webPassed >= modules.length * Math.max(1, webPerModule) && !/\b\d+ failed\b/.test(vitest.stdout),
     `web tests did not all run:\n${vitest.stdout.slice(-800)}`,
   );
+  for (const [name] of modules) {
+    // The trailing slash keeps the one-letter module's filter from matching every folder that starts with it.
+    const own = run(dir, "apps/web", "node_modules/.bin/vitest", ["run", "--no-cache", "--no-fsModuleCache", `src/features/${name.replaceAll("_", "-")}/`], `web tests of ${name}`);
+    ownTests(`web tests of ${name}`, "vitest", own, Math.max(1, webPerModule));
+  }
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }
@@ -397,5 +427,5 @@ if (failures.length) {
   process.exit(1);
 }
 console.log(
-  "new:module check passed: bad, colliding, and ignored names and removed markers refused; entities derived only from clear plurals; dry run and failed writes leave nothing behind; typical, one-letter, and longest modules pass lint, types, contracts, the whole API suite (including RLS and the contract sweep) and the web lint, types, format and test suite.",
+  "new:module check passed: bad, colliding, and ignored names and removed markers refused; entities derived only from clear plurals; dry run and failed writes leave nothing behind; typical, one-letter, and longest modules pass lint, types, contracts, the whole API suite (including RLS and the contract sweep) and the web lint, types, format and test suite, and each module's own tests, run alone, all ran.",
 );

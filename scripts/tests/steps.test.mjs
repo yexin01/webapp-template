@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import test from "node:test";
 
-import { FAIL, NOT_RUN, PASS, SKIPPED, Tail, annotations, formatDuration, renderTable, runCommand, runSteps, summarizeOutput } from "../lib/steps.mjs";
+import { FAIL, NOT_RUN, PASS, SKIPPED, Tail, annotations, formatDuration, renderTable, resultCounts, runCommand, runSteps, summarizeOutput } from "../lib/steps.mjs";
 
 const sink = () => {
   const chunks = [];
@@ -40,6 +40,18 @@ test("each runner's result line is read from the end of its output", () => {
   assert.equal(summarizeOutput("node-test", ["ℹ tests 35", "ℹ suites 0", "ℹ pass 35", "ℹ fail 0"]), "35 tests, 35 pass, 0 fail");
   assert.equal(summarizeOutput("node-test", ["# tests 3", "# pass 2", "# fail 1"]), "3 tests, 2 pass, 1 fail");
   assert.equal(summarizeOutput("unknown", ["x"]), null);
+});
+
+test("the outcomes of a pytest or vitest run are counted by word, and a run with no result line has none", () => {
+  assert.deepEqual(resultCounts("pytest", ["=========== 2 failed, 1441 passed, 5 skipped, 1 warning in 224.31s (0:03:44) ==========="]), { failed: 2, passed: 1441, skipped: 5 });
+  assert.deepEqual(resultCounts("pytest", ["27 passed in 12.34s"]), { passed: 27 });
+  assert.deepEqual(resultCounts("pytest", ["27 skipped in 0.21s"]), { skipped: 27 });
+  assert.deepEqual(resultCounts("pytest", ["3 passed, 1 xfailed, 2 deselected, 1 error in 1.0s"]), { passed: 3, xfailed: 1, deselected: 2, error: 1 });
+  assert.deepEqual(resultCounts("vitest", ["      Tests  19 passed (19)"]), { passed: 19 });
+  assert.deepEqual(resultCounts("vitest", ["      Tests  1016 passed | 25 skipped | 1 todo (1042)"]), { passed: 1016, skipped: 25, todo: 1 });
+  assert.deepEqual(resultCounts("vitest", ["      Tests  19 skipped (19)"]), { skipped: 19 });
+  assert.equal(resultCounts("pytest", ["no tests ran"]), null);
+  assert.equal(resultCounts("vitest", ["Error: No test files found"]), null);
 });
 
 test("a table is as wide as its widest cell, with a rule under the header", () => {

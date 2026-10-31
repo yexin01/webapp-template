@@ -39,9 +39,10 @@ Tests never use your `.env`. Database tests create and drop their own database, 
 | Command | Purpose |
 |---|---|
 | `pnpm bootstrap` | Install JavaScript and Python dependencies from the lockfiles |
+| `pnpm api:lock` | Update `apps/api/uv.lock` after you edit a Python dependency (`pnpm install` updates the JavaScript lockfile) |
 | `pnpm dev` | Check the configuration, then run the API and web app with reload (starts the Stripe CLI listener when billing is in sandbox mode). macOS and Linux only: on Windows use WSL, or run `pnpm dev:api` and `pnpm dev:web` in separate terminals |
 | `pnpm build` | Production build of the web app; needs your Clerk publishable key |
-| `pnpm build:check` | Account-free production build (the build reads no `.env`; the scan does, to look for its values) plus the bundle secret scan: what CI runs |
+| `pnpm build:check` | Account-free production build (it gets a minimal environment, not your shell's, and reads no `.env`; the scan reads both, to look for their values) plus the bundle secret scan: what CI runs |
 | `pnpm format` | Format the web app (Prettier) and the API and perf code (Ruff) |
 | `pnpm contracts` | Regenerate the OpenAPI document and the TypeScript API types |
 | `pnpm new:module <name>` | Scaffold a tenant-scoped feature module end to end ([docs/architecture.md](docs/architecture.md#adding-a-feature)) |
@@ -100,7 +101,7 @@ Tests never use your `.env`. Database tests create and drop their own database, 
 |---|---|
 | `pnpm init-template` | Rename the template, fill in the community contacts, and create `.env` (see [docs/setup.md](docs/setup.md#steps)) |
 | `pnpm test:init-template` | Check that `init-template` leaves no original identifiers (runs on temporary copies of the tracked files; `git add` new files to include them) |
-| `pnpm test:new-module` | Check that freshly generated modules pass every gate (same copy rule) |
+| `pnpm test:new-module` | Check that freshly generated modules pass every gate, their own tests included (same copy rule, but it stops at any file git does not track yet: `git add -A` first, as after `pnpm new:module`) |
 | `pnpm check:placeholders` | Fail if `SECURITY.md` or `CODE_OF_CONDUCT.md` still has a contact placeholder after the project was renamed |
 
 ## Repository map

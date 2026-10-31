@@ -17,6 +17,15 @@ test("bootstrap installs the Python packages through api:sync, and api:sync asse
   assert.deepEqual(uvArguments(scripts["api:sync"]), ["sync", "--locked"]);
 });
 
+// uv's "run `uv lock`" has to run in apps/api, where pyproject.toml is; from the repository root it finds none.
+test("api:lock updates the lock from the repository root, in the folder where api:sync installs from it", () => {
+  assert.ok(scripts["api:lock"], "package.json has no api:lock script");
+  assert.deepEqual(uvArguments(scripts["api:lock"]), ["lock"]);
+  const folder = (script) => script.split("&&")[0].trim();
+  assert.equal(folder(scripts["api:lock"]), "cd apps/api");
+  assert.equal(folder(scripts["api:lock"]), folder(scripts["api:sync"]));
+});
+
 // uv.lock records the constraints it was made from. `--frozen` installs it whatever pyproject.toml says now;
 // `--locked` fails, so a dependency edit without `uv lock` cannot reach CI, bootstrap or a deployment unnoticed.
 test("a uv.lock that pyproject.toml has moved past fails api:sync, which --frozen would let through", { skip: !hasUv && "uv is not installed" }, (t) => {

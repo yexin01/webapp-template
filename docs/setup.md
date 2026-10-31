@@ -12,12 +12,7 @@ Reference material is elsewhere: what each provider does and how it fails is in 
 
 Everything in this guide is a command, except the steps below. Only a person can do these: create an account, copy a key, change a dashboard-only setting, or authorize a change to a remote service. Everything else is automated: the template renames itself, creates `.env`, migrates the database, creates the Stripe product and prices, starts the Stripe listener, and verifies each integration. The commands that change a provider account or a hosted database also need the owner's authorization (A3).
 
-Each row has an ID. The step in the guide that does it carries a bold tag made of `YOU` and the same ID, so the checklist and the guide cannot drift. To check that they agree, run from the repository root (it prints nothing but the confirmation when every ID appears once in the checklist and once in the guide):
-
-```bash
-diff <(grep -ohE '\*\*\[YOU [A-Z][0-9]+\]\*\*' docs/setup.md docs/deployment.md | grep -oE '[A-Z][0-9]+' | sort) \
-     <(grep -ohE '^\| [A-Z][0-9]+ ' docs/setup.md | grep -oE '[A-Z][0-9]+' | sort) && echo "checklist and guide agree"
-```
+Each row has an ID. The step in the guide that does it carries a bold tag made of `YOU` and the same ID. `pnpm test:scripts`, which `pnpm verify` and CI run, fails and names the ID when a row has no tag, a tag has no row, or an ID appears twice on either side (`scripts/tests/manual-steps.test.mjs`).
 
 ### Needed to run locally
 
@@ -129,7 +124,7 @@ You get: dependencies installed, a migrated local database, a passing test suite
    pnpm bootstrap
    ```
 
-   Success: it ends without an error, and `apps/api/.venv` exists. It installs the JavaScript packages from the lockfile (`pnpm install --frozen-lockfile`) and the Python packages with `uv sync --locked`, which also fails when `apps/api/pyproject.toml` has moved past `apps/api/uv.lock`. Otherwise: a version or lockfile error means a prerequisite is older than required, or a Python dependency was edited without `uv lock`; do not edit the lockfiles by hand.
+   Success: it ends without an error, and `apps/api/.venv` exists. It installs the JavaScript packages from the lockfile (`pnpm install --frozen-lockfile`) and the Python packages with `uv sync --locked`, which also fails when `apps/api/pyproject.toml` has moved past `apps/api/uv.lock`. Otherwise: a version error, or a lockfile-format error from pnpm, means a prerequisite is older than required. After you edit a dependency, a frozen install fails until its lockfile is updated: run `pnpm install` (`pnpm-lock.yaml`) or `pnpm api:lock` (`apps/api/uv.lock`; uv's message says `uv lock`, which must run in `apps/api`), then commit the lockfile. Do not edit the lockfiles by hand.
 
 4. **Start the database and apply the migrations.**
 

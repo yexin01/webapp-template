@@ -132,6 +132,7 @@ const healthy = (overrides = {}) => ({
   versionOf: (command) => ({ pnpm: "9.15.0", uv: "uv 0.11.1", gitleaks: "8.30.0" })[command] ?? null,
   chromiumPath: () => "/browsers/chromium",
   reachable: async () => true,
+  stagingProblem: () => null,
   ...overrides,
 });
 const stepsFor = (root, argv = []) => planSteps(catalog({ root }), options(argv));
@@ -184,6 +185,25 @@ test("each missing tool fails the preflight with its fix", async (t) => {
   assert.deepEqual(await fixes(healthy({ exists: (file) => !file.endsWith(".venv") }), ["--only", "api-types"]), ["pnpm api:sync"]);
   assert.deepEqual(await fixes(healthy({ chromiumPath: () => null }), ["--only", "e2e"]), ["pnpm --filter web exec playwright install chromium"]);
   assert.deepEqual(await fixes(healthy({ exists: (file) => file !== "/browsers/chromium" }), ["--only", "e2e"]), ["pnpm --filter web exec playwright install chromium"]);
+});
+
+test("a file git does not track yet fails the preflight of the generator check, before any step runs", async (t) => {
+  const { root } = scratchRoot(t);
+  const problem = "1 file is not in git yet (apps/api/app/modules/gadgets/__init__.py): this check copies the files git tracks, so run `git add -A` (or delete or ignore it) and run the command again.";
+  const probe = healthy({ stagingProblem: () => problem });
+  const [check, ...others] = await failedChecks(root, probe, ["--only", "new-module"]);
+  assert.equal(others.length, 0);
+  assert.match(check.name, /git tracks every file the generator check copies/);
+  assert.equal(check.fix, problem);
+  // Only the step that works on a copy of the tracked files asks.
+  assert.deepEqual(await failedChecks(root, probe, ["--only", "web-lint"]), []);
+  assert.deepEqual(await failedChecks(root, probe, ["--quick"]), []);
+  assert.deepEqual(await failedChecks(root, probe, ["--skip", "new-module"]), []);
+  assert.equal((await failedChecks(root, probe)).length, 1, "a plain run asks");
+  const run = await runMain(t, [], { probe });
+  assert.equal(run.status, 2);
+  assert.equal(run.calls.length, 0, "a step ran before the preflight stopped");
+  assert.match(run.err, /nothing was run[^]*git tracks every file[^]*fix: 1 file is not in git yet/);
 });
 
 test("a tool a skipped step would have needed is not asked for", async (t) => {

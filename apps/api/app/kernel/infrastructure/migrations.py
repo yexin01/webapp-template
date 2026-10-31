@@ -1,7 +1,8 @@
 """Ordered, checksummed SQL migrations and production-targeting guards (MIG-01, ENV-05).
 
-Applied migrations are recorded with a checksum; editing a migration after it
-has been applied is detected and refused, and so is a new migration numbered
+Applied migrations are recorded with a checksum of the file's bytes; editing a
+migration after it has been applied is detected and refused (with its own
+message when only the line endings changed), and so is a new migration numbered
 before one already applied. Concurrent runs are serialized per migration with
 a transaction-level advisory lock, which also works through a transaction-mode
 pooler, as does everything else here: no server-side prepared statements, and
@@ -159,6 +160,15 @@ def repository_file(*parts: str) -> Path:
     return REPO_ROOT.joinpath(*parts)
 
 
+def _line_endings_applied(path: Path, checksum: str) -> str | None:
+    """``"LF"`` or ``"CRLF"`` if ``path`` hashes to ``checksum`` once all its line endings are that form, else None."""
+    lf = path.read_bytes().replace(b"\r\n", b"\n")
+    for ending, text in (("LF", lf), ("CRLF", lf.replace(b"\n", b"\r\n"))):
+        if hashlib.sha256(text).hexdigest() == checksum:
+            return ending
+    return None
+
+
 def discover(directory: Path | None = None) -> list[Migration]:
     migrations: list[Migration] = []
     for path in sorted((directory or repository_file("supabase", "migrations")).glob("*.sql")):
@@ -190,6 +200,13 @@ def migrate(url: str, directory: Path | None = None) -> list[str]:
                 known = applied.get(migration.version)
                 if known is not None:
                     if known != migration.checksum:
+                        if ending := _line_endings_applied(migration.path, known):
+                            raise MigrationError(
+                                f"Migration {migration.path.name}: line endings changed since it was applied with "
+                                f"{ending} (the text is the same, so it is not a new migration). Restore the {ending} "
+                                "line endings, or set its checksum in public.app_schema_migrations to "
+                                f"{migration.checksum} to keep the new ones."
+                            )
                         raise MigrationError(
                             f"Migration {migration.path.name} was modified after being applied. "
                             "Create a new migration instead of editing an applied one."

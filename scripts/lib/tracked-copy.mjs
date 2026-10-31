@@ -4,7 +4,10 @@
  * files), with their working-tree contents. That is what CI checks out once
  * the changes are committed. Untracked files are left out, so stray scratch
  * files and editor or sync-conflict copies cannot change the result; stage a
- * new file (`git add`) to include it.
+ * new file (`git add`) to include it. A check that cannot be right without
+ * them stops first and names them (`untrackedFilesProblem`): the generator
+ * edits tracked files to point at the files it creates, so a copy without the
+ * new files fails with errors that say nothing about the cause.
  *
  * The copy never reaches back into the repository: a tracked symbolic link is
  * copied as the same relative link, and one that is absolute, that leads
@@ -110,7 +113,16 @@ export function copyTrackedFiles(repo, prefix) {
   }
 }
 
-/** Untracked, not ignored files that a copy leaves out, for a reminder to stage them. */
+/** Untracked, not ignored files that a copy leaves out. */
 export function untrackedFiles(repo) {
   return list(repo, ["ls-files", "-z", "--others", "--exclude-standard"]);
+}
+
+/** One line that names the files git does not track yet and says what to do, or null when there are none. */
+export function untrackedFilesProblem(repo) {
+  const files = untrackedFiles(repo);
+  if (!files.length) return null;
+  const shown = files.slice(0, 3).join(", ") + (files.length > 3 ? ", ..." : "");
+  const [which, them] = files.length === 1 ? ["1 file is", "it"] : [`${files.length} files are`, "them"];
+  return `${which} not in git yet (${shown}): this check copies the files git tracks, so run \`git add -A\` (or delete or ignore ${them}) and run the command again.`;
 }
