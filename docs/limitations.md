@@ -107,7 +107,7 @@ Ten findings from the architecture review were deferred, with the reason. What t
 
 - `scripts/npm-audit-bulk.mjs` audits the production tree installed on the machine it runs on, so native packages for other platforms are not checked (CI audits linux x64, which is what Vercel builds). `pnpm audit --dev` still uses the legacy endpoint.
 - Dependabot does not read the gitleaks version pins (in `ci.yml` and in the pre-commit hook), nor the Supabase image tag in `scripts/test-supabase-image.mjs`. Bump them by hand; a test keeps the two gitleaks versions equal.
-- The ESLint guards in `apps/web/eslint.guards.mjs` (including the ban on importing `posthog-js` outside `src/lib/analytics.ts`) are tested but not loaded by `eslint.config.mjs`: an owner-applied step (spec §23, step 4). Until it lands, `src/no-client-roles.test.ts`, `src/lib/page-access.test.ts` and `src/app/layout.test.tsx` carry the web fitness checks.
+- The ESLint guards in `apps/web/eslint.guards.mjs` (including the ban on importing `posthog-js` outside `src/lib/analytics.ts`) are tested but not loaded by `eslint.config.mjs`: an owner-applied step (spec §23, step 4). Until it lands, `src/no-client-roles.test.ts`, `src/lib/page-access.test.ts`, `src/app/layout.test.tsx` and `src/rendering-baseline.test.ts` carry the web fitness checks.
 - No `CODEOWNERS` file ships (SEC-12 relies on one for `supabase/migrations/` and `.github/workflows/`). Add yours.
 
 ## Follow-ups in the code
