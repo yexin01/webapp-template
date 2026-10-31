@@ -28,6 +28,7 @@ from app.modules.billing.domain import PlanKey, PriceCatalog, SubscriptionStatus
 from app.modules.identity.adapters.clerk import ClerkWebhookVerifier
 from app.modules.llm import adapters as llm_adapters
 from app.modules.llm.adapters import AnthropicProvider, OpenAIProvider
+from app.modules.llm.module import _provider
 from tests.conftest import make_settings
 
 SECRET = "whsec_test_only_not_a_real_secret_000000"
@@ -410,6 +411,65 @@ class TestLLMProviders:
 
         assert self.make(AnthropicProvider, handler).check().error_code == "timeout"
         assert seen == 1
+
+
+LLM_KEY = "llm-key-not-real-" + "k" * 12
+
+
+@pytest.fixture
+def llm_wire(monkeypatch: pytest.MonkeyPatch) -> list[httpx.Request]:
+    """Every request a provider sends. The provider is built through its own constructor, so its real base URL and
+    headers are used; only the transport underneath is replaced, so nothing reaches the network."""
+    sent: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        return httpx.Response(200, json={"id": "model-x"})
+
+    real_client = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kwargs: real_client(**kwargs, transport=httpx.MockTransport(handler)))
+    return sent
+
+
+class TestLLMProvidersOnTheWire:
+    def test_anthropic_sends_its_key_and_api_version_to_its_own_host(self, llm_wire: list[httpx.Request]) -> None:
+        provider = AnthropicProvider(api_key=LLM_KEY, model="model-x", timeout_seconds=30.0)
+        assert provider.check().ok
+        [request] = llm_wire
+        assert (request.method, str(request.url)) == ("GET", "https://api.anthropic.com/v1/models/model-x")
+        assert request.headers["x-api-key"] == LLM_KEY
+        assert request.headers["anthropic-version"] == "2023-06-01"
+        assert "authorization" not in request.headers
+
+    def test_openai_sends_its_key_as_a_bearer_token_to_its_own_host(self, llm_wire: list[httpx.Request]) -> None:
+        provider = OpenAIProvider(api_key=LLM_KEY, model="model-x", timeout_seconds=30.0)
+        assert provider.check().ok
+        [request] = llm_wire
+        assert (request.method, str(request.url)) == ("GET", "https://api.openai.com/v1/models/model-x")
+        assert request.headers["authorization"] == f"Bearer {LLM_KEY}"
+        assert "x-api-key" not in request.headers
+        assert "anthropic-version" not in request.headers
+
+    @pytest.mark.parametrize(
+        ("provider", "host", "auth_header", "expected"),
+        [
+            ("anthropic", "api.anthropic.com", "x-api-key", LLM_KEY),
+            ("openai", "api.openai.com", "authorization", f"Bearer {LLM_KEY}"),
+        ],
+        ids=["anthropic", "openai"],
+    )
+    def test_llm_provider_chooses_the_adapter_and_the_settings_reach_the_wire(
+        self, llm_wire: list[httpx.Request], provider: str, host: str, auth_header: str, expected: str
+    ) -> None:
+        """LLM_PROVIDER, LLM_API_KEY and LLM_MODEL, from the settings to the request the provider receives."""
+        settings = make_settings(llm_mode="sandbox", llm_provider=provider, llm_api_key=LLM_KEY, llm_model="model-y")
+        chosen = _provider(settings)
+        assert chosen is not None
+        assert chosen.name == provider
+        assert chosen.check().model == "model-y"
+        [request] = llm_wire
+        assert (request.url.host, request.url.path) == (host, "/v1/models/model-y")
+        assert request.headers[auth_header] == expected
 
 
 class _EventCapture(Transport):
