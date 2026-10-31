@@ -49,8 +49,8 @@ These items stay `NOT VERIFIED` until the owner authorizes a preview deployment 
 - the job routes on the platform, called by hand with `Authorization: Bearer <CRON_SECRET>`;
 - after-response outbox dispatch when the platform freezes the instance (deviation D-002).
 - whether the Next.js proxy runs inside a service (the two-minute check below);
-- that Vercel accepts the Services configuration on a real project (Services is Beta) and that the Services Framework Preset takes effect;
-- which variables the web service's server processes can read (Vercel documents the environment variables of a project as shared by its services).
+- that Vercel accepts the Services configuration on a real project (Services is Beta) and that the Services Framework Preset takes effect (whether the preset is required is an optional check: [deployment.md](../../docs/deployment.md#questions-the-first-preview-can-also-answer));
+- which variables the web service's server processes can read (Vercel documents the environment variables of a project as shared by its services; the optional check in deployment.md observes whether the API's secrets reach the web service).
 
 Vercel Cron itself invokes **production** deployments only, never previews. Verifying that it calls the job routes needs a production deployment, which is a separate authorization.
 
@@ -60,7 +60,7 @@ Whether the Next.js proxy (`apps/web/src/proxy.ts`, Clerk's `auth.protect()`) ru
 
 1. Signed out, run `curl -sI https://<preview>/dashboard`. If the preview is behind Deployment Protection, add `-H "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET"` (see the end of this file); without it Vercel answers `401` and the check says nothing.
 2. Read the status line and the `location` header:
-   - `307` with a `location` of `/sign-in?redirect_url=...`: the proxy ran inside the service. On a Clerk development instance the `location` may instead be Clerk's own handshake URL, which Clerk's middleware also produces (which of the two a plain `curl -sI` gets: NOT VERIFIED).
+   - `307` with a `location` of `/sign-in?redirect_url=...`: the proxy ran inside the service. On a Clerk development instance a browser-like request (a GET that asks for `text/html`) gets Clerk's own handshake URL instead, which Clerk's middleware also produces; a plain `curl -sI` is a HEAD request and gets `/sign-in` (the rule is read in the installed `@clerk/backend` 3.23.2; the platform's answer is NOT VERIFIED).
    - `200`: only the client page gate protects pages, and it redirects in the browser. This is acceptable.
    - Anything else (`401` from Vercel, `404`, `5xx`): fix that first.
 3. Open the preview URL in a browser, sign in, and open `/dashboard`. Staying on `/dashboard` means the origins were derived correctly. A loop between `/sign-in` and the page means the origin is not authorized: the API logs `clerk_azp_refused` with the origin to add to `CLERK_AUTHORIZED_PARTIES`. A preview on `*.vercel.app` needs Clerk development keys.

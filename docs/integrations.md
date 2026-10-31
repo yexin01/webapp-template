@@ -59,7 +59,7 @@ After filling in `.env` and running `pnpm dev`, sign in and open `/integrations`
 |---|---|---|
 | PostgreSQL | Confirms queries run as `app_api` with row-level security and the tenant context applied, and reads the login role. In preview and production a login role that could skip row-level security FAILS the check and names the fix | None |
 | Clerk | Reads your organization memberships from the Clerk Backend API (your session token was already verified) | None |
-| Stripe | Retrieves both Pro prices and checks they are active, recurring monthly and yearly, in one currency, in the right mode, and on the product `STRIPE_PRODUCT_PRO` (it names the product of a price that is on another one). Lists one page of subscriptions and fails (`permission_denied`) when the key may not read them: every synchronization would fail. Reads the Customer Portal configuration and fails (`portal_mismatch`) when it does not match [what the template expects](#stripe) | None |
+| Stripe | Retrieves both Pro prices and checks they are active, recurring monthly and yearly, in one currency, in the right mode, and on the product `STRIPE_PRODUCT_PRO` (it names the product of a price that is on another one). Lists one page of subscriptions and fails (`permission_denied`) when the key may not read them: every synchronization would fail. It does not test write access to Subscriptions, which ending a deleted user's subscription needs; its PASS text says so. Reads the Customer Portal configuration and fails (`portal_mismatch`) when it does not match [what the template expects](#stripe) | None |
 | LLM provider | Retrieves the model's metadata (no tokens generated) | None; counts toward the LLM check limits |
 | PostHog | Sends the allowlisted event `integration_test_sent` and flushes it | One event in your project |
 | Sentry | Sends a synthetic `IntegrationTestError` and flushes it | One issue in your project |
@@ -88,7 +88,7 @@ The one command after you paste sandbox keys. It runs three parts, each only whe
 | `stripe` | `pnpm test:stripe-sandbox` | `STRIPE_SECRET_KEY` is an unrestricted `sk_test_` key, both `STRIPE_PRICE_PRO_*` and `STRIPE_PRODUCT_PRO` are set, and the test database answers. `STRIPE_SANDBOX_TESTS=0` leaves it out |
 | `e2e` | `E2E_SANDBOX=1 pnpm test:e2e` | Clerk development keys, a local `DATABASE_URL` that answers (the run writes test rows), and Chromium installed |
 
-With nothing configured every part is skipped, the exit status is 0, and the record says NOT VERIFIED. A part that failed, or could not run, exits 1. `--skip <part>` leaves a part out.
+With nothing configured every part is skipped, the exit status is 0, and the record says NOT VERIFIED. A part that failed, or could not run, exits 1. `--skip <part>` leaves a part out. The command changes your accounts (a Clerk test user; Stripe customers, test clocks and subscriptions), so it is authorization A3 ([setup.md](setup.md#manual-steps-checklist)).
 
 Checks that no automated test covers, to do by hand and record:
 
@@ -151,7 +151,7 @@ Billing: Free and Pro (monthly and yearly). Subscriptions belong to individuals:
 | `STRIPE_PRICE_PRO_MONTHLY`, `STRIPE_PRICE_PRO_YEARLY` | api | `price_...`. Only these two prices are purchasable |
 | `STRIPE_PRODUCT_PRO` | api | `prod_...`. The product both prices belong to. Any monthly or yearly price of it grants Pro |
 | `STRIPE_CUSTOM_DOMAIN` | both | Your Stripe custom domain, live mode only. The API refuses any Checkout or portal URL whose host is not `stripe.com`, a subdomain of it, or this domain |
-| `BILLING_ON_USER_DELETED` | api | Unset (default): when Clerk reports `user.deleted`, Stripe is asked to end the user's subscription at the period's end, except in `mock`. `cancel_at_period_end` or `log` forces either; `log` only writes an ERROR naming the customer ([ADR-0004 §21](../dev-docs/adr/0004-cycle-1-adopted-decisions.md)) |
+| `BILLING_ON_USER_DELETED` | api | Unset (default): when Clerk reports `user.deleted`, the customer's open Checkout Sessions are expired and Stripe is asked to end the user's subscription at the period's end (one still `incomplete` is cancelled at once), except in `mock`. `cancel_at_period_end` or `log` forces either; `log` only writes an ERROR naming the customer and expires nothing ([ADR-0004 §21 and §27](../dev-docs/adr/0004-cycle-1-adopted-decisions.md)) |
 | `BILLING_RECONCILE_APPLY` | api | Unset (default): the scheduled `reconcile-billing` job applies Stripe's state when `BILLING_MODE` is `sandbox` or `live`, and only reports in `mock`. `true` or `false` forces either ([ADR-0004 §20](../dev-docs/adr/0004-cycle-1-adopted-decisions.md)) |
 
 The template creates customers, Checkout sessions and portal sessions. It never creates or changes the **Customer Portal configuration**: that stays in the Dashboard (ADR-0001, DEC-010), and the template only reads it. `pnpm setup:stripe` creates the Pro product (ID `prod_pro`) and the two prices (lookup keys `pro_monthly`, `pro_yearly`) in a sandbox only: it refuses any key but `sk_test_` and any `APP_ENV` but `local` or `test`, finds what exists and creates only what is missing, stops with nothing created if an existing price differs in amount, currency, interval or state, or if the two prices belong to different products, prints the three IDs to set (`STRIPE_PRICE_PRO_MONTHLY`, `STRIPE_PRICE_PRO_YEARLY`, `STRIPE_PRODUCT_PRO`), and never writes `.env` or prints the key. Live products and prices are created in the Dashboard, and a live product has its own ID.
@@ -197,7 +197,7 @@ The template creates customers, Checkout sessions and portal sessions. It never 
 | `STRIPE_PRODUCT_PRO is required and must be a Stripe product ID` | `BILLING_MODE` is not `mock` and the product is unset or not a `prod_` ID | Paste the `STRIPE_PRODUCT_PRO` line that `pnpm setup:stripe` prints, or the ID of the product both prices belong to |
 | The Stripe check fails with `price_mismatch`: "Monthly price belongs to product `prod_X`, but STRIPE_PRODUCT_PRO is `prod_Y`" | A configured price is on another product than `STRIPE_PRODUCT_PRO` | If `prod_X` is your Pro product, set `STRIPE_PRODUCT_PRO=prod_X`. Otherwise configure a price of the Pro product |
 | A user pays and stays Free; the log has `billing_unknown_price`; the billing page says "We could not match your subscription to a plan" | The price is neither configured nor a monthly or yearly price of the Pro product (for example, it is on another product, or bills every three months) | Fix the product or the price in Stripe, then run `pnpm billing:reconcile --apply` |
-| `STRIPE_WEBHOOK_SECRET is required and must start with whsec_` | `BILLING_MODE` is not `mock` and the secret is unset | Locally: `stripe listen --print-secret`, or install the Stripe CLI so `pnpm dev` supplies it |
+| `STRIPE_WEBHOOK_SECRET is required and must start with whsec_` | `BILLING_MODE` is not `mock` and the secret is unset | Locally: `stripe listen --print-secret`, or install the Stripe CLI so `pnpm dev` supplies it, or copy a destination's secret from the Dashboard ([setup.md](setup.md#stripe)) |
 
 Test cards and clocks: [Stripe: testing](https://docs.stripe.com/testing).
 
