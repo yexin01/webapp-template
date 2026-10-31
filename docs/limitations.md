@@ -100,7 +100,7 @@ Ten findings from the architecture review were deferred, with the reason. What t
 
 - `pnpm dev` is macOS and Linux only (WSL on Windows). Its API health probe is fixed to `127.0.0.1:8000` with a 60 s limit (`API_START_TIMEOUT_MS` in `scripts/dev.mjs`).
 - `pnpm check:setup` does not detect a Clerk publishable key and secret key from two instances, and does not check webhook endpoints.
-- `CLERK_JWT_KEY` is an API setting. The web app validates its format but uses nothing from it: `@clerk/nextjs` 7.9.15 does not read it.
+- `@clerk/nextjs` 7.9.15 reads no `CLERK_JWT_KEY`, so `next.config.ts` passes it to the proxy as `clerkMiddleware`'s `jwtKey` option. The SDK builds the verification key from the PEM by string surgery, so only a 2048-bit RSA key (what Clerk issues) verifies there. The API accepts any RSA key: another size would verify in the API and fail every token in the proxy.
 - `scripts/templates/adopter/AGENTS.md` can drift from `AGENTS.md`; keep them in step.
 
 **CI**
@@ -114,17 +114,16 @@ Ten findings from the architecture review were deferred, with the reason. What t
 
 Found while writing these documents or listed in the package notes, and not done. They need a code change:
 
-- Run `check-bundle-secrets.mjs --require-values` inside every Vercel build (chain it into the web `build` script), so the web service is checked with the real values. Today it runs in `pnpm test:vercel-build` with canary values.
+- Run `check-bundle-secrets.mjs --require-values` inside every Vercel build (chain `&& node ../../scripts/check-bundle-secrets.mjs --require-values` onto the web `build` script), so the web service is checked with the real values. Today it runs in `pnpm test:vercel-build` with canary values. Not built: the local `vercel build` runs that script with the repository around `apps/web` and `VERCEL=1` (checked), but the platform's service build is unverified, and a chain that cannot find `scripts/` fails every deployment. Add it once the first preview shows `scripts/` in the web build ([ADR-0004 §18](../dev-docs/adr/0004-cycle-1-adopted-decisions.md)).
 - A per-user limit on ordinary writes (creating and deleting projects, and every generated module), and a guard against concurrent or repeated runs of a job through `GET /api/v1/jobs/{name}`: a leaked `CRON_SECRET` can start `reconcile-billing` repeatedly, at up to `BILLING_RECONCILE_BATCH_SIZE` Stripe calls a run. Until then: the WAF rule (step D7) and rotating `CRON_SECRET`.
 - Wire `apps/web/eslint.guards.mjs` into `eslint.config.mjs` (a lint-config edit that an owner applies).
-- A validator message for driver-only URL parameters that names the parameter instead of blaming percent-encoding.
+- A message for a rejected database URL that says which part is wrong. Today it lists both likely causes (the password's encoding, a driver-only query parameter), because libpq's reason quotes the URL.
 - `scripts/init-template.mjs` and the messages of `apps/api/app/doctor.py` and `scripts/lib/preflight.mjs` still say "see docs/integrations.md"; the setup guide is [setup.md](setup.md) (the `#clerk` anchor they use is kept).
 - A Clerk key-pair check in `IdentityProbe` (compare `GET /v1/jwks` with `<issuer>/.well-known/jwks.json`); a doctor check for stray env files; an optional pass-through proxy so `pnpm dev` runs without Clerk keys; refusing the placeholder pair when `APP_ENV=preview`.
 - A test that the docs list exactly `SYNC_EVENT_TYPES`, and a `stripe-events` command to feed `stripe listen --events`; a webhook-endpoint check and a "last verified webhook" line on `/integrations`.
 - A second, worker-only login role and pool; detection of `supabase_migrations.schema_migrations` in the runner; a no-transaction migration mode for `CREATE INDEX CONCURRENTLY`.
 - Naming unmatched transactions `unmatched` and dropping `request.url` for them (OBS-07).
 - An `ErrorCode` enum with exhaustive web typing.
-- A web-side `CLERK_JWT_KEY` wired into the proxy (it needs a path through `next.config.ts`, because `proxy.ts` may not read `CLERK_*` variables).
 
 ## What the template deliberately does not do
 

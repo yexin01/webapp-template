@@ -57,6 +57,8 @@ def test_the_shipped_defaults_pass_the_database_and_skip_everything_else(
     assert "| PostgreSQL | local | PASS | PASS |" in out
     assert "| Stripe | mocked | SKIPPED | NOT VERIFIED |" in out
     assert "Manual steps still needed:" in out
+    assert "Membership optional (Personal accounts)" in out
+    assert "(docs/setup.md#clerk)" in out
     assert "To keep this result as evidence" in out
 
 

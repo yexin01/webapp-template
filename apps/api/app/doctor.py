@@ -241,15 +241,16 @@ def manual_steps(settings: Settings, results: Sequence[CheckResult], *, send_tes
         )
     if clerk_not_configured(settings):
         steps.append(
-            "Clerk: create a free development instance at https://dashboard.clerk.com, enable Organizations, and paste "
-            "its publishable and secret keys into NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY and CLERK_SECRET_KEY in .env "
-            "(docs/integrations.md#clerk)."
+            "Clerk: create a free development instance at https://dashboard.clerk.com, enable Organizations with "
+            "Membership optional (Personal accounts), and paste its publishable and secret keys into "
+            "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY and CLERK_SECRET_KEY in .env (docs/setup.md#clerk)."
         )
     else:
         steps.append(
-            "Clerk (not checkable by API): Organizations enabled in the dashboard, and CLERK_AUTHORIZED_PARTIES "
-            "listing every origin that serves the web app. Then sign in and select 'Run all server checks' on "
-            "/integrations, which also verifies session tokens."
+            "Clerk (not checkable by API): Organizations enabled with Membership optional (Personal accounts) in the "
+            "dashboard (docs/setup.md#clerk), and CLERK_AUTHORIZED_PARTIES listing every origin that serves the web "
+            "app. Then sign in and select 'Run all server checks' on /integrations, which also verifies session "
+            "tokens."
         )
         if settings.clerk_webhook_signing_secret is None:
             steps.append(

@@ -77,7 +77,7 @@ A preview with its own Clerk instance and secrets therefore fails `auth_rejectio
 
 1. Generate a key set by hand, in a directory outside the repository: `uv run --project apps/api --frozen python proofs/dec-001/proof.py env --out <dir>/proof.env --keys <dir>/keys --port 3910 --database-url postgresql://unused@127.0.0.1:1/unused`. The port only names the authorized party, and the database URL is not used: the preview keeps its own `DATABASE_URL`.
 2. Deploy the preview from a dedicated proof branch. Set these five values as Preview variables scoped to that branch only (Vercel lets a Preview variable apply to a single Git branch), never to all previews or to Production:
-   - `CLERK_JWT_KEY`: the contents of `<dir>/keys/jwt-public.pem`, pasted as they are, on several lines. Do not copy it from `proof.env`, which holds it on one line, in quotes, ending in a `\n` escape: the web app's configuration check, which `next build` runs, refuses that form with or without the quotes;
+   - `CLERK_JWT_KEY`: the contents of `<dir>/keys/jwt-public.pem`, pasted as they are, on several lines (`proof.env` holds it on one line with `\n` escapes, which both apps accept too);
    - `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` (the API derives the token issuer from it), `CLERK_AUTHORIZED_PARTIES`, `CRON_SECRET`, and `STRIPE_WEBHOOK_SECRET`: the values in `<dir>/proof.env`.
 
    The API and the web build refuse a preview that lacks the next three items (the web build reads the origin variables when it is built, so set them before you deploy, and deploy again after changing either):

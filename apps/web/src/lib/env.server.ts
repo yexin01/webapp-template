@@ -62,6 +62,11 @@ export type ServerEnv = Readonly<{
    * module verifies against, by the same rules. Empty only under APP_ENV=test, where no Clerk instance exists.
    */
   clerkAuthorizedParties: readonly string[];
+  /**
+   * The Clerk instance's PEM public key (CLERK_JWT_KEY), with real line breaks; empty when unset. With it the
+   * proxy verifies session tokens without fetching Clerk's key set, as the API does.
+   */
+  clerkJwtKey: string;
   /** The Stripe custom domain of Checkout and the Customer Portal, if the account has one. */
   stripeCustomDomain: string | null;
   analytics: Readonly<{ mode: TelemetryMode; enabled: boolean; host: string }>;
@@ -246,6 +251,14 @@ function originSettings(
   return { problems, parties };
 }
 
+/**
+ * CLERK_JWT_KEY as a PEM. Pasted into a one-line variable it carries `\n` escapes instead of line breaks, and
+ * possibly one after the last line, as the API accepts them.
+ */
+function clerkJwtKey(source: (name: string) => string | undefined): string {
+  return source("CLERK_JWT_KEY")?.replaceAll("\\n", "\n").trim() ?? "";
+}
+
 /** ENV-04 for Clerk: live keys only in production, and only live keys there. */
 function clerkProblems(source: (name: string) => string | undefined, appEnv: AppEnv, serving: boolean) {
   const problems: string[] = [];
@@ -262,7 +275,7 @@ function clerkProblems(source: (name: string) => string | undefined, appEnv: App
       problems.push(`${name} is a live key; live keys are only allowed when APP_ENV=production`);
     if (!live && production) problems.push(`${name} must be a live key when APP_ENV=production`);
   }
-  const jwtKey = source("CLERK_JWT_KEY")?.replaceAll("\\n", "\n");
+  const jwtKey = clerkJwtKey(source);
   if (jwtKey && !/^-----BEGIN PUBLIC KEY-----\s[\s\S]+\s-----END PUBLIC KEY-----$/.test(jwtKey)) {
     problems.push("CLERK_JWT_KEY must be a PEM-encoded public key");
   }
@@ -380,6 +393,7 @@ export function loadServerEnv(env: Source, options: LoadOptions): ServerEnv {
     apiOrigin,
     clerkPublishableKey: source("NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY") ?? "",
     clerkAuthorizedParties: Object.freeze(origins.parties),
+    clerkJwtKey: clerkJwtKey(source),
     stripeCustomDomain,
     analytics: Object.freeze({ mode: analyticsMode, enabled: analyticsEnabled, host: posthogHost }),
     errorReporting: Object.freeze({

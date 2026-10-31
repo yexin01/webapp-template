@@ -3,9 +3,10 @@
  * Account-free production build plus the bundle secret scan (ENV-07): what CI
  * runs, and what a fresh clone can run before it has any Clerk keys.
  *
- * The build gets a placeholder Clerk publishable key (the one .env.example ships)
- * and a synthetic secret key made up for this run, so the scan proves the one
- * server-only value the web build can see stays out of the bundle. Telemetry is
+ * The build gets a placeholder Clerk publishable key (the one .env.example ships),
+ * a synthetic secret key and a synthetic public key (CLERK_JWT_KEY, which the
+ * proxy bundle inlines) made up for this run, so the scan proves the server-only
+ * values the web build can see stay out of the browser bundle. Telemetry is
  * off and APP_ENV is local whatever .env says. Nothing is read from or written to
  * .env, and no value is printed. The result is a scan-only build, not a
  * deployable one: `pnpm build` is the build that needs your own Clerk keys.
@@ -13,7 +14,7 @@
  *   pnpm build:check
  */
 import { spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { generateKeyPairSync, randomBytes } from "node:crypto";
 import path from "node:path";
 
 import { PLACEHOLDER_PUBLISHABLE_KEY } from "./lib/clerk.mjs";
@@ -24,7 +25,7 @@ const env = {
   APP_ENV: "local",
   ANALYTICS_MODE: "disabled",
   ERROR_REPORTING_MODE: "disabled",
-  CLERK_JWT_KEY: "",
+  CLERK_JWT_KEY: generateKeyPairSync("rsa", { modulusLength: 2048 }).publicKey.export({ type: "spki", format: "pem" }),
   NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: PLACEHOLDER_PUBLISHABLE_KEY,
   CLERK_SECRET_KEY: `sk_test_${randomBytes(24).toString("hex")}`,
 };

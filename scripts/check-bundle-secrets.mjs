@@ -146,9 +146,22 @@ function serverOnlyValues(envText, environment) {
   for (const name of SERVER_ONLY_NAMES) if (environment[name]) values.push([name, environment[name].trim()]);
   for (const [name, value] of [...values]) {
     if (URL_NAMES.includes(name)) for (const password of urlPasswords(value)) values.push([name, password]);
+    for (const line of pemLines(value)) values.push([name, line]);
   }
   // Ignore empty and very short values to avoid meaningless matches.
   return values.filter(([, value]) => value.length >= 12);
+}
+
+/**
+ * The base64 lines of a PEM value (CLERK_JWT_KEY). A bundle holds a multi-line value as one string with its
+ * line breaks escaped, so the whole value never matches; each line does. A one-line value writes the breaks as `\n`.
+ */
+function pemLines(value) {
+  if (!value.includes("-----BEGIN ")) return [];
+  return value
+    .split(/\r?\n|\\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("-----"));
 }
 
 /**
@@ -166,17 +179,17 @@ export function comparisonProblem(secrets, required) {
  * @returns findings, each naming a file and a variable or pattern, never a value
  */
 export function scan(nextDir, secrets) {
-  const findings = [];
+  const findings = new Set(); // a value compared in several parts (a PEM's lines) is one finding per file
   for (const { dir, include } of TARGETS) {
     if (!isDirectory(path.join(nextDir, dir))) continue;
     for (const file of files(path.join(nextDir, dir), include)) {
       const text = readFileSync(file, "utf8");
       const where = path.relative(root, file);
-      for (const [name, value] of secrets) if (text.includes(value)) findings.push(`${where}: value of ${name}`);
-      for (const pattern of SECRET_PATTERNS) if (pattern.test(text)) findings.push(`${where}: matches ${pattern}`);
+      for (const [name, value] of secrets) if (text.includes(value)) findings.add(`${where}: value of ${name}`);
+      for (const pattern of SECRET_PATTERNS) if (pattern.test(text)) findings.add(`${where}: matches ${pattern}`);
     }
   }
-  return findings;
+  return [...findings];
 }
 
 function readEnvFile() {
@@ -210,6 +223,7 @@ function selfTest() {
     const webhookSecret = `${token(16)}#${token(16)}`;
     const migrationPassword = token(24);
     const encodedPassword = `${token(10)}@${token(10)}/${token(4)}`;
+    const publicKey = ["-----BEGIN PUBLIC KEY-----", token(64), token(64), token(40), "-----END PUBLIC KEY-----"];
     const envText = [
       `export CRON_SECRET=${cronSecret}   # set by the operator`,
       `LLM_API_KEY="${llmKey}"`,
@@ -227,6 +241,8 @@ function selfTest() {
       // Only the password of a connection URL reaches the bundle, as written or decoded.
       "value of MIGRATION_DATABASE_URL": migrationPassword,
       "value of DATABASE_URL ": encodedPassword,
+      // A bundle holds a PEM on one line with escaped breaks (or on several, in prerendered output).
+      "value of CLERK_JWT_KEY": publicKey.join("\n"),
       "sk-ant-": `sk-${"ant"}-api03-${token(40)}`,
       "sk-proj-": `sk-${"proj"}-${token(40)}`,
       sntrys_: `${"sntrys"}_${token(40)}`,
@@ -239,6 +255,7 @@ function selfTest() {
       STRIPE_SECRET_KEY: planted["value of STRIPE_SECRET_KEY"],
       MIGRATION_DATABASE_URL: `postgresql://postgres.ref:${migrationPassword}@pooler.example.internal:5432/postgres`,
       DATABASE_URL: `postgresql://app_login.ref:${encodeURIComponent(encodedPassword)}@pooler.example.internal/postgres`,
+      CLERK_JWT_KEY: publicKey.join("\n"),
     });
 
     writeFileSync(path.join(staticDir, "chunks", "clean.js"), 'console.log("process.env.CLERK_SECRET_KEY");\n');

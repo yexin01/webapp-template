@@ -61,7 +61,7 @@ Legend: **web** = the Next.js service, **api** = the Python service. *Baked* = f
 |---|---|---|---|---|
 | `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` (API alias `CLERK_PUBLISHABLE_KEY`) | web, api; baked | public | `pk_test_` of the development instance | `pk_live_` of the production instance |
 | `CLERK_SECRET_KEY` | web (proxy; required at build on Vercel), api | secret | `sk_test_` | `sk_live_` |
-| `CLERK_JWT_KEY` | api (web checks the format) | config | Empty | Empty, or the production instance's PEM |
+| `CLERK_JWT_KEY` | web (proxy), api; baked | config | Empty | Empty, or the production instance's PEM |
 | `CLERK_WEBHOOK_SIGNING_SECRET` | api | secret | The Preview endpoint's secret | The Production endpoint's secret |
 | `CLERK_ALLOW_IMPERSONATION` | api | config | Leave unset | Leave unset |
 
@@ -205,7 +205,7 @@ Go-live is a sequence of steps that need your accounts. Do them in this order; t
 3. Add exactly the DNS records the Domains page shows. Propagation can take up to 48 hours. On Cloudflare, set the record for the Frontend API subdomain to "DNS only" so it is not proxied. When every record verifies, a **Deploy certificates** button appears: select it. To check propagation from a terminal, query a record with `dig +short CNAME <name>` (the Frontend API record is usually `clerk.<your-domain>`; the Domains page shows the exact names).
 4. Re-enter what does not copy over: "SSO connections, Integrations, and Paths settings do not copy over". Set Paths so sign-in and sign-up live on your application domain at `/sign-in` and `/sign-up`. Create your own OAuth client ID and secret for each social provider you enable ("In production, these are not secure and you will need to provide your own").
 5. Create the production webhook endpoint: `https://<your-domain>/api/v1/webhooks/clerk`, with the five events in [integrations.md](integrations.md#clerk), and put its signing secret in `CLERK_WEBHOOK_SIGNING_SECRET` (Production). Without it, membership revocation falls back to the 300 s bound.
-6. Set in the Production scope: `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` (`pk_live_`), `CLERK_SECRET_KEY` (`sk_live_`), `CLERK_AUTHORIZED_PARTIES` (every production origin), `CLERK_WEBHOOK_SIGNING_SECRET`, and `CLERK_JWT_KEY` empty or the production instance's PEM (a development PEM fails every token). Previews keep the development keys. Redeploy: the publishable key and the CSP are fixed at build time. Never write production keys into a repository `.env`.
+6. Set in the Production scope: `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` (`pk_live_`), `CLERK_SECRET_KEY` (`sk_live_`), `CLERK_AUTHORIZED_PARTIES` (every production origin), `CLERK_WEBHOOK_SIGNING_SECRET`, and `CLERK_JWT_KEY` empty or the production instance's PEM (a development PEM fails every token). Previews keep the development keys. Redeploy: the publishable key, `CLERK_JWT_KEY` and the CSP are fixed at build time. Never write production keys into a repository `.env`.
 7. Sign up in production, and put that user ID in `DIAGNOSTICS_OPERATOR_IDS` (user IDs differ per instance).
 
 ### Stripe live mode

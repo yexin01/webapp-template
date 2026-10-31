@@ -15,12 +15,16 @@ beforeAll(() => {
 });
 afterAll(() => vi.unstubAllGlobals());
 
-/** `parties` is what next.config.ts passes down: the origins a session token may have been issued for. */
-async function loadProxy(parties?: string) {
+/**
+ * What next.config.ts passes down: `parties`, the origins a session token may have been issued for, and
+ * `jwtKey`, the instance's PEM public key.
+ */
+async function loadProxy(parties?: string, jwtKey?: string) {
   vi.resetModules();
   vi.stubEnv("NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY", publishableKey);
   vi.stubEnv("CLERK_SECRET_KEY", secretKey);
   vi.stubEnv("NEXT_PUBLIC_CLERK_AUTHORIZED_PARTIES", parties);
+  vi.stubEnv("NEXT_PUBLIC_CLERK_JWT_KEY", jwtKey);
   return import("./proxy");
 }
 
@@ -86,50 +90,49 @@ describe("proxy page access", () => {
   );
 });
 
-describe("proxy authorized parties", () => {
-  const event = {} as unknown as NextFetchEvent;
-  // Real Clerk verification, with a throwaway key pair: the proxy fetches the signing keys from Clerk's
-  // backend API (stubbed below), checks the signature, and then the token's azp claim against the parties.
-  const keys = generateKeyPairSync("rsa", { modulusLength: 2048 });
-  const jwks = {
-    keys: [{ ...keys.publicKey.export({ format: "jwk" }), kid: "ins_test", alg: "RS256", use: "sig" }],
-  };
+// Real Clerk verification, with throwaway key pairs: the proxy gets the signing key (from Clerk's backend API, stubbed
+// below, or from CLERK_JWT_KEY), checks the signature, and then the token's azp claim against the parties.
+const keys = generateKeyPairSync("rsa", { modulusLength: 2048 });
+type KeyPair = typeof keys;
+const event = {} as unknown as NextFetchEvent;
 
-  beforeAll(() => {
-    vi.stubGlobal("fetch", async () => Response.json(jwks));
+const publicPem = (pair: KeyPair) => pair.publicKey.export({ type: "spki", format: "pem" }).toString();
+const keySet = (pair: KeyPair, kid: string) => ({
+  keys: [{ ...pair.publicKey.export({ format: "jwk" }), kid, alg: "RS256", use: "sig" }],
+});
+
+/** A session token as Clerk issues it, signed by `pair` as key `kid`; `azp` is the page it was issued to. */
+function sessionToken(azp: string, pair: KeyPair = keys, kid = "ins_test") {
+  const encode = (value: object) => Buffer.from(JSON.stringify(value)).toString("base64url");
+  const now = Math.floor(Date.now() / 1000);
+  const unsigned = [
+    encode({ alg: "RS256", typ: "JWT", kid }),
+    encode({ sub: "user_a", sid: "sess_a", azp, iat: now - 5, nbf: now - 5, exp: now + 300 }),
+  ].join(".");
+  return `${unsigned}.${createSign("RSA-SHA256").update(unsigned).sign(pair.privateKey).toString("base64url")}`;
+}
+
+/** A signed-in visitor's document request for a protected page, with `token`. */
+async function open(proxy: Awaited<ReturnType<typeof loadProxy>>["default"], token: string) {
+  const request = new NextRequest("https://app.example.com/dashboard", {
+    headers: { "sec-fetch-dest": "document", accept: "text/html", authorization: `Bearer ${token}` },
   });
+  const response = await proxy(request, event);
+  if (!response) throw new Error("the proxy returned no response");
+  return response;
+}
 
-  /** A session token as Clerk issues it; `azp` is the page it was issued to. */
-  function sessionToken(azp: string) {
-    const encode = (value: object) => Buffer.from(JSON.stringify(value)).toString("base64url");
-    const now = Math.floor(Date.now() / 1000);
-    const unsigned = [
-      encode({ alg: "RS256", typ: "JWT", kid: "ins_test" }),
-      encode({ sub: "user_a", sid: "sess_a", azp, iat: now - 5, nbf: now - 5, exp: now + 300 }),
-    ].join(".");
-    return `${unsigned}.${createSign("RSA-SHA256").update(unsigned).sign(keys.privateKey).toString("base64url")}`;
-  }
-
-  /** A signed-in visitor's document request for a protected page, with a token issued to `azp`. */
-  async function open(proxy: Awaited<ReturnType<typeof loadProxy>>["default"], azp: string) {
-    const request = new NextRequest("https://app.example.com/dashboard", {
-      headers: {
-        "sec-fetch-dest": "document",
-        accept: "text/html",
-        authorization: `Bearer ${sessionToken(azp)}`,
-      },
-    });
-    const response = await proxy(request, event);
-    if (!response) throw new Error("the proxy returned no response");
-    return response;
-  }
+describe("proxy authorized parties", () => {
+  beforeAll(() => {
+    vi.stubGlobal("fetch", async () => Response.json(keySet(keys, "ins_test")));
+  });
 
   const LISTED = ["https://app.example.com", "https://preview.example.com"];
 
   it("opens a protected page for a session issued to any listed page", { timeout: 30_000 }, async () => {
     const { default: proxy } = await loadProxy(LISTED.join(","));
     for (const azp of LISTED) {
-      const response = await open(proxy, azp);
+      const response = await open(proxy, sessionToken(azp));
       expect(response.status, azp).toBe(200);
       expect(response.headers.get("location"), azp).toBeNull();
     }
@@ -145,7 +148,7 @@ describe("proxy authorized parties", () => {
       "https://App.example.com",
       "",
     ]) {
-      const response = await open(proxy, azp);
+      const response = await open(proxy, sessionToken(azp));
       expect(response.status, azp).toBe(307);
       expect(new URL(response.headers.get("location") ?? "").pathname, azp).toBe("/sign-in");
     }
@@ -156,7 +159,61 @@ describe("proxy authorized parties", () => {
     { timeout: 30_000 },
     async () => {
       const { default: proxy } = await loadProxy("");
-      expect((await open(proxy, "https://evil.example.com")).status).toBe(200);
+      expect((await open(proxy, sessionToken("https://evil.example.com"))).status).toBe(200);
     },
   );
+});
+
+describe("proxy signing key", () => {
+  const PAGE = "https://app.example.com";
+  const other = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const fetchKeySet = vi.fn<(input: unknown) => Promise<Response>>();
+
+  beforeEach(() => {
+    fetchKeySet.mockReset();
+    vi.stubGlobal("fetch", fetchKeySet);
+  });
+
+  it(
+    "verifies a session token with CLERK_JWT_KEY, and fetches no key set from Clerk",
+    { timeout: 30_000 },
+    async () => {
+      fetchKeySet.mockRejectedValue(new Error("the proxy asked Clerk for its key set"));
+      const { default: proxy } = await loadProxy(PAGE, publicPem(keys));
+      // A key ID that no earlier test fetched a key set for, or Clerk's SDK would have it cached.
+      const response = await open(proxy, sessionToken(PAGE, keys, "ins_not_cached"));
+      expect(response.status).toBe(200);
+      expect(response.headers.get("location")).toBeNull();
+      expect(fetchKeySet).not.toHaveBeenCalled();
+    },
+  );
+
+  it(
+    "trusts that key alone: a token from another key is refused although Clerk's key set holds it",
+    { timeout: 30_000 },
+    async () => {
+      fetchKeySet.mockImplementation(async () => Response.json(keySet(other, "ins_other")));
+      const { default: proxy } = await loadProxy(PAGE, publicPem(keys));
+      const response = await open(proxy, sessionToken(PAGE, other, "ins_other"));
+      expect(response.status).toBe(307);
+      expect(new URL(response.headers.get("location") ?? "").pathname).toBe("/sign-in");
+      expect(fetchKeySet).not.toHaveBeenCalled();
+    },
+  );
+
+  it("without it, still fetches Clerk's key set and verifies with that", { timeout: 30_000 }, async () => {
+    for (const [label, jwtKey] of [
+      ["unset", undefined],
+      ["empty", ""],
+    ] as const) {
+      // A key ID of its own, so that no key set cached by an earlier case answers for it.
+      const kid = `ins_fetched_${label}`;
+      fetchKeySet.mockReset();
+      fetchKeySet.mockImplementation(async () => Response.json(keySet(other, kid)));
+      const { default: proxy } = await loadProxy(PAGE, jwtKey);
+      const response = await open(proxy, sessionToken(PAGE, other, kid));
+      expect(fetchKeySet, label).toHaveBeenCalled();
+      expect(response.status, label).toBe(200);
+    }
+  });
 });
