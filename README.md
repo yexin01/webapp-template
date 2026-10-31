@@ -63,7 +63,7 @@ Tests never use your `.env`. Database tests create and drop their own database, 
 | `pnpm lint` / `pnpm typecheck` | ESLint, the Prettier check, Ruff (lint and format check), import contracts and migration lint / `tsc` and mypy (strict) |
 | `pnpm contracts:check` | Fail if the generated contracts are stale |
 | `pnpm check:bundle-secrets` | Fail if server-only values appear in the browser bundle (after `pnpm build`) |
-| `pnpm check:links` | Fail if a relative Markdown link does not resolve |
+| `pnpm check:links` | Fail if a relative Markdown link, its `#heading` fragment, or a `docs/…#heading` pointer in code does not resolve |
 | `pnpm test:scripts` | The tests of the scripts in `scripts/` |
 
 **Database**
