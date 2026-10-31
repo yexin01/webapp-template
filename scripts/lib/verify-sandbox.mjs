@@ -224,7 +224,7 @@ export function nextSteps({ results }) {
   if (needs.has("env")) steps.push("Create .env: `pnpm init-template` (it creates one and renames the template), or `cp .env.example .env`.");
   if (needs.has("clerk") || needs.has("keys")) {
     steps.push(
-      "Clerk: create a free development instance at https://dashboard.clerk.com, enable Organizations with Membership optional (Organization settings), and paste its publishable and secret keys into NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY and CLERK_SECRET_KEY in .env (docs/integrations.md#clerk). The end-to-end run creates its own test user.",
+      "Clerk: create a free development instance at https://dashboard.clerk.com, enable Organizations with Membership optional (Organization settings), and paste its publishable and secret keys into NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY and CLERK_SECRET_KEY in .env (docs/setup.md#clerk). The end-to-end run creates its own test user.",
     );
   }
   if (needs.has("development-keys")) steps.push("Clerk: .env holds production keys. Use the keys of a development instance there; keep the production ones in the deployment's environment.");

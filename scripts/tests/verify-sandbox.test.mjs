@@ -201,7 +201,7 @@ test("each thing that stopped a part is asked for once, in the order of the setu
   });
   assert.equal(steps.length, 7);
   assert.match(steps[0], /^Create \.env/);
-  assert.match(steps[1], /^Clerk: .*Membership optional/);
+  assert.match(steps[1], /^Clerk: .*Membership optional.*\(docs\/setup\.md#clerk\)/);
   assert.match(steps[2], /^Stripe: .*pnpm setup:stripe/);
   assert.match(steps[3], /^Database: `pnpm db:up`/);
   assert.match(steps[4], /^Browser: .*playwright install chromium/);
