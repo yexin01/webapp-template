@@ -5,7 +5,7 @@ description = "Python API for SaaS Template"
 requires-python = ">=3.12,<3.13"
 license = "Apache-2.0"
 dependencies = [
-  "fastapi>=0.143,<0.144",
+  "fastapi>=0.143,<0.163",
   "pydantic>=2.14,<3",
   "pydantic-settings>=2.15,<3",
   "psycopg[binary]>=3.3,<3.4",
