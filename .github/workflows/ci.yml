@@ -51,6 +51,9 @@ jobs:
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version-file: .nvmrc
+          # No pnpm is installed in this job. Left on, setup-node reads "packageManager": "pnpm@..." from package.json
+          # and stops with "Unable to locate executable file: pnpm" (the first remote run, 2026-11-01).
+          package-manager-cache: false
       # --locked: a uv.lock that pyproject.toml has moved past fails the job; --frozen installs it without a word.
       - run: uv sync --locked
       # The same command runs on a laptop (pnpm verify): lint, formatting, import boundaries, migration
@@ -79,6 +82,8 @@ jobs:
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version-file: .nvmrc
+          # No pnpm here either: see the api job.
+          package-manager-cache: false
       - run: uv sync --locked
         working-directory: apps/api
       - name: Migrations, privileges, login role, and database tests on the image

@@ -124,6 +124,43 @@ def test_python_dependencies_install_from_a_lock_that_must_be_current() -> None:
     assert load("db-migrate.yml")["env"].get("UV_LOCKED") == "1"  # the migration's `uv run` asserts the lock too
 
 
+def setup_node_without_pnpm(workflow: dict[str, Any]) -> list[str]:
+    """The jobs where actions/setup-node runs before any step installs pnpm, with its package-manager cache on."""
+    found: list[str] = []
+    for name, job in workflow["jobs"].items():
+        pnpm_installed = False
+        for step in job.get("steps", []):
+            uses = step.get("uses", "")
+            if uses.startswith("pnpm/action-setup@"):
+                pnpm_installed = True
+            if (
+                uses.startswith("actions/setup-node@")
+                and not pnpm_installed
+                and step.get("with", {}).get("package-manager-cache") is not False
+            ):
+                found.append(name)
+    return found
+
+
+@pytest.mark.parametrize("path", sorted(WORKFLOWS.glob("*.yml")), ids=lambda p: p.name)
+def test_setup_node_does_not_look_for_a_pnpm_the_job_never_installed(path: Path) -> None:
+    """The first remote run of CI (2026-11-01): the `api` and `api-supabase` jobs stopped at actions/setup-node with
+    "Unable to locate executable file: pnpm". Its package-manager cache is on by default and follows the
+    "packageManager": "pnpm@..." field of package.json, which no unit test or local run of `pnpm verify` can
+    show. A job that installs pnpm first (pnpm/action-setup) may keep the cache; any other turns it off."""
+    assert setup_node_without_pnpm(load(path.name)) == []
+
+
+def test_the_setup_node_check_flags_the_two_jobs_that_failed_remotely() -> None:
+    """The control for the test above: the real workflow without the line that fixed the two jobs."""
+    workflow = copy.deepcopy(load("ci.yml"))
+    for job in ("api", "api-supabase"):
+        for step in workflow["jobs"][job]["steps"]:
+            if step.get("uses", "").startswith("actions/setup-node@"):
+                del step["with"]["package-manager-cache"]
+    assert setup_node_without_pnpm(workflow) == ["api", "api-supabase"]
+
+
 def test_deploy_config_runs_without_credentials_or_telemetry() -> None:
     job = load("ci.yml")["jobs"]["deploy-config"]
     assert job["env"]["VERCEL_TELEMETRY_DISABLED"] == "1"

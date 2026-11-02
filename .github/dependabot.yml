@@ -14,6 +14,11 @@ updates:
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly }
+    groups:
+      # init and analyze must run the same version of the action ("Loaded a configuration file for version 4.39.1,
+      # but running version 4.38.3" failed all three CodeQL jobs of the first single-action pull request).
+      codeql-action:
+        patterns: ["github/codeql-action/*"]
   # The postgres image in docker-compose.yml. Dependabot does not update the
   # services images in .github/workflows/ci.yml (github-actions covers only
   # `uses:` references), so bump those by hand to the same tag.
