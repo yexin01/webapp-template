@@ -173,13 +173,17 @@ def test_a_database_that_stops_responding_fails_within_bounds(proxy: tuple[Fault
     database = make_database(url)
     try:
         assert select_one(database) == 1
-        connections = fault.connections
+        pool = database._pool(API_ROLE)
+        checkouts = pool.get_stats()["requests_num"]
         fault.freeze()
         finished, error, elapsed = finishes_within(10, lambda: select_one(database))
         assert finished, "a database call hung past every timeout"
         assert isinstance(error, DependencyUnavailableError), error
         assert elapsed < BOUND_SECONDS, f"took {elapsed:.1f} s"
-        assert fault.connections == connections, "a timed-out call was retried on a new connection"
+        # One checkout is one attempt. The proxy's connection count cannot tell an attempt from the pool opening a
+        # replacement in the background for the connection it discarded, which it does within a second (it won
+        # this race on a quiet machine and lost it in a full test run).
+        assert pool.get_stats()["requests_num"] - checkouts == 1, "a timed-out call was retried on a new connection"
         fault.thaw()
         assert select_one(database) == 1  # the abandoned connection was discarded
     finally:
