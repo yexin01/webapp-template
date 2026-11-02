@@ -3,6 +3,7 @@ the outbox, and job runs. All SQL uses bound parameters only."""
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import Any
@@ -11,10 +12,26 @@ from uuid import UUID
 import psycopg
 from psycopg.rows import dict_row
 
+from app.kernel.errors import DependencyUnavailableError
 from app.kernel.events import StoredEvent
 from app.kernel.ports import ConnectionDescription, JobRun, LoginRole
 
+logger = logging.getLogger(__name__)
+
 _MAX_ERROR_LENGTH = 500
+
+# The tables this store reads and writes. A schema ``app`` without one of them is not migrated (nothing migrates
+# on deploy), and every route that needs the store fails.
+KERNEL_TABLES = ("job_runs", "outbox", "rate_limit_counters")
+# Which of KERNEL_TABLES schema ``app`` lacks, read from catalogs every role can read. Takes ``%(kernel_tables)s``.
+_MISSING_KERNEL_TABLES_SQL = """ARRAY(
+  SELECT t.name FROM unnest(%(kernel_tables)s::text[]) AS t(name)
+  WHERE NOT EXISTS (
+    SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'app' AND c.relname = t.name AND c.relkind IN ('r', 'p')
+  )
+  ORDER BY 1
+)"""
 
 # What the login role could do in a query that does not switch role. Reads catalogs every role can read.
 # A member of a CREATEROLE role counts: before PostgreSQL 16 that role can add its members to any other role that
@@ -67,12 +84,24 @@ class PgKernelStore:
     # -- Health ---------------------------------------------------------------
 
     def ping(self) -> None:
-        self._one("SELECT 1 AS ok")
+        """Raise unless the database answers and holds the kernel's tables.
+
+        ``SELECT 1`` would also answer on a database nothing was migrated into, and readiness would say "ready"
+        while every route failed on a missing table.
+        """
+        row = self._one(
+            f"SELECT {_MISSING_KERNEL_TABLES_SQL} AS missing_tables",
+            {"kernel_tables": list(KERNEL_TABLES)},
+        )
+        missing = list(row["missing_tables"]) if row else list(KERNEL_TABLES)
+        if missing:
+            logger.warning("database_not_migrated", extra={"missing_tables": ", ".join(missing)})
+            raise DependencyUnavailableError("The database schema is not migrated.")
 
     def describe_connection(self) -> ConnectionDescription:
         # The catalogs read here are readable by every role, including app_api.
         row = self._one(
-            """
+            f"""
             SELECT current_user AS role, current_setting('server_version') AS server_version,
               current_setting('row_security') = 'on' AS row_security,
               coalesce(current_setting('app.user_id', true), '') <> '' AS tenant_context_set,
@@ -88,9 +117,11 @@ class PgKernelStore:
                 WHERE n.nspname = 'app' AND c.relkind IN ('r', 'p')
                   AND pg_has_role(current_user, c.relowner, 'USAGE')
                 ORDER BY 1
-              ) AS owned_tables
+              ) AS owned_tables,
+              {_MISSING_KERNEL_TABLES_SQL} AS missing_tables
             FROM pg_roles r WHERE r.rolname = current_user
-            """
+            """,  # noqa: S608 - a constant, no input
+            {"kernel_tables": list(KERNEL_TABLES)},
         )
         if row is None:  # pragma: no cover - the current role is always in pg_roles
             raise RuntimeError("connection description unavailable")
@@ -103,6 +134,7 @@ class PgKernelStore:
             bypass_rls=row["bypass_rls"],
             unprotected_tables=tuple(row["unprotected_tables"]),
             owned_tables=tuple(row["owned_tables"]),
+            missing_tables=tuple(row["missing_tables"]),
             login=describe_login_role(self._conn),
         )
 

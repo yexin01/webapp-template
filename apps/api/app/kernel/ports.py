@@ -82,6 +82,8 @@ class ConnectionDescription:
     unprotected_tables: tuple[str, ...]
     # Tables in schema ``app`` the role owns (or has its owner's privileges on).
     owned_tables: tuple[str, ...]
+    # The kernel's own tables that schema ``app`` lacks: the migrations were not applied, or not all of them.
+    missing_tables: tuple[str, ...] = ()
     login: LoginRole = LoginRole()
 
 
