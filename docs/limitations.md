@@ -133,7 +133,10 @@ Eleven findings from the architecture review were deferred, with the reason; the
 - Dependabot does not read the gitleaks version pins (in `ci.yml` and in the pre-commit hook), nor the Supabase image tag in `scripts/test-supabase-image.mjs`. Bump them by hand; a test keeps the two gitleaks versions equal.
 - The ESLint guards in `apps/web/eslint.guards.mjs` (including the ban on importing `posthog-js` outside `src/lib/analytics.ts`) are tested but not loaded by `eslint.config.mjs`: an owner-applied step (spec §23, step 4). Until it lands, `src/no-client-roles.test.ts`, `src/lib/page-access.test.ts`, `src/app/layout.test.tsx` and `src/rendering-baseline.test.ts` carry the web fitness checks.
 - No `CODEOWNERS` file ships (SEC-12 relies on one for `supabase/migrations/` and `.github/workflows/`). Add yours.
-- CI and CodeQL run for every pull request and every push to `main` (CodeQL also weekly); a push to any other branch runs nothing until a pull request is opened for it. Neither has run remotely.
+- CI and CodeQL run for every pull request and every push to `main` (CodeQL also weekly); a push to any other branch runs nothing until a pull request is opened for it. Neither runs in your repository until you push it.
+<!-- template-only:start -->
+  The template's own first run (2026-11-01, `6f9f33f`): CodeQL, the secret scan and `deploy-config` passed; the two API jobs stopped at `actions/setup-node` (it looked for a pnpm the job never installed) and the web job at a test that depended on the runner's release variable. Both are fixed, and the fix has not run on GitHub ([record](../dev-docs/evidence/2026-11-02-readiness-audit.md)).
+<!-- template-only:end -->
 - `pnpm test:init-template`, `pnpm test:new-module` and the verify steps that copy the tracked files need a git repository. In an unpacked archive, run `git init && git add -A` first; the scripts say so. `pnpm test:new-module` and `pnpm verify` also stop at any file git neither tracks nor ignores (an editor or sync-conflict copy included): `git add -A`, delete or ignore it. `pnpm init-template` adds one such file, `dev-docs/evidence/README.md`, so the first `pnpm verify` of a new project needs `git add -A` ([setup.md](setup.md#steps)).
 
 ## Follow-ups in the code

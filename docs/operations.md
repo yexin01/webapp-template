@@ -5,7 +5,7 @@ Day-two procedures for adopters: health checks, provider outages, routine tasks,
 ## Health and readiness
 
 - `GET /api/v1/health`: liveness only, with no dependency calls. Answers `{"status":"ok"}`.
-- `GET /api/v1/ready`: checks the database and answers `{"status":"ready","checks":{"database":"ok"}}`, or `503` with `{"status":"not_ready","checks":{"database":"unavailable"}}` when it is unavailable, at most one round-trip deadline later ([provider outages](#provider-outages)). It does not reveal configuration.
+- `GET /api/v1/ready`: checks the database and answers `{"status":"ready","checks":{"database":"ok"}}`, or `503` with `{"status":"not_ready","checks":{"database":"unavailable"}}` when it is unavailable, at most one round-trip deadline later ([provider outages](#provider-outages)). A database the migrations were not applied to counts as unavailable: schema `app` lacks a table of the kernel (`job_runs`, `outbox`, `rate_limit_counters`), and the API logs `database_not_migrated` with the table names (the `/integrations` PostgreSQL card says `not_migrated`). It does not reveal configuration.
 - In preview and production a database login that could skip row-level security makes every database transaction fail with `503` and `/ready` report not ready, while `/health` stays up ([The runtime login role](#the-runtime-login-role)).
 
 ## Provider outages
@@ -83,7 +83,7 @@ Rotate immediately after any suspected exposure, and periodically otherwise. For
 | `DATABASE_URL` (the `app_login` password) | Vercel (API) | `/api/v1/ready`; the PostgreSQL check | Re-run `pnpm db:api-login --allow-remote`. The old password stops working at once, so requests fail until the redeploy finishes. The `postgres` password is rotated separately in the Supabase Dashboard |
 | `MIGRATION_DATABASE_URL` | GitHub Environment secrets (`preview`, `production`) | Run **Database migrate** | Rotate the `postgres` password in Supabase |
 | `LLM_API_KEY` | Vercel (API) | The LLM check | Revoke at the provider |
-| `CRON_SECRET` | Vercel, Production scope | Call a job route with the new value; the old one answers `401` | `openssl rand -hex 32`, at least 32 characters. Vercel sends the project's `CRON_SECRET` as the `Authorization` header of each cron call ([Vercel: securing cron jobs](https://vercel.com/docs/cron-jobs/manage-cron-jobs#securing-cron-jobs)) |
+| `CRON_SECRET` | Vercel, Production scope | Call a job route with the new value; the old one answers `401` | `openssl rand -hex 32`, at least 32 characters, with no space or newline at either end (the API refuses to start otherwise: HTTP trims the header, so such a secret would never match). Vercel sends the project's `CRON_SECRET` as the `Authorization` header of each cron call ([Vercel: securing cron jobs](https://vercel.com/docs/cron-jobs/manage-cron-jobs#securing-cron-jobs)) |
 | `NEXT_PUBLIC_POSTHOG_KEY`, `NEXT_PUBLIC_SENTRY_DSN` | Vercel (web, and the API for the PostHog key) | Events arrive | Baked: a rotated key stays in already-built browser bundles until you redeploy |
 | `SENTRY_DSN` | Vercel (API) | `pnpm check:setup --send-test-events` | |
 | `SENTRY_AUTH_TOKEN` | Vercel (web build) | The build log shows the upload | Revoke at Sentry |
@@ -110,7 +110,7 @@ Vercel's own guide: [rotating environment variables](https://vercel.com/docs/env
 
 The API connects as `app_login` and every request transaction switches into `app_api` or `app_worker` ([integrations.md](integrations.md#supabase-and-postgresql)). Creating or rotating its password is `pnpm db:api-login --allow-remote`. In preview and production a process whose first transaction finds a login that could skip row-level security (a superuser, `BYPASSRLS`, `CREATEROLE`, a member of such a role, or a table owner in schema `app`) fails every database transaction with a `503` that names the fix, logs one ERROR line (never the URL or the role name), and reports `/ready` not ready. A refused process keeps refusing until it restarts: fix `DATABASE_URL`, then redeploy. The same check shows on the `/integrations` PostgreSQL card (`unsafe_session`).
 
-This guard removes the escape to the table owner and to `BYPASSRLS`. It does not stop code that can run arbitrary SQL from reading across tenants ([integrations.md](integrations.md#supabase-and-postgresql)).
+This guard removes the escape to the table owner and to `BYPASSRLS`. It does not stop code that can run arbitrary SQL from reading and writing across tenants ([integrations.md](integrations.md#supabase-and-postgresql)).
 
 ### Restore a dump into a new server
 
