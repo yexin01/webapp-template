@@ -328,8 +328,14 @@ def core_problems(s: CoreSettings) -> list[str]:
             sentry_sdk.utils.Dsn(secret(s.sentry_dsn))
         except sentry_sdk.utils.BadDsn:  # its message can quote the DSN
             problems.append("SENTRY_DSN must be a Sentry DSN (https://<key>@<host>/<id>)")
-    if s.cron_secret is not None and len(secret(s.cron_secret)) < 32:
-        problems.append("CRON_SECRET must be at least 32 characters")
+    if s.cron_secret is not None:
+        cron = secret(s.cron_secret)
+        if cron != cron.strip():
+            # HTTP trims the value of the Authorization header Vercel Cron sends, so a stored secret with a pasted
+            # newline or space would never match, and every cron call would answer 401 with no error at startup.
+            problems.append("CRON_SECRET must not start or end with whitespace")
+        if len(cron.strip()) < 32:
+            problems.append("CRON_SECRET must be at least 32 characters")
     return problems
 
 
