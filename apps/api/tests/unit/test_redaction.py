@@ -161,6 +161,8 @@ class TestPatterns:
             *("__clerk_handshake_nonce", "__clerk_db_jwt", "__clerk_created_session", "__clerk_testing_token"),
             *("__clerk_modal_state", "__clerk_redirect_url", "__clerk_satellite_url", "__clerk_future_param"),
             *("redirect_url", "ticket", "__CLERK_TICKET"),
+            # deployment.md puts the Protection Bypass secret in the query of a preview's webhook URL.
+            *("password", "x-vercel-protection-bypass", "X-Vercel-Protection-Bypass"),
         ],
     )
     def test_the_value_of_a_sensitive_query_parameter_is_redacted(self, name: str) -> None:
@@ -398,6 +400,37 @@ class TestRedactionCost:
         assert seconds < 0.1
         assert scrubbed["exception"]["values"][0]["value"] == f"{REDACTED} {TRUNCATED}"
         assert all(len(text) <= 4096 + len(TRUNCATED) for text in (scrubbed["message"], scrubbed["extra"]["blob"]))
+
+
+class TestLogLinesRedactEveryValue:
+    """OBS-04: ``redact`` walks strings, mappings and lists, so a value of another type (an exception, a set, bytes)
+    reached the line through ``json.dumps(default=str)`` unredacted."""
+
+    @staticmethod
+    def line(**extra: Any) -> str:
+        record = logging.LogRecord("app", logging.WARNING, __file__, 1, "something_failed", None, None)
+        record.__dict__.update(extra)
+        return JsonFormatter().format(record)
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            pytest.param(ValueError(f"declined with {SECRET}"), id="an exception"),
+            pytest.param({SECRET}, id="a set"),
+            pytest.param(SECRET.encode(), id="bytes"),
+            pytest.param((SECRET,), id="a tuple"),  # control: already walked
+            pytest.param(f"declined with {SECRET}", id="a string"),  # control: already redacted
+        ],
+    )
+    def test_no_value_type_prints_a_secret(self, value: object) -> None:
+        text = self.line(error=value)
+        assert SECRET not in text
+        assert "CANARY1234567890" not in text
+
+    def test_a_value_without_a_secret_still_prints(self) -> None:
+        """The control: redaction changes what is secret, not what is printed."""
+        line = json.loads(self.line(error=ValueError("no such project")))
+        assert line["error"] == "no such project"
 
 
 class TestRequestIdInLogLines:

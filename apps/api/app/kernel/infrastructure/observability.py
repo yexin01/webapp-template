@@ -76,7 +76,13 @@ class JsonFormatter(logging.Formatter):
             payload.update(redact(extras))
         if record.exc_info and record.exc_info[0] is not None:
             payload["exc_type"] = record.exc_info[0].__name__
-        return json.dumps(payload, default=str)
+        return json.dumps(payload, default=_printable)
+
+
+def _printable(value: object) -> str:
+    """What a log line prints for a value JSON has no type for (an exception, a set, bytes): its text, redacted
+    like any other, because ``redact`` only walks strings, mappings and lists."""
+    return redact_text(str(value))
 
 
 def configure_logging(level: str) -> None:

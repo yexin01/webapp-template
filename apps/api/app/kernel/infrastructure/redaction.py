@@ -59,8 +59,8 @@ _EMAIL = re.compile(
 # Query parameters holding credentials, one-time tokens, or session IDs: common token names, and every one
 # apps/web/src/lib/redact.ts lists (Clerk's tickets and handshakes, redirect targets that can embed them).
 _SENSITIVE_QUERY = re.compile(
-    r"(?i)([?&](?:token|access_token|id_token|code|session_id|key|api_key|secret|signature|ticket"
-    r"|redirect_url|__clerk[a-z_]*)=)[^&\s\"']+"
+    r"(?i)([?&](?:token|access_token|id_token|code|session_id|key|api_key|secret|signature|ticket|password"
+    r"|x-vercel-protection-bypass|redirect_url|__clerk[a-z_]*)=)[^&\s\"']+"
 )
 
 
