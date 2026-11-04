@@ -38,6 +38,7 @@ PREVIEW: dict[str, Any] = {
     "clerk_publishable_key": pk("example-app.clerk.accounts.dev"),
     "clerk_secret_key": "sk_test_only_abcdefghijklmnop",
     "billing_mode": "mock",
+    "email_mode": "mock",
     "llm_mode": "mock",
     "analytics_mode": "disabled",
     "error_reporting_mode": "disabled",
@@ -55,6 +56,9 @@ PRODUCTION: dict[str, Any] = {
     "stripe_price_pro_monthly": PRICE_MONTHLY,
     "stripe_price_pro_yearly": PRICE_YEARLY,
     "stripe_product_pro": PRODUCT_PRO,
+    "email_mode": "live",
+    "resend_api_key": "re_" + "k" * 30,
+    "email_from": "Example <noreply@example.com>",
     "llm_mode": "live",
     "llm_api_key": "llm-" + "k" * 30,
     "llm_model": "test-model",
@@ -263,7 +267,7 @@ def test_live_billing_needs_the_pro_product_as_a_stripe_product_id(product: Any)
     )
 
 
-@pytest.mark.parametrize("name", ["billing_mode", "llm_mode", "analytics_mode", "error_reporting_mode"])
+@pytest.mark.parametrize("name", ["billing_mode", "email_mode", "llm_mode", "analytics_mode", "error_reporting_mode"])
 @pytest.mark.parametrize("app_env", ["preview", "production"])
 def test_a_deployment_names_every_integration_mode(name: str, app_env: str) -> None:
     base = PRODUCTION if app_env == "production" else {**PREVIEW, "app_env": "preview"}
@@ -273,7 +277,13 @@ def test_a_deployment_names_every_integration_mode(name: str, app_env: str) -> N
 def test_local_development_falls_back_to_default_modes() -> None:
     values = {**PREVIEW, "app_base_url": "http://localhost:3000"}
     local = settings(
-        values, app_env="local", billing_mode=..., llm_mode=..., analytics_mode=..., error_reporting_mode=...
+        values,
+        app_env="local",
+        billing_mode=...,
+        email_mode=...,
+        llm_mode=...,
+        analytics_mode=...,
+        error_reporting_mode=...,
     )
     assert local.billing_mode.value == "mock"
 

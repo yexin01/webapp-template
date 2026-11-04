@@ -46,7 +46,7 @@ test("the options are the test-event pass-through and the parts to leave out", (
 });
 
 test("the configuration is read from names and modes, with the API's local defaults", () => {
-  assert.deepEqual(configuration({}), { clerk: "not set", billing: "mock", llm: "mock", analytics: "disabled", errors: "disabled" });
+  assert.deepEqual(configuration({}), { clerk: "not set", billing: "mock", llm: "mock", email: "mock", analytics: "disabled", errors: "disabled" });
   assert.equal(configuration({ NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: PLACEHOLDER_PUBLISHABLE_KEY, CLERK_SECRET_KEY: PLACEHOLDER_SECRET_KEY }).clerk, "not configured");
   assert.equal(configuration(clerk).clerk, "sandbox");
   assert.equal(configuration({ ...clerk, NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: livePublishable }).clerk, "production keys");
@@ -72,7 +72,7 @@ test("a .env that still holds the placeholders and mocks is nothing configured",
 
 test("the setup check runs once anything is in sandbox mode: Clerk keys, or a sandbox mode", async (t) => {
   assert.equal(byId(await plan(t, clerk)).setup.status, undefined);
-  for (const mode of ["BILLING_MODE", "LLM_MODE", "ANALYTICS_MODE", "ERROR_REPORTING_MODE"]) {
+  for (const mode of ["BILLING_MODE", "EMAIL_MODE", "LLM_MODE", "ANALYTICS_MODE", "ERROR_REPORTING_MODE"]) {
     assert.equal(byId(await plan(t, { [mode]: "sandbox" })).setup.status, undefined, mode);
   }
 });

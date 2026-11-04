@@ -82,6 +82,7 @@ These decisions are confirmed. A confirmed technology choice is not evidence tha
 | Analytics | PostHog | NOT VERIFIED — DEC-006 |
 | Error monitoring | Sentry | NOT VERIFIED — DEC-006 |
 | LLM integration | Minimal provider-agnostic abstraction with a connectivity check | NOT VERIFIED — provider selection in DEC-006 |
+| Transactional email | Resend, named by the owner on 2026-11-04 | NOT VERIFIED — scope and defaults in DEC-015, integration in DEC-006 |
 | Tenancy | Individual users and organizations, with strict authorization and tenant isolation | NOT VERIFIED |
 | Deployment | Vercel, subject to verified compatibility of the selected architecture | NOT VERIFIED — DEC-001 |
 | Performance | Reproducible baseline, then controlled stress testing; quantitative targets approved after measurement | NOT VERIFIED — DEC-003 |
@@ -135,6 +136,7 @@ These decisions are confirmed. A confirmed technology choice is not evidence tha
 | DEC-012 | License and community contacts | RESOLVED 2026-10-14 — Apache-2.0 (ADR-0001); contacts are adopter placeholders (ADR-0002) | — | — |
 | DEC-013 | Preventing a second subscription while one is unsettled | OPEN (recorded 2026-10-15) — option (B) adopted by delegation 2026-10-30 ([ADR-0004 §2](adr/0004-cycle-1-adopted-decisions.md)); implemented and tested with mocks, sandbox verification NOT RUN | Owner confirmation; sandbox verification (DEC-006) | Owner confirms or reverses option (B) |
 | DEC-014 | The diagnostics operator capability: approval (ADM-02) and a second factor for operators | OPEN (recorded 2026-10-30) — option (B) adopted by delegation 2026-10-31 ([ADR-0004 §15](adr/0004-cycle-1-adopted-decisions.md)) | Owner confirmation | Owner confirms or reverses option (B) |
+| DEC-015 | Transactional email | OPEN (recorded 2026-11-04) — the provider, Resend, named by the owner on 2026-11-04; the integration is built and tested with mocks, and its defaults await the owner's confirmation | Any product email (EMAIL-01) | Owner answers the entry's questions; a sandbox run (DEC-006) |
 
 ### 3.3 Decision entries
 
@@ -502,6 +504,22 @@ These decisions are confirmed. A confirmed technology choice is not evidence tha
 - **Resolution criteria:** an ADR records the choice, and the ADM-02 row of §21 is updated.
 - **Interim rule:** the current model, as built. The capability stays off in production unless `DIAGNOSTICS_ENABLED=true`.
 
+#### DEC-015 — Transactional Email
+
+- **Status:** OPEN — recorded 2026-11-04. The provider is the owner's choice: on 2026-11-04 the owner named Resend in the template's minimum set of integrations ("The minimum is supabase, stripe, clerk, vercel, resend"), which is the approval ARCH-09 asks for a new service. The integration was built the same day (§10.2). Its defaults, listed in question 4, were chosen during implementation and have not been approved by the owner. No product email is built.
+- **Owner:** Repository owner (the defaults); each adopter (the product emails).
+- **Blocks:** any product email (EMAIL-01): which emails the template, or a module generated from it, sends. Nothing else: the port, the adapter, the mock, and the check exist.
+- **Rationale:** a SaaS sends transactional email (invitations, receipts, notices), and the owner put an email provider in the minimum. Email sends personal data (recipient addresses and content) to one more processor (DEC-004), costs quota, and can reach real people from a non-production environment by mistake (T-23).
+- **Questions:**
+  1. Does the template send any email itself (for example a welcome email, or a notice that a subscription will end), or does it only provide the capability?
+  2. Where does a recipient's address come from at send time? The template stores none; for a user, Clerk holds it.
+  3. Does the template receive Resend's webhooks (deliveries, bounces, complaints) and keep a suppression list?
+  4. Are the defaults right? In sandbox mode only Resend's test addresses (`@resend.dev`) and `EMAIL_SANDBOX_RECIPIENTS` receive email; the check sends one email to `delivered@resend.dev`, only from the Integrations page and from `pnpm check:setup --send-test-events`; live mode refuses a sender on `resend.dev`; at most two sends are in flight per instance; a send times out after 10 s.
+- **Impact:** the email module, the diagnostics catalogue, configuration, the data inventory, and the threat model.
+- **Required evidence:** the owner's answers; a sandbox run of `pnpm check:setup --send-test-events` (DEC-006).
+- **Resolution criteria:** an ADR records the answers, and §10.2 and the EMAIL rows of §21 are updated.
+- **Interim rule:** the capability as built, and no product email.
+
 ---
 
 ## 4. System Architecture
@@ -631,7 +649,7 @@ Since ADR-0003, the API layers below apply **inside every feature module** (`app
 ### 5.2 Configuration requirements
 
 - **ENV-01** Each environment uses separate credentials. Production credentials never reach `local`, `test`, pull-request CI, or `preview`.
-- **ENV-02** Each provider has an explicit integration mode: `mock`, `sandbox`, `live`, or `disabled` (off: no provider is called; analytics, error reporting, and the LLM check).
+- **ENV-02** Each provider has an explicit integration mode: `mock`, `sandbox`, `live`, or `disabled` (off: no provider is called; email, analytics, error reporting, and the LLM check).
   - `mock` is the default for automated tests.
   - `live` is accepted only when `APP_ENV=production`; startup fails otherwise.
   - In `preview` and `production` every mode is set explicitly (ENV-09).
@@ -936,7 +954,9 @@ Clerk provides authentication. It does not replace application authorization.
 
 ---
 
-## 10. LLM Integration
+## 10. LLM and Email Integrations
+
+### 10.1 LLM
 
 - **LLM-01** A minimal provider-agnostic port exposes a connectivity check that returns a normalized result: status, provider, model, latency, and error code. Adding generation features requires new, approved requirements.
 - **LLM-02** Provider SDKs stay behind adapters. Errors are normalized to `timeout`, `rate_limited`, `auth_failed`, `unavailable`, `invalid_request`, and `budget_exceeded`.
@@ -954,6 +974,16 @@ Clerk provides authentication. It does not replace application authorization.
 - **LLM-08** A deterministic mock adapter is used for automated tests.
 - **LLM-09** Provider unavailability affects only explicitly dependent features. Readiness does not fail because of the LLM provider. The connectivity check is optional: with `LLM_MODE=disabled` it answers `200` with `error_code: not_configured`, and the diagnostics page skips it.
 - **LLM-10** Configuration for enabling a real provider is documented. The provider choice is made in DEC-006.
+
+### 10.2 Email (DEC-015)
+
+- **EMAIL-01** Email is sent through a port (`EmailSender`) with one adapter per provider (Resend) and a deterministic mock; the provider's wire format and errors stay in its adapter (ARCH-04). The template sends no product email: adding one requires approved requirements (DEC-015).
+- **EMAIL-02** `EMAIL_MODE` follows ENV-02: `mock` is the default and sends nothing out of the process; `disabled` refuses every send with `NOT_CONFIGURED` and calls nothing; `live` is accepted only in production. Startup refuses `sandbox` or `live` without `RESEND_API_KEY` or `EMAIL_FROM`, a key or sender in the wrong form, and a sender on `resend.dev` (Resend's testing domain, which delivers only to the account's own address) in `live` mode.
+- **EMAIL-03** In `sandbox` mode only Resend's test addresses (`@resend.dev`) and the addresses and `@domains` of `EMAIL_SANDBOX_RECIPIENTS` receive email. Any other recipient is refused before the provider is called.
+- **EMAIL-04** A message the provider would refuse is refused before any call: 1 to 50 recipients, a one-line subject, a plain-text part, and the formats of tags and of the idempotency key. Every send carries an idempotency key. Every call has a timeout, and retries are bounded: at most two, within the timeout, and only where the idempotency key makes a repeat return the first email (LLM-03's rule). A refusal or a used-up quota is never retried. Sends in flight are bounded per instance.
+- **EMAIL-05** Addresses, subjects, bodies, credentials, and the provider's error messages (which can quote the account's address) are never logged or returned. Logs carry the HTTP status and the provider's error name only.
+- **EMAIL-06** A feature sends from an outbox handler (ARCH-15), with a key made of the handler's name and the event's ID; event payloads hold no address, so the handler reads it when it runs. Provider unavailability affects only email, and readiness does not depend on it.
+- **EMAIL-07** The diagnostics check reads the account's domains and fails when the sender's domain is missing, not verified, not allowed to send, or `resend.dev`. It sends one email to `delivered@resend.dev`, a test inbox that reaches no person, only from the Integrations page and from `pnpm check:setup --send-test-events`.
 
 ---
 
@@ -1063,7 +1093,7 @@ A successful scan is evidence only of the checks it performed. It is never a gua
 
 1. Browser ↔ API.
 2. API ↔ database.
-3. API ↔ providers (Clerk, Stripe, PostHog, Sentry, LLM).
+3. API ↔ providers (Clerk, Stripe, Resend, PostHog, Sentry, LLM).
 4. Providers → webhooks.
 5. Developers and CI ↔ repository and deployments.
 6. Environment boundaries (local / test / preview / production).
@@ -1080,7 +1110,7 @@ A successful scan is evidence only of the checks it performed. It is never a gua
 | T-08 | Replayed, duplicate, or out-of-order webhook corrupts state | 4 | BILL-09 to BILL-11, BILL-14 | Replay, ordering, and concurrency tests |
 | T-09 | Price or plan tampering at checkout | 1 | BILL-03, BILL-05, BILL-07 | Checkout security tests |
 | T-10 | Secret leakage to client bundles, logs, telemetry, or the repository | 1, 5 | ENV-03, ENV-06, ENV-07, SEC-05, OBS-02, OBS-04 | Bundle scan, secret scan, OBS-08 |
-| T-11 | Personal data leakage into telemetry | 3 | OBS-02, OBS-03, OBS-08 | OBS-08 |
+| T-11 | Personal data leakage into telemetry | 3 | OBS-02, OBS-03, OBS-08, EMAIL-05 | OBS-08; `test_email.py` (no address in a log or an error) |
 | T-12 | Injection (SQL, script) | 1, 2 | SEC-01, parameterized queries; DB-11 (partial: code that runs arbitrary SQL can still `SET ROLE app_worker`) | SAST, unsafe-input tests |
 | T-13 | Resource exhaustion (payload size, request rate, unbounded queries) | 1, 2 | SEC-09, DB-04, §15.3 | Resilience and stress tests |
 | T-14 | LLM cost abuse | 3 | LLM-03 to LLM-06 | LLM budget and rate tests |
@@ -1092,6 +1122,7 @@ A successful scan is evidence only of the checks it performed. It is never a gua
 | T-20 | Information disclosure through errors | 1 | API-02, SEC-08 | Error contract tests |
 | T-21 | A provider-side actor (Clerk dashboard impersonation, a Backend API actor token, an agent task) acts as a user without attribution | 3 | ADM-01, ADM-02, ADM-03. Holders of `CLERK_SECRET_KEY` stay trusted: sign-in tokens carry no `act` claim | `test_impersonation.py`, NT-13 |
 | T-22 | API secrets are readable by the web service's server processes, because one Vercel project gives every service every variable (topology B) | 5, 6 | FE-02 (code level), ENV-07 (value-based bundle scan with `--require-values`), DB-11 and the rule that `MIGRATION_DATABASE_URL` and `API_DB_PASSWORD` never go in the project | `pnpm test:vercel-build` (local); platform behavior **NOT VERIFIED** (DEC-001); the owner's acceptance is open ([ADR-0004 §1](adr/0004-cycle-1-adopted-decisions.md)) |
+| T-23 | Email reaches real people from a non-production environment, or one email is sent twice by a retried handler | 3, 6 | EMAIL-02 (`live` only in production, no `resend.dev` sender in `live`), EMAIL-03 (the sandbox recipient rule), EMAIL-04 and EMAIL-06 (idempotency keys) | `test_email.py`, `test_diagnostics.py` (mocked) |
 
 Update this model whenever an endpoint, integration, data category, trust boundary, or deployment component is added.
 
@@ -1257,6 +1288,7 @@ None in the template. Targets are adopter-owned (DEC-003, [ADR-0002](adr/0002-or
 | Supabase | Readiness fails. Data operations return `503`. No partial writes. |
 | PostHog / Sentry | No user-visible impact (OBS-06). |
 | LLM provider | Only LLM-dependent features return `503` (LLM-09). |
+| Resend | Sends return `503`; an outbox handler that sends is retried and dead-lettered after its last attempt. Nothing else is affected, and readiness does not depend on it (EMAIL-06). |
 
 ### 16.5 Required operational documentation (`docs/`)
 
@@ -1477,6 +1509,9 @@ Status as of 2026-10-31. Evidence: [`dev-docs/evidence/2026-10-14-local-verifica
 | BILL-ORG-02 | Organization entitlement policy, DEC-002 (b) | Truth-table tests (`test_org_entitlements.py`); NT-12 | C | — | PASS |
 | LLM-01 to LLM-10 | Port, normalization, bounded retries, limits, budget, privacy, mock, isolation, docs | Adapter and platform tests; the hosts, auth headers and API version each provider sends (`test_adapters.py`, `TestLLMProvidersOnTheWire`, against a stub transport: no provider was called); `disabled` mode (`test_llm_disabled.py`: no key or model, no provider, `200 not_configured` without the rate limiter); the operator policy (`test_llm_access.py`: the check answers where `GET /diagnostics/access` says available and `404` elsewhere, and a refused call uses no limit). [cycle 1: config](evidence/2026-10-30-cycle-1-fix-round.md#config) | B, C, D | — | PASS (mocked provider) |
 | LLM real provider | Connectivity with a real key | Sandbox check | E | DEC-006 | NOT VERIFIED |
+| EMAIL-01 to EMAIL-05, EMAIL-07 | Port, adapter and mock; modes and startup refusals; the sandbox recipient rule; message limits, idempotency, bounded retries and concurrency; privacy; the check | `tests/unit/test_email.py` (the adapter's requests, headers, retries, refusals, deadline, redirects and domain parsing against a stub transport: no provider was called; one sender grammar in the settings and at run time; the mock; no address in a log or an error); `test_diagnostics.py` and `test_diagnostics_cli.py` (each verdict of the check, and no email without `--send-test-events`); `test_platform_config.py` (an explicit `EMAIL_MODE` in preview and production). Mutation-checked. [record](evidence/2026-11-04-resend-integration.md) | B, C | DEC-015 for product emails | PASS (mocked provider) |
+| EMAIL-06 | Sends from outbox handlers, with keys from the handler and the event | Documented (`docs/integrations.md#resend`, the service's docstring); no feature sends email yet | B | DEC-015 | NOT VERIFIED (no product email) |
+| EMAIL real provider | A domain read and a send with a real key | `pnpm check:setup`, then `pnpm check:setup --send-test-events` | E | DEC-006 | NOT VERIFIED |
 | OBS-01 to OBS-08, OBS-10 | Telemetry configuration, redaction, allowlists, non-blocking, leakage, flush after the response | Unit and leakage tests; outage tests; `test_telemetry_wire.py` (canaries absent from every payload a loopback stub received, in raw, URL-encoded, and JSON-escaped form, with a signed-in user's request, the real Clerk adapter against a stub provider, provider ID canaries, and no trace header at the provider); `test_request_telemetry.py` (OBS-04, OBS-05; with Sentry's default integrations on); `test_telemetry_flush.py` (OBS-10); `test_analytics_events.py` and the web analytics tests (OBS-03: registry and runtime allowlist, and every option of `posthog.init` and `Sentry.init` pinned in `analytics.test.tsx` and `sentry-config.test.ts`; OBS-07: `posthog.init` sets the client-side event limit, and `analytics-rate-limit.test.tsx` shows the real SDK enforcing it, [ADR-0004 §24](adr/0004-cycle-1-adopted-decisions.md)); `test_sentry_tracing.py` (provider IDs in paths); the web `privacy.test.ts`. Mutation-checked. [cycle 1: obs](evidence/2026-10-30-cycle-1-fix-round.md#obs) | C, D | — | PASS (mocked transports); OBS-10's platform half NOT VERIFIED (DEC-001); the `posthog-js` import guard waits for the lint wiring (§23 next step 4) |
 | OBS real services | PostHog and Sentry capture without personal data | Sandbox inspection | E | DEC-006 | NOT VERIFIED |
 | OBS-09 | Telemetry retention | Documentation; adopter checklist | E | — | PASS (documented; adopters set the periods) |
@@ -1554,6 +1589,7 @@ The report clearly distinguishes verified behavior from assumptions, mocks, and 
     - web: the template sends Clerk no SDK telemetry and the CSP drops its host (SEC-02), and the `/api/v1` proxy timeout is pinned;
     - tests that pin existing behavior: the customer lock of a replacement, the `billing_customer_relinked` log, the personal-data word list, and the other guards the cycle 3 mutation review found nothing testing, each mutation-checked;
     - the last documentation pass: the A3 list, the webhook secret without the CLI, the port fallback, the first-preview checks, and the owner's path (the record lists each row).
+  - **Transactional email (DEC-015, 2026-11-04; [record](evidence/2026-11-04-resend-integration.md)):** the `email` module (a sender port, the Resend adapter over HTTPS, a mock, the sandbox recipient rule, and the integration check on `/integrations` and in `pnpm check:setup`), `EMAIL_MODE` in every environment, and the setup and deployment steps S13 and D18 (EMAIL-01 to EMAIL-07). No product email is built.
   - **Next.js web app:**
     - code organized by feature (`src/features/*`, `src/ui`, `src/lib`), with the boundaries enforced by ESLint (FE-13);
     - a typed client generated from OpenAPI (`openapi-fetch`);
@@ -1576,7 +1612,7 @@ The report clearly distinguishes verified behavior from assumptions, mocks, and 
     - the local restore drill.
 - **Integrations:** all **mocked**. No sandbox or live service has been contacted.
 - **Local evidence:**
-  - The latest record is [`2026-11-02-readiness-audit.md`](evidence/2026-11-02-readiness-audit.md): the audit of `6f9f33f`, the first remote CI run (three of five jobs failed; the secret scan, `deploy-config` and CodeQL passed), a full `pnpm verify` of the untouched tree (22 of 24 steps passed, one flaky test failed, gitleaks skipped), four read-only reviews (no critical or high finding), the fixes, and what was not changed or not run. The fixes: both API jobs no longer stop at `setup-node`, the Sentry test no longer depends on a release variable, a racy database-fault assertion counts pool checkouts, readiness and the database check fail on an unmigrated database, `CRON_SECRET` with surrounding whitespace is refused, log values of other types are redacted, and the documented residual risk of `SET ROLE app_worker` now says read and write.
+  - The latest record is [`2026-11-04-resend-integration.md`](evidence/2026-11-04-resend-integration.md): the `email` module and its checks (`mocked` and `local`; no Resend account was contacted). Before it, [`2026-11-02-readiness-audit.md`](evidence/2026-11-02-readiness-audit.md): the audit of `6f9f33f`, the first remote CI run (three of five jobs failed; the secret scan, `deploy-config` and CodeQL passed), a full `pnpm verify` of the untouched tree (22 of 24 steps passed, one flaky test failed, gitleaks skipped), four read-only reviews (no critical or high finding), the fixes, and what was not changed or not run. The fixes: both API jobs no longer stop at `setup-node`, the Sentry test no longer depends on a release variable, a racy database-fault assertion counts pool checkouts, readiness and the database check fail on an unmigrated database, `CRON_SECRET` with surrounding whitespace is refused, log values of other types are redacted, and the documented residual risk of `SET ROLE app_worker` now says read and write.
   - Before it, [`2026-10-31-cycle-3-fix-round-3.md`](evidence/2026-10-31-cycle-3-fix-round-3.md): the cycle 3 review of `73e14e8`, its findings by disposition, fix round 3 by package, the last documentation pass, and everything not run. It records no full `pnpm verify` of the merged tree yet.
   - Before it, [`2026-10-31-round-1b-cycle-2-fix-round-2.md`](evidence/2026-10-31-round-1b-cycle-2-fix-round-2.md): round 1b, the cycle 2 review and its findings by disposition, fix round 2, the full `pnpm verify` runs of the merged trees (`dd12f44`: 22 of 23 steps passed, and the one failure was fixed and rerun; `ecfd9d8`: 21 of 23, the two failures a merge seam fixed at `1729bd0`), and everything not run. Its counts are each from one tree and do not add up to one run.
   - [`2026-10-30-cycle-1-fix-round.md`](evidence/2026-10-30-cycle-1-fix-round.md): the results of each cycle 1 package, the checks run on that merged tree, and everything that was not run.
@@ -1598,7 +1634,7 @@ The report clearly distinguishes verified behavior from assumptions, mocks, and 
 - **Decisions:**
   - DEC-002 to DEC-012: RESOLVED (ADR-0001, ADR-0002). DEC-003 to DEC-005 are adopter-owned.
   - Architecture: ADR-0003. ADR-0004 records the decisions that agents adopted by delegation in cycle 1, round 1b, fix round 2 and fix round 3 (§1 to §29).
-  - **Open:** DEC-001 (topology B adopted by delegation; the preview deployment and the owner's confirmation are pending), DEC-006, DEC-013 (option (B) adopted by delegation; confirmation and the sandbox run pending), and DEC-014 (the diagnostics operator capability; option (B) adopted by delegation, confirmation pending).
+  - **Open:** DEC-001 (topology B adopted by delegation; the preview deployment and the owner's confirmation are pending), DEC-006, DEC-013 (option (B) adopted by delegation; confirmation and the sandbox run pending), DEC-014 (the diagnostics operator capability; option (B) adopted by delegation, confirmation pending), and DEC-015 (transactional email: the provider is the owner's; the defaults and any product email await the owner).
   - **Awaiting owner approval:**
     - granting Pro by the Stripe product (`STRIPE_PRODUCT_PRO`, in place of the retained-price settings; a billing-related choice, §17 rule 5; [ADR-0004 §16](adr/0004-cycle-1-adopted-decisions.md)), and the defaults and choices listed under "Not fixed" in both second-review records;
     - the billing behavior change of BILL-06: the success page, the portal return, and a refused checkout ask the server to re-read from Stripe once (BILL-22);
@@ -1637,6 +1673,7 @@ The report clearly distinguishes verified behavior from assumptions, mocks, and 
   7. Confirm or reverse granting Pro by the Stripe product, and confirm the defaults listed under "Not fixed" in the two second-review records (for example: outbox lease 900 s, migration lock timeout 5 s, `DATABASE_POOL_MAX_SIZE` at most 30, a domain `503` keeps the request's writes). The cycle 1 review offered two options for the first; option (B) was adopted by delegation and built ([ADR-0004 §16](adr/0004-cycle-1-adopted-decisions.md)): any monthly or yearly price of the product `STRIPE_PRODUCT_PRO` grants Pro, and the retained-price settings are deleted. Set `STRIPE_PRODUCT_PRO` (`prod_...`) in every environment that uses Stripe; `pnpm setup:stripe` prints it for a sandbox. Option (A) would list replaced prices in settings again (§16 gives the cost of reversing). If a price was replaced before the product was set, `pnpm billing:reconcile --apply` gives Pro back to the subscribers it dropped. `decide()` also returns a feature set now (BILL-01).
   8. Confirm or reverse DEC-014 option (B): keep the operator model and require MFA for the listed operators in Clerk. Option (A) adds a verified second factor in code (the session token's `fva` claim); option (C) limits diagnostics to local and preview.
   9. Confirm or reverse the other decisions of [ADR-0004](adr/0004-cycle-1-adopted-decisions.md), §16 to §29 included (§20, §21 and §27 are listed above under "Awaiting owner approval").
+  10. Answer DEC-015: whether the template sends any email itself, where a recipient's address comes from, whether to handle Resend's webhooks, and whether the email defaults stand. To verify the integration, verify a sending domain in Resend and put a key in `.env` (setup step S13), then run `pnpm check:setup` and `pnpm check:setup --send-test-events`.
 - **Next steps (no owner action needed):** re-record PERF-03, PERF-04, and PERF-06 locally with the corrected harness; run `pnpm verify` with gitleaks installed (the secrets step was skipped in both recorded `pnpm verify` runs) and record it; re-run `proofs/dec-001/run.sh` on a quiet machine; re-record the clean-clone run (REPO-11) with clean caches.
 
 **Final principle:** build a template that is secure by default, modular by design, reproducible from a clean clone, and honest about its verified limits. Do not trade correctness, security, or maintainability for superficial completion.

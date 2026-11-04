@@ -56,4 +56,4 @@ def test_a_probe_contributed_by_any_module_is_listed(
     assert response.status_code == 200
     listed = {item["key"]: item["name"] for item in response.json()["integrations"]}
     assert listed["llm"] == "Stub"
-    assert set(listed) == {"database", "identity", "billing", "llm", "analytics", "error_reporting"}
+    assert set(listed) == {"database", "identity", "billing", "email", "llm", "analytics", "error_reporting"}

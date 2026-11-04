@@ -1,6 +1,6 @@
 # External Integrations
 
-Reference for the six external services: what each does here and where its code lives, which variables configure it, how the template checks it, and what goes wrong. The steps that need a person (accounts, keys, dashboard settings) are in [setup.md](setup.md). What to set in Vercel is in [deployment.md](deployment.md). Every variable is described in [`.env.example`](../.env.example).
+Reference for the seven external services: what each does here and where its code lives, which variables configure it, how the template checks it, and what goes wrong. The steps that need a person (accounts, keys, dashboard settings) are in [setup.md](setup.md). What to set in Vercel is in [deployment.md](deployment.md). Every variable is described in [`.env.example`](../.env.example).
 
 Use separate projects or instances per environment, and never reuse production credentials outside production (spec §5).
 
@@ -16,14 +16,15 @@ Each integration has a mode in `.env`:
 | Variable | local, test | preview | production |
 |---|---|---|---|
 | `BILLING_MODE` | `mock`, `sandbox` | `mock`, `sandbox` | `live` |
+| `EMAIL_MODE` | `disabled`, `mock`, `sandbox` | `disabled`, `mock`, `sandbox` | `disabled`, `live` |
 | `LLM_MODE` | `disabled`, `mock`, `sandbox` | `disabled`, `mock`, `sandbox` | `disabled`, `live` |
 | `ANALYTICS_MODE`, `ERROR_REPORTING_MODE` | `disabled`, `sandbox` | `disabled`, `sandbox` | `disabled`, `live` |
 
-Preview and production must set all four explicitly. Clerk has no mode: it is always on outside tests, and the placeholder keys from `.env.example` mean "not configured". Startup validation also pairs keys with modes: live keys outside production, or test keys in production, prevent the API from starting. Results obtained with `mock` never prove connectivity (spec TEST-04).
+Preview and production must set all five explicitly. Clerk has no mode: it is always on outside tests, and the placeholder keys from `.env.example` mean "not configured". Startup validation also pairs keys with modes: live keys outside production, or test keys in production, prevent the API from starting. Results obtained with `mock` never prove connectivity (spec TEST-04).
 
 ## Status of each integration
 
-Status in this repository on 2026-10-31. Nothing has been run against a real provider: no row is `sandbox` or `live`. Record your own runs under `dev-docs/evidence/` (spec §20) and update this table.
+Status in this repository on 2026-11-04. Nothing has been run against a real provider: no row is `sandbox` or `live`. Record your own runs under `dev-docs/evidence/` (spec §20) and update this table.
 
 - `mocked`: fakes and loopback stubs.
 - `local`: real software on one machine (PostgreSQL, the packaged function build).
@@ -39,15 +40,16 @@ Status in this repository on 2026-10-31. Nothing has been run against a real pro
 | PostHog | Event allowlist, property scrubbing, pending-event buffer, flush after the response, wire contents (`test_posthog_analytics.py`, `test_telemetry_wire.py`, `apps/web/src/lib/analytics*.test.*`). Real delivery | `mocked`. Delivery `NOT RUN` | `pnpm check:setup --send-test-events` |
 | Sentry | Scrubbing, tags, throttle, flush, trace sampling, wire contents (`test_sentry_tracing.py`, `test_telemetry_wire.py`, `apps/web/src/sentry-*.test.ts`). Real delivery and source-map upload | `mocked`. Delivery and upload `NOT RUN` | `pnpm check:setup --send-test-events`; a build with the three Sentry build variables |
 | LLM provider | Adapter and limits against loopback stubs. Real model-metadata call | `mocked`. Call `NOT RUN` | `pnpm check:setup` (read only) |
+| Resend | Settings, message limits, the sandbox recipient rule, the adapter's requests, retries and refusals against a stub transport, the mock, and the check (`apps/api/tests/unit/test_email.py`, `tests/integration/test_diagnostics.py`). A real domain read and send | `mocked`. Real calls `NOT RUN` | `pnpm check:setup` (reads the domain), then `pnpm check:setup --send-test-events` (one email to `delivered@resend.dev`) |
 | Vercel | Packaging and routing of the root `vercel.json` with the pinned CLI, no deployment (`pnpm test:vercel-build`) | `local`. The platform: `NOT VERIFIED` | A preview deployment you authorize ([deployment.md](deployment.md#verify-the-first-preview)) |
 
 ## Checking an integration
 
 ### `pnpm check:setup`
 
-The preflight of `pnpm dev`, then the checks behind the Integrations page, run from the command line without signing in. It contacts only the providers in `sandbox` mode (the Clerk membership read, the Stripe prices and portal read, the LLM model metadata), and nothing in `mock` or `disabled` mode. It prints a result per integration, an evidence block (spec §20), and the manual steps still needed. It refuses `APP_ENV=production`. Exit status 1 means a check failed.
+The preflight of `pnpm dev`, then the checks behind the Integrations page, run from the command line without signing in. It contacts only the providers in `sandbox` mode (the Clerk membership read, the Stripe prices and portal read, the Resend domain list, the LLM model metadata), and nothing in `mock` or `disabled` mode. It prints a result per integration, an evidence block (spec §20), and the manual steps still needed. It refuses `APP_ENV=production`. Exit status 1 means a check failed.
 
-- `--send-test-events` also sends one PostHog event and one Sentry issue to the sandbox projects. Run it only with the owner's go-ahead.
+- `--send-test-events` also sends one PostHog event and one Sentry issue to the sandbox projects, and one email to Resend's test inbox `delivered@resend.dev`. Run it only with the owner's go-ahead.
 - Clerk: with no session, the check only shows that the secret key was accepted ("no session token was verified"). A publishable key and a secret key from different instances are not detected.
 - Stripe: the webhook endpoint is not checked, because listing endpoints needs a restricted-key permission the setup does not require.
 
@@ -60,6 +62,7 @@ After filling in `.env` and running `pnpm dev`, sign in and open `/integrations`
 | PostgreSQL | Confirms queries run as `app_api` with row-level security and the tenant context applied, and reads the login role. In preview and production a login role that could skip row-level security FAILS the check and names the fix | None |
 | Clerk | Reads your organization memberships from the Clerk Backend API (your session token was already verified) | None |
 | Stripe | Retrieves both Pro prices and checks they are active, recurring monthly and yearly, in one currency, in the right mode, and on the product `STRIPE_PRODUCT_PRO` (it names the product of a price that is on another one). Lists one page of subscriptions and fails (`permission_denied`) when the key may not read them: every synchronization would fail. It does not test write access to Subscriptions, which ending a deleted user's subscription needs; its PASS text says so. Reads the Customer Portal configuration and fails (`portal_mismatch`) when it does not match [what the template expects](#stripe) | None |
+| Resend | Reads the account's domains and fails when the domain of `EMAIL_FROM` is missing (`domain_missing`), not verified (`domain_not_verified`), not allowed to send (`sending_disabled`), or `resend.dev` (`testing_domain`). A key with sending access only cannot read them, and the result says so. Then sends one email to `delivered@resend.dev` and shows Resend's ID of it | One email to Resend's test inbox: it reaches no person and counts toward the quota. `pnpm check:setup` sends it only with `--send-test-events` |
 | LLM provider | Retrieves the model's metadata (no tokens generated) | None; counts toward the LLM check limits |
 | PostHog | Sends the allowlisted event `integration_test_sent` and flushes it | One event in your project |
 | Sentry | Sends a synthetic `IntegrationTestError` and flushes it | One issue in your project |
@@ -310,6 +313,52 @@ The check retrieves the model's metadata and generates no tokens. With `LLM_MODE
 
 It is an operator tool, like the Integrations page, and for the same reason: every account would spend one daily budget (`LLM_CHECKS_GLOBAL_PER_DAY`). `POST /api/v1/llm/check` follows the [diagnostics policy](#the-integrations-page): a caller who may not use diagnostics gets the `404` the diagnostics routes give, and the refused call uses no limit. That includes every caller in production while `DIAGNOSTICS_ENABLED` is not `true`. The dashboard card appears for the same callers.
 
+## Resend
+
+Transactional email. API: `apps/api/app/modules/email` (the `EmailSender` port, the Resend adapter over `httpx`, a mock, and the check); there is no web part. The template sends no product email: which emails an app sends, to whom, and with what consent is the adopter's (DEC-015). Steps: [setup.md](setup.md#resend).
+
+| Variable | Apps | Notes |
+|---|---|---|
+| `EMAIL_MODE` | api | `mock` (the default: emails are kept in memory and never leave the process), `sandbox`, `live` (production only), `disabled` (every send answers `503 NOT_CONFIGURED`) |
+| `RESEND_API_KEY` | api | `re_...`; one key per environment |
+| `EMAIL_FROM` | api | `noreply@example.com` or `Example <noreply@example.com>`, on a domain verified in Resend. Live mode refuses `resend.dev` |
+| `EMAIL_SANDBOX_RECIPIENTS` | api | Sandbox only: addresses or `@domains`, separated by commas, that may receive email besides Resend's test addresses |
+| `EMAIL_TIMEOUT_SECONDS`, `EMAIL_MAX_CONCURRENT_SENDS` | api | Limits, in [`.env.example`](../.env.example) |
+
+**Sending from a feature.** Send from an outbox handler, not inline in a request: handlers run after the commit, on threads of their own, at least once, and every handler of an event runs again when one of them fails. Event payloads hold internal IDs only, so the handler reads the recipient's address when it runs (for a user, from Clerk), and the idempotency key is the handler's name and the event's ID, so a repeated run sends nothing new:
+
+```python
+from app.modules.email.api import EmailMessage
+
+
+def send_welcome(event: StoredEvent) -> None:
+    address = ...  # read it now: the event holds the user's internal ID only
+    email.send(
+        EmailMessage(to=(address,), subject="Welcome", text="Thanks for signing up."),
+        idempotency_key=f"accounts.welcome_email:{event.id}",
+    )
+
+
+kernel.handlers.subscribe(UserSignedUp, "accounts.welcome_email", send_welcome)
+```
+
+Before any call the service refuses a message Resend would refuse (1 to 50 recipients, a one-line subject, a plain-text part, the tag and key formats) and, in sandbox mode, every recipient outside Resend's test addresses and `EMAIL_SANDBOX_RECIPIENTS`. No error or log names an address, a subject or a body, and Resend's own error messages, which can quote the account's address, are never passed on. At most `EMAIL_MAX_CONCURRENT_SENDS` sends run at once per instance; past that a send gets `429`, which an outbox handler retries.
+
+**Retries.** A request is repeated at most twice within `EMAIL_TIMEOUT_SECONDS`, and a send only when a repeat cannot send a second email: Resend returns the first email for a repeated idempotency key. A lost connection, a 5xx, a rate limit with short guidance, and a concurrent request under the same key are repeated; a refusal or a used-up quota never is. Resend keeps a key for 24 hours: an outbox retry after that (a drain that runs once a day) can send a second email.
+
+**Not built.** Resend's webhooks (deliveries, bounces and complaints, signed with Svix headers) and a suppression list, so a bounced address keeps being sent to; attachments, `cc` and `bcc`, batch and scheduled sends; templates.
+
+**Failure modes**
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| The check fails with `domain_missing` | The domain of `EMAIL_FROM` is not in this Resend account | Add and verify it under Domains, or change `EMAIL_FROM` |
+| The check fails with `domain_not_verified` | Its DNS records are missing, or Resend has not seen them yet | Add the records exactly as Resend lists them, then verify the domain |
+| The check fails with `testing_domain` | `EMAIL_FROM` is on `resend.dev`, which delivers only to the account's own address | Verify a domain of yours and use an address on it |
+| "Resend refused the request" (`not_configured`) | A revoked or mistyped key, or a key limited to another domain | Create a key for this environment and set `RESEND_API_KEY` |
+| "The Resend sending quota of this account is used up" | Resend's daily or monthly quota; test emails count too | Wait, or change the plan |
+| `INVALID_REQUEST` naming `EMAIL_MODE=sandbox` | A recipient outside the test addresses and `EMAIL_SANDBOX_RECIPIENTS` | Expected in sandbox: list the address, or send to `delivered@resend.dev` |
+
 ## Callback URL summary
 
 | Provider | URL | Environment |
@@ -321,4 +370,4 @@ It is an operator tool, like the Integrations page, and for the same reason: eve
 | Stripe portal return | `<APP_BASE_URL>/billing?from=portal` | Built by the API |
 | Clerk allowed origins | `CLERK_AUTHORIZED_PARTIES` | Per environment |
 
-`<api-host>` is the app's own domain under the shipped single-project topology. Preview URLs, Deployment Protection and the Clerk Paths row: [deployment.md](deployment.md#preview-deployments).
+Resend needs none: the template receives no Resend webhook. `<api-host>` is the app's own domain under the shipped single-project topology. Preview URLs, Deployment Protection and the Clerk Paths row: [deployment.md](deployment.md#preview-deployments).

@@ -32,7 +32,7 @@ Sources: [Vercel Services](https://vercel.com/docs/services), [configuration ref
 
 - **`APP_ENV` on Vercel.** Leave it unset: it is taken from `VERCEL_ENV` (`production`, `preview`; `development` is `local`). A value that contradicts the platform is refused: `production` on a Preview deployment, or `local` / `test` on a Preview or Production one. Both the API (at start) and the web build (when `VERCEL=1`) refuse a deployment with neither `APP_ENV` nor `VERCEL_ENV`, so keep **Enable access to System Environment Variables** checked (Project Settings > Environment Variables; [Vercel: system environment variables](https://vercel.com/docs/environment-variables/system-environment-variables)). Vercel gave every new project these variables by default in 2020 ([changelog](https://vercel.com/changelog/system-environment-variables-are-now-available-by-default)); the current default is NOT VERIFIED, so look at the box.
 - **A staging or pre-launch project** may set `APP_ENV=preview` on the Production scope.
-- **Explicit modes.** In Preview and Production, set `BILLING_MODE`, `LLM_MODE`, `ANALYTICS_MODE` and `ERROR_REPORTING_MODE`; none defaults there.
+- **Explicit modes.** In Preview and Production, set `BILLING_MODE`, `EMAIL_MODE`, `LLM_MODE`, `ANALYTICS_MODE` and `ERROR_REPORTING_MODE`; none defaults there.
 - **Never** import the local `.env` into a Vercel project (`APP_ENV=local` is refused). Put production values only in the Production scope. Live keys are refused unless `APP_ENV=production`, and test keys are refused in production.
 
 ## Variables: which service reads what
@@ -78,6 +78,15 @@ Legend: **web** = the Next.js service, **api** = the Python service. *Baked* = f
 | `BILLING_RECONCILE_APPLY` | api | config | Leave unset (the job applies Stripe's state) | Leave unset; `false` makes the job only report |
 | `BILLING_ON_USER_DELETED` | api | config | Leave unset (a deleted user's subscription is set to end at the period's end) | Leave unset; `log` only reports it |
 
+**Email (Resend)**
+
+| Variable | Read by | Kind | Preview | Production |
+|---|---|---|---|---|
+| `EMAIL_MODE` | api | config | `disabled`, `mock` or `sandbox` | `disabled` or `live` |
+| `RESEND_API_KEY` | api | secret | With `sandbox`: a key for Preview | With `live`: a key for Production |
+| `EMAIL_FROM` | api | config | With `sandbox`: an address on a domain verified in Resend | With `live`: an address on your verified domain (`resend.dev` is refused) |
+| `EMAIL_SANDBOX_RECIPIENTS` | api | config | Optional: addresses or `@domains` that may receive email besides Resend's test addresses | Leave unset (live mode sends to anyone) |
+
 **LLM, analytics, errors**
 
 | Variable | Read by | Kind | Preview | Production |
@@ -108,7 +117,7 @@ Legend: **web** = the Next.js service, **api** = the Python service. *Baked* = f
 
 Never in the Vercel project: `MIGRATION_DATABASE_URL` and `API_DB_PASSWORD` (the migration credential lives in a GitHub Environment secret), and the `E2E_*` variables. Set by Vercel, never by you: `VERCEL`, `VERCEL_ENV`, `VERCEL_URL`, `VERCEL_BRANCH_URL`, `VERCEL_GIT_COMMIT_SHA`, and `VERCEL_AUTOMATION_BYPASS_SECRET` when a bypass secret exists.
 
-Count for a full sandbox environment: about 21 required variables per scope, and about 25 with the optional ones, so roughly 42 to 50 entries for Preview and Production together. Optional and dashboard-only (plan availability not confirmed): the team security policy "Separate Production Secret Values", which forces different secret values in Production and Preview.
+Count for a full sandbox environment: about 22 required variables per scope, and about 28 with the optional ones, so roughly 44 to 56 entries for Preview and Production together. Optional and dashboard-only (plan availability not confirmed): the team security policy "Separate Production Secret Values", which forces different secret values in Production and Preview.
 
 ## Set up Vercel
 
@@ -179,9 +188,9 @@ Migrations follow expand, deploy, contract ([operations.md](operations.md#databa
 The first deployment needs three things that depend on each other. `APP_BASE_URL` is required in Preview (the API will not start and the web build fails without it). The Clerk endpoint and the Stripe event destination need the URL of a deployment. With `BILLING_MODE=sandbox` the API will not start without the Stripe endpoint's signing secret. Nothing in the code needs the Stripe endpoint when `BILLING_MODE=mock`, and the Clerk signing secret is optional (without it memberships are re-verified every 300 s). So the first pass deploys with billing mocked, and the second pass adds the endpoints at the real URL. By the code's rules neither pass leaves a deployment that refuses to start; none of this has run on Vercel.
 
 1. **Work out the branch URL.** Vercel builds it as `<project-name>-git-<branch-name>-<scope-slug>.vercel.app`, where the scope slug is the slug (not the name) of the account or team that owns the project, and it "won't change if you push new commits to the branch" ([Vercel: generated URLs](https://vercel.com/docs/deployments/generated-urls), updated 2026-09-08). Vercel truncates a label longer than 63 characters and may shorten a project name that resembles a domain, so a long project or branch name gives another URL; how it writes a branch name that contains `/` is not on that page (NOT VERIFIED). Use a short project name and a plain branch name.
-2. **Set the Preview variables of the first pass** ([the map](#variables-which-service-reads-what)): `APP_BASE_URL` (`https://` and the URL from step 1), `DATABASE_URL` (the `app_login` string, [Hosted database](#hosted-database-and-migrations)), the Clerk development keys, `BILLING_MODE=mock`, `LLM_MODE=disabled`, `ANALYTICS_MODE=disabled`, `ERROR_REPORTING_MODE=disabled`, and your Clerk user ID in `DIAGNOSTICS_OPERATOR_IDS` (D16: the development instance is the one you signed up in for Part 2, so the ID is on its Users page already).
+2. **Set the Preview variables of the first pass** ([the map](#variables-which-service-reads-what)): `APP_BASE_URL` (`https://` and the URL from step 1), `DATABASE_URL` (the `app_login` string, [Hosted database](#hosted-database-and-migrations)), the Clerk development keys, `BILLING_MODE=mock`, `EMAIL_MODE=disabled`, `LLM_MODE=disabled`, `ANALYTICS_MODE=disabled`, `ERROR_REPORTING_MODE=disabled`, and your Clerk user ID in `DIAGNOSTICS_OPERATOR_IDS` (D16: the development instance is the one you signed up in for Part 2, so the ID is on its Users page already).
 3. **Deploy (A2).** Read the deployment's URLs on the project's Overview or Deployments tab, or on the command line when the build has completed ([Vercel: generated URLs](https://vercel.com/docs/deployments/generated-urls)). The one that matches the pattern above is the branch URL. If it differs from `APP_BASE_URL`, correct `APP_BASE_URL` and redeploy. A wrong value should not break this pass: on a Preview deployment the API and the web proxy also trust the deployment's own URL and its branch URL for sign-in (that `VERCEL_URL` and `VERCEL_BRANCH_URL` reach the web build is NOT VERIFIED; check 2 shows it). It breaks what is built from `APP_BASE_URL`: the API's CORS origin and Stripe's return URLs. Then run checks 1 to 4, 7 and 8 of [Verify the first preview](#verify-the-first-preview).
-4. **Add the endpoints at the real URL (D12) and the second pass.** Create the Clerk endpoint and the Stripe event destination (below). Set `BILLING_MODE=sandbox`, `STRIPE_SECRET_KEY`, the two prices, `STRIPE_PRODUCT_PRO`, `STRIPE_WEBHOOK_SECRET` and `CLERK_WEBHOOK_SIGNING_SECRET` (and the PostHog and Sentry variables you use) in the Preview scope, and redeploy: a variable change reaches only new deployments, and the web values are fixed at build. Run checks 4 to 6 again.
+4. **Add the endpoints at the real URL (D12) and the second pass.** Create the Clerk endpoint and the Stripe event destination (below). Set `BILLING_MODE=sandbox`, `STRIPE_SECRET_KEY`, the two prices, `STRIPE_PRODUCT_PRO`, `STRIPE_WEBHOOK_SECRET` and `CLERK_WEBHOOK_SIGNING_SECRET` (and the Resend, PostHog and Sentry variables you use) in the Preview scope, and redeploy: a variable change reaches only new deployments, and the web values are fixed at build. Run checks 4 to 6 again.
 
 If you trust the URL of step 1, you can create the two endpoints first, set every variable, and deploy once. The endpoints then fail their deliveries (and Stripe retries them) until the deployment is up. The two passes cost one redeploy and cannot leave a deployment that refuses to start.
 
@@ -225,7 +234,7 @@ Run these on the first preview deployment you authorize (A2), with sandbox crede
 3. **API routing.** `curl -s https://<preview-host>/api/v1/health` answers `{"status":"ok"}` and `/api/v1/ready` answers `{"status":"ready","checks":{"database":"ok"}}`. This confirms the platform sends `/api/v1/*` to the API ahead of the catch-all. A `503` from `/ready` with `/health` up means the database cannot be reached, or the Database migrate run (step 7) has not been done for this environment.
 4. **The `/integrations` page.** **[YOU D16]** Your Clerk user ID must be in `DIAGNOSTICS_OPERATOR_IDS` in the Preview scope (the first pass sets it; add it and redeploy if it is missing): nobody is an operator outside local development until you are listed. Find the ID in the Clerk Dashboard on the Users page ([Clerk: user profile](https://clerk.com/docs/guides/dashboard/user-profile)); it starts with `user_`. Then sign in, open `/integrations` and select **Run all server checks**. The PostgreSQL row must be Passed with the `app_login` role. After the second pass the Stripe row must be Passed too.
 5. **Webhooks.** Send a test event from the Stripe destination and check the delivery shows `2xx`; confirm the Clerk endpoint the same way. A raw body must reach the API unchanged, or signatures fail.
-6. **Telemetry.** Run the PostHog and Sentry checks on `/integrations` and confirm each event arrives in its dashboard. Then start a checkout on an otherwise idle deployment and confirm `checkout_started` arrives in PostHog. Whether the instance stays alive long enough after the response for queued events to be sent is NOT VERIFIED on Vercel.
+6. **Telemetry and email.** Run the PostHog and Sentry checks on `/integrations` and confirm each event arrives in its dashboard. With `EMAIL_MODE=sandbox`, the Resend check sends one email to `delivered@resend.dev`: find it under Emails in the Resend dashboard. Then start a checkout on an otherwise idle deployment and confirm `checkout_started` arrives in PostHog. Whether the instance stays alive long enough after the response for queued events to be sent is NOT VERIFIED on Vercel.
 7. **Migrations.** The Database migrate run for `preview` succeeded.
 8. **Region and limits.** Compare the function's region with the configuration, and record cold start, duration and bundle size against Vercel's limits (the local bundle is 74.5 MiB; the documented limit is 500 MB).
 9. **Production only, later:** the four crons register from the root file and call the routes on a production deployment; after-response work completes; Instant Rollback restores web, API and cron definitions together.
@@ -262,9 +271,13 @@ Go-live is a sequence of steps that need your accounts. Do them in this order; t
 
 **[YOU D15]** Create a PostHog production project and Sentry projects for production (or Sentry environments), set their keys in the Production scope with the modes `live`, and apply the IP settings ([setup.md](setup.md#posthog)). Optional source maps: the three Sentry build variables.
 
+### Resend production
+
+**[YOU D18]** If the app sends email, verify the production sending domain in Resend, a domain of yours ([setup.md](setup.md#resend)), and create an API key for Production: sending access limited to that domain is enough to send, and the `/integrations` check then cannot read the domain's status. Set `EMAIL_MODE=live`, `RESEND_API_KEY` and `EMAIL_FROM` in the Production scope; startup refuses an `EMAIL_FROM` on `resend.dev` in live mode. If it sends none, set `EMAIL_MODE=disabled`. Bounces and complaints are not received: the template has no Resend webhook ([integrations.md](integrations.md#resend)).
+
 ### Live verification
 
-After go-live, with the owner's authorization (A5): set `DIAGNOSTICS_ENABLED=true` temporarily, run the Clerk and Stripe checks on `/integrations` and the membership-removal procedure ([integrations.md](integrations.md#checking-an-integration)), turn diagnostics off again, and record the result as `live` evidence.
+After go-live, with the owner's authorization (A5): set `DIAGNOSTICS_ENABLED=true` temporarily, run the Clerk and Stripe checks on `/integrations` (and the Resend check, with email on: one email to `delivered@resend.dev`) and the membership-removal procedure ([integrations.md](integrations.md#checking-an-integration)), turn diagnostics off again, and record the result as `live` evidence.
 
 ## Rollback
 

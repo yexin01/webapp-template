@@ -19,6 +19,7 @@ Day-two procedures for adopters: health checks, provider outages, routine tasks,
 - **Database.** Readiness fails. Data requests return `503`. No partial writes. A database or pooler that stops responding fails each call after the round-trip deadline: `DATABASE_STATEMENT_TIMEOUT_MS` plus `DATABASE_CONNECT_TIMEOUT_SECONDS` (15 s by default). After a pooler restart or failover, connections that died while idle are replaced on first use, without failing the request.
 - **PostHog and Sentry.** No user-visible impact. Exports fail silently and are logged.
 - **LLM provider.** Only the connectivity check reports failure.
+- **Resend.** A send fails with `503`; an outbox handler that sends is retried with backoff and is dead-lettered after `OUTBOX_MAX_ATTEMPTS`. Nothing else depends on email, and readiness does not check it. A used-up quota is not retried within a send.
 
 Each `503` the API chooses (a dependency outage, a missing configuration) is reported to Sentry, tagged `error_code`, at most once a minute per cause per instance; `NOT_CONFIGURED` is a warning, except a Stripe key or request that Stripe refuses, which is an error. The log line `dependency_or_configuration_error` carries the cause type.
 
@@ -83,6 +84,7 @@ Rotate immediately after any suspected exposure, and periodically otherwise. For
 | `DATABASE_URL` (the `app_login` password) | Vercel (API) | `/api/v1/ready`; the PostgreSQL check | Re-run `pnpm db:api-login --allow-remote`. The old password stops working at once, so requests fail until the redeploy finishes. The `postgres` password is rotated separately in the Supabase Dashboard |
 | `MIGRATION_DATABASE_URL` | GitHub Environment secrets (`preview`, `production`) | Run **Database migrate** | Rotate the `postgres` password in Supabase |
 | `LLM_API_KEY` | Vercel (API) | The LLM check | Revoke at the provider |
+| `RESEND_API_KEY` | Vercel (API); local `.env` | The Resend check; `pnpm check:setup` | One key per environment; delete the old key in Resend once the new deployment is live |
 | `CRON_SECRET` | Vercel, Production scope | Call a job route with the new value; the old one answers `401` | `openssl rand -hex 32`, at least 32 characters, with no space or newline at either end (the API refuses to start otherwise: HTTP trims the header, so such a secret would never match). Vercel sends the project's `CRON_SECRET` as the `Authorization` header of each cron call ([Vercel: securing cron jobs](https://vercel.com/docs/cron-jobs/manage-cron-jobs#securing-cron-jobs)) |
 | `NEXT_PUBLIC_POSTHOG_KEY`, `NEXT_PUBLIC_SENTRY_DSN` | Vercel (web, and the API for the PostHog key) | Events arrive | Baked: a rotated key stays in already-built browser bundles until you redeploy |
 | `SENTRY_DSN` | Vercel (API) | `pnpm check:setup --send-test-events` | |

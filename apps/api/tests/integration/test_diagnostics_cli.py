@@ -14,7 +14,7 @@ from app.bootstrap import build_container
 from app.kernel.infrastructure.config import REPO_ROOT
 from app.kernel.infrastructure.observability import NoopAnalytics, NoopErrorReporter
 from tests.conftest import PRICE_MONTHLY, PRICE_YEARLY, Harness
-from tests.integration.test_diagnostics import SANDBOX, FakeErrorReporter, _portal, _price
+from tests.integration.test_diagnostics import SANDBOX, FakeEmailSender, FakeErrorReporter, _portal, _price
 
 pytestmark = pytest.mark.db
 
@@ -37,6 +37,7 @@ def local_env(tmp_path: Path, database_url: str) -> str:
 def sandbox_container(make_harness: Callable[..., Harness]) -> Callable[..., Harness]:
     def factory(settings: dict[str, Any] | None = None, **overrides: Any) -> Harness:
         overrides.setdefault("error_reporter", FakeErrorReporter())
+        overrides.setdefault("email_sender", FakeEmailSender())
         h = make_harness({**SANDBOX, **(settings or {})}, **overrides)
         h.billing.set_price(_price(PRICE_MONTHLY, "month"))
         h.billing.set_price(_price(PRICE_YEARLY, "year"))
@@ -76,6 +77,11 @@ def test_without_the_flag_no_analytics_or_error_reporting_adapter_is_built(
     assert doctor.diagnose(path, False, io.StringIO(), io.StringIO()) == 0
     assert isinstance(built[0]["analytics"], NoopAnalytics)
     assert isinstance(built[0]["error_reporter"], NoopErrorReporter)
+    assert built[0]["email_test_sends"] is False  # the Resend check reads the domain and sends nothing
+
+    built.clear()
+    assert doctor.diagnose(path, True, io.StringIO(), io.StringIO()) == 0
+    assert built == [{}]  # with the flag: the real adapters, and the Resend check sends its test email
 
 
 def test_sandbox_checks_pass_and_test_events_wait_for_the_flag(sandbox_container: Callable[..., Harness]) -> None:
@@ -127,3 +133,28 @@ def test_nothing_secret_reaches_the_output(sandbox_container: Callable[..., Harn
     for name in ("clerk_secret_key", "clerk_webhook_signing_secret", "stripe_secret_key", "llm_api_key"):
         assert SANDBOX[name] not in out.getvalue(), name
     assert SANDBOX["sentry_dsn"] not in out.getvalue()
+
+
+def test_without_the_flag_the_resend_check_reads_the_domain_and_sends_nothing(
+    sandbox_container: Callable[..., Harness],
+) -> None:
+    sender = FakeEmailSender()
+    h = sandbox_container(email_sender=sender, email_test_sends=False)
+    out = io.StringIO()
+    assert doctor.run_diagnose(h.container, send_test_events=False, out=out, **FIXED) == 0
+    text = out.getvalue()
+    assert "PASS     Resend" in text
+    assert "No email was sent" in text
+    assert sender.sent == []
+    assert "--send-test-events` to send one email to delivered@resend.dev" in text  # the manual step
+
+
+def test_with_the_flag_one_email_goes_to_resends_test_inbox(sandbox_container: Callable[..., Harness]) -> None:
+    sender = FakeEmailSender()
+    h = sandbox_container(email_sender=sender)
+    out = io.StringIO()
+    assert doctor.run_diagnose(h.container, send_test_events=True, out=out, **FIXED) == 0
+    text = out.getvalue()
+    assert "PASS     Resend" in text
+    assert "reference: 4ef9a417-02e9-4d39-ad75-9611e0fcc33c" in text
+    assert [message.to for _, message, _ in sender.sent] == [("delivered@resend.dev",)]

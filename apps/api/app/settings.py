@@ -18,6 +18,7 @@ from app.kernel.infrastructure.config import ConfigError, CoreSettings, core_pro
 from app.kernel.infrastructure.db import REQUEST_THREADS
 from app.modules.billing.settings import BillingSettings, billing_problems
 from app.modules.diagnostics.settings import DiagnosticsSettings
+from app.modules.email.settings import EmailSettings, email_problems
 from app.modules.identity.settings import IdentitySettings, authorized_parties, identity_problems
 from app.modules.llm.settings import LLMSettings, llm_problems
 
@@ -27,7 +28,7 @@ MIN_WAITER_PLACES = 8
 CLERK_KEY_SET_THREADS = 5
 
 
-class Settings(CoreSettings, IdentitySettings, BillingSettings, LLMSettings, DiagnosticsSettings):
+class Settings(CoreSettings, IdentitySettings, BillingSettings, EmailSettings, LLMSettings, DiagnosticsSettings):
     @model_validator(mode="after")
     def _validate(self) -> Self:
         self.clerk_authorized_parties = authorized_parties(self, self)
@@ -35,6 +36,7 @@ class Settings(CoreSettings, IdentitySettings, BillingSettings, LLMSettings, Dia
             *core_problems(self),
             *identity_problems(self, self),
             *billing_problems(self, self),
+            *email_problems(self, self),
             *llm_problems(self, self),
             *thread_budget_problems(self),
         ]
@@ -56,7 +58,9 @@ def reserved_request_threads(s: Settings) -> int:
     Work that no concurrency limit caps is not counted (see ``Database``):
     operator diagnostics and key-set lookups while no usable key set is
     cached. Cron job runs are not counted either, but each job runs at most
-    once at a time.
+    once at a time. Nor are email sends: they belong in outbox handlers, which
+    run on threads of their own (``EmailService``); a send made from a request
+    is capped by EMAIL_MAX_CONCURRENT_SENDS but not counted here.
     """
     return (
         s.llm_max_concurrent_checks

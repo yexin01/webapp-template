@@ -1,6 +1,6 @@
 # SaaS Template
 
-An open-source SaaS starter: a **Next.js** (TypeScript, strict) web app and a **Python (FastAPI)** API, with **Clerk** authentication and organizations, **Stripe** Free/Pro billing (monthly and yearly), **Supabase/PostgreSQL** with forced row-level security, **PostHog** analytics, **Sentry** error monitoring, and a provider-agnostic **LLM** connectivity check, meant to deploy on **Vercel**.
+An open-source SaaS starter: a **Next.js** (TypeScript, strict) web app and a **Python (FastAPI)** API, with **Clerk** authentication and organizations, **Stripe** Free/Pro billing (monthly and yearly), **Supabase/PostgreSQL** with forced row-level security, **Resend** transactional email, **PostHog** analytics, **Sentry** error monitoring, and a provider-agnostic **LLM** connectivity check, meant to deploy on **Vercel**.
 
 It is secure by default: every API operation is authorized on the server, tenants are isolated by the database as well as the application, and Pro access is granted only from verified Stripe data. Subscriptions belong to individuals: a user's Pro plan covers their own actions in every workspace they belong to and is never shared ([ADR-0002](dev-docs/adr/0002-organization-entitlements-contacts-adopter-decisions.md)). A minimal UI exercises every integration, including an **Integrations** page (`/integrations`) that shows each service's mode and runs a live check against it.
 

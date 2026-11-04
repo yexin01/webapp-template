@@ -36,6 +36,7 @@ Each row has an ID. The step in the guide that does it carries a bold tag made o
 | S9 | Create a PostHog project; copy the project token; enable "Discard client IP data" | `NEXT_PUBLIC_POSTHOG_KEY` | [PostHog](#posthog) |
 | S10 | Create the Sentry project(s); copy the DSNs; enable "Prevent storing of IP addresses" | `SENTRY_DSN`, `NEXT_PUBLIC_SENTRY_DSN` | [Sentry](#sentry) |
 | S11 | Set `LLM_MODE=disabled`, or create a provider key with a spending limit | `LLM_*` | [LLM provider](#llm-provider) |
+| S13 | Optional: create a Resend account, verify your sending domain, and create an API key | `RESEND_API_KEY`, `EMAIL_FROM`, `EMAIL_MODE=sandbox` | [Resend](#resend) |
 
 ### Needed to deploy
 
@@ -58,6 +59,7 @@ Each row has an ID. The step in the guide that does it carries a bold tag made o
 | D15 | Create the PostHog and Sentry production projects | [PostHog and Sentry production](deployment.md#posthog-and-sentry-production) |
 | D16 | Put your Clerk user ID in `DIAGNOSTICS_OPERATOR_IDS` | [Verify the first preview](deployment.md#verify-the-first-preview) |
 | D17 | Make the adopter decisions (contacts, data policy, backups, performance targets) | [Before you launch](deployment.md#before-you-launch) |
+| D18 | Verify the production sending domain in Resend and create a production key, or set `EMAIL_MODE=disabled` | [Resend production](deployment.md#resend-production) |
 
 ### Authorizations only the owner can give
 
@@ -294,6 +296,22 @@ A connectivity check only, optional.
 1. **[YOU S11]** Choose. With no LLM, set `LLM_MODE=disabled`: it needs no key, is valid in every environment, and the check answers "not configured". Otherwise create an API key at the provider and **set a spending limit there**, then set `LLM_PROVIDER` (`anthropic` or `openai`), `LLM_API_KEY`, `LLM_MODEL` (a model ID your key can use), and `LLM_MODE=sandbox`.
 2. Check: `pnpm check:setup` retrieves the model's metadata and generates no tokens.
 
+### Resend
+
+Transactional email, optional. The template sends no product email of its own: the module gives your features a tested way to send one, and the check shows that the key, the sending domain and a send work ([integrations.md](integrations.md#resend)).
+
+1. **[YOU S13]** Create an account at [resend.com](https://resend.com). On the **Domains** page select **Add Domain** and add a domain you control (a subdomain such as `mail.example.com` keeps your root domain's reputation apart). Add the DNS records Resend lists for it (SPF and DKIM: `TXT`, and `MX` or `CNAME`) at your DNS provider, exactly as shown, and verify the domain ([Resend: domains](https://resend.com/docs/dashboard/domains/introduction)). Then create an API key for this environment ([Resend: API keys](https://resend.com/docs/dashboard/api-keys/introduction)). A key with full access lets the check read the domain's status; a key with sending access only, which can be limited to the domain, sends but cannot read it, and the check says so. The labels of the key page are taken from Resend's documentation, not seen in a dashboard (NOT VERIFIED).
+2. Put the values in `.env`:
+
+   ```
+   EMAIL_MODE=sandbox
+   RESEND_API_KEY=re_...
+   EMAIL_FROM=Example <noreply@mail.example.com>
+   ```
+
+   In sandbox mode the API sends only to Resend's test addresses (`delivered@resend.dev` and the others on `resend.dev`) and to the addresses or `@domains` listed in `EMAIL_SANDBOX_RECIPIENTS`; any other recipient is refused before Resend sees it, so a copy of real data never emails the people in it. Test emails count toward the account's quota. `onboarding@resend.dev`, the sender a new account starts with, delivers only to your Resend account's own address: the check fails with `testing_domain` until `EMAIL_FROM` is on your verified domain, and `EMAIL_MODE=live` refuses it at startup.
+3. Check: `pnpm check:setup` reads the domain and sends nothing; the Resend row is Passed when the domain is verified for sending. **(A3)** `pnpm check:setup --send-test-events` also sends one email to `delivered@resend.dev`, which reaches no person, and so does the Resend check on `/integrations`. The reference it shows is Resend's ID of the email, which is listed under **Emails** in the Resend dashboard.
+
 ### You are done with Part 2 when
 
 **(A3)** this command
@@ -315,10 +333,10 @@ The first deployment needs `APP_BASE_URL`, and the Clerk and Stripe webhook endp
 1. Put the repository on a Git host and push it (A1). Create your own repository there and point `origin` at it first (`git remote -v` shows where your clone came from).
 2. Create the Vercel project and its settings: root directory, Framework Preset **Services**, function region, Deployment Protection, plan (D1 to D3, D5, D6).
 3. Create the preview database and run the **Database migrate** workflow for `preview`, then `pnpm db:api-login` (D8, A3; [Hosted database and migrations](deployment.md#hosted-database-and-migrations)).
-4. Work out the branch URL, `https://<project-name>-git-<branch-name>-<scope-slug>.vercel.app` ([how, and its limits](deployment.md#the-first-preview-in-order)), and add the Preview variables of the first pass (D4, D16; [the map](deployment.md#variables-which-service-reads-what)): `APP_BASE_URL` set to that URL, `DATABASE_URL` with the `app_login` role, the Clerk development keys, `BILLING_MODE=mock` with `LLM_MODE`, `ANALYTICS_MODE` and `ERROR_REPORTING_MODE` set to `disabled`, and your Clerk user ID in `DIAGNOSTICS_OPERATOR_IDS`.
+4. Work out the branch URL, `https://<project-name>-git-<branch-name>-<scope-slug>.vercel.app` ([how, and its limits](deployment.md#the-first-preview-in-order)), and add the Preview variables of the first pass (D4, D16; [the map](deployment.md#variables-which-service-reads-what)): `APP_BASE_URL` set to that URL, `DATABASE_URL` with the `app_login` role, the Clerk development keys, `BILLING_MODE=mock` with `EMAIL_MODE`, `LLM_MODE`, `ANALYTICS_MODE` and `ERROR_REPORTING_MODE` set to `disabled`, and your Clerk user ID in `DIAGNOSTICS_OPERATOR_IDS`.
 5. Authorize the first preview deployment (A2). Read the deployment's URLs on the project's Overview or Deployments tab: if its branch URL differs from `APP_BASE_URL`, correct `APP_BASE_URL` and redeploy.
 6. Run checks 1 to 4, 7 and 8 of [Verify the first preview](deployment.md#verify-the-first-preview). The first takes two minutes: `curl -sI https://<preview-host>/dashboard` signed out (add `-H "x-vercel-protection-bypass: <secret>"` if the preview is protected). A `307` to `/sign-in?redirect_url=...` means the Next.js proxy ran inside the service (a browser-like request on a development instance is sent to Clerk's handshake URL instead, which also comes from the proxy: [check 1](deployment.md#verify-the-first-preview)). A `200` means only the page gate in the browser protects pages; the API authorizes every operation either way. Whether the proxy runs under Services is **NOT VERIFIED** until you do this. Then sign in: the dashboard must show "No projects yet", which also shows that a protected preview lets the app's own API calls through.
-7. Second pass: create the Clerk and Stripe webhook endpoints at the real URL (D12). Add `BILLING_MODE=sandbox`, the Stripe variables, the two signing secrets, and the PostHog and Sentry variables you use. Redeploy, and run checks 4 to 6 again.
+7. Second pass: create the Clerk and Stripe webhook endpoints at the real URL (D12). Add `BILLING_MODE=sandbox`, the Stripe variables, the two signing secrets, and the Resend, PostHog and Sentry variables you use. Redeploy, and run checks 4 to 6 again.
 
 You are done with Part 3 when checks 1 to 8 under [Verify the first preview](deployment.md#verify-the-first-preview) pass and you have recorded the results as `sandbox` evidence. Production is a separate sequence ([deployment.md](deployment.md#production)).
 

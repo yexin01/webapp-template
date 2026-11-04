@@ -257,6 +257,7 @@
           "database",
           "identity",
           "billing",
+          "email",
           "llm",
           "analytics",
           "error_reporting"

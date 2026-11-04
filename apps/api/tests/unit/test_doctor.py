@@ -185,6 +185,7 @@ def sandbox_probes() -> dict[IntegrationKey, FakeProbe]:
         IntegrationKey.DATABASE: IntegrationMode.LOCAL,
         IntegrationKey.IDENTITY: IntegrationMode.SANDBOX,
         IntegrationKey.BILLING: IntegrationMode.SANDBOX,
+        IntegrationKey.EMAIL: IntegrationMode.SANDBOX,
         IntegrationKey.LLM: IntegrationMode.SANDBOX,
         IntegrationKey.ANALYTICS: IntegrationMode.SANDBOX,
         IntegrationKey.ERROR_REPORTING: IntegrationMode.SANDBOX,
@@ -292,7 +293,7 @@ def test_a_sent_test_event_is_never_a_pass() -> None:
     }
     block = doctor.evidence_block(make_settings(), [result], infos, commit="c", today="d", send_test_events=True)
     assert "| Sentry | sandbox | SENT (unconfirmed) | NOT VERIFIED | Queued. Reference: e1. |" in block
-    assert "one PostHog event and one Sentry issue" in block
+    assert "one PostHog event, one Sentry issue and one email to delivered@resend.dev" in block
 
 
 def steps_for(settings: Any, results: list[CheckResult], send: bool = False) -> str:
@@ -362,3 +363,23 @@ def test_manual_steps_name_what_no_api_can_check_once_keys_are_in() -> None:
     assert "Fix the FAIL" not in steps
     assert "pnpm check:setup --send-test-events" not in steps_for(settings, results, send=True)
     assert "no emails, tokens, or query strings" in steps_for(settings, results, send=True)
+
+
+def test_the_resend_step_follows_the_email_mode() -> None:
+    settings = make_settings()
+
+    def resend_lines(mode: IntegrationMode | None, send: bool = False) -> list[str]:
+        rows = [] if mode is None else [(IntegrationKey.EMAIL, mode, Outcome.SKIPPED, "x")]
+        steps = steps_for(settings, results_of(*rows), send)
+        return [line for line in steps.splitlines() if line.startswith("Resend")]
+
+    [mock] = resend_lines(IntegrationMode.MOCK)
+    assert "Resend (email, optional)" in mock
+    assert "docs/setup.md#resend" in mock
+    assert resend_lines(IntegrationMode.DISABLED) == []  # turned off on purpose: nothing to set up
+    assert resend_lines(None) == []
+    [sandbox] = resend_lines(IntegrationMode.SANDBOX)
+    assert "pnpm check:setup --send-test-events" in sandbox
+    [sent] = resend_lines(IntegrationMode.SANDBOX, send=True)
+    assert "under Emails in the Resend dashboard" in sent
+    assert "--send-test-events" not in sent

@@ -20,6 +20,7 @@ from app.kernel.ports import ConnectionDescription
 from app.kernel.tenancy import Role
 from app.modules.billing.domain import PortalConfiguration
 from app.modules.billing.ports import PriceDescription
+from app.modules.email.domain import TEST_RECIPIENT, DomainReport, EmailMessage, SendingDomain
 from app.modules.identity.domain import ExternalMembership
 from app.modules.llm.adapters import MockLLMProvider
 from app.settings import Settings
@@ -35,6 +36,7 @@ SECRETS = {
     "clerk_webhook_signing_secret": "whsec_" + "w" * 30,
     "stripe_secret_key": "sk_test_" + "s" * 30,
     "llm_api_key": "llm-" + "k" * 30,
+    "resend_api_key": "re_" + "r" * 30,
     "sentry_dsn": "https://" + "d" * 32 + "@o1.ingest.sentry.invalid/2",
 }
 OPERATORS = {"diagnostics_operator_ids": "user_a,user_b"}
@@ -43,6 +45,8 @@ SANDBOX = {
     "clerk_publishable_key": PUBLISHABLE,
     "clerk_authorized_parties": "http://localhost:3000",
     "billing_mode": "sandbox",
+    "email_mode": "sandbox",
+    "email_from": "Example <noreply@example.com>",
     "llm_mode": "sandbox",
     "llm_model": "test-model",
     "analytics_mode": "sandbox",
@@ -50,6 +54,23 @@ SANDBOX = {
     "error_reporting_mode": "sandbox",
     **SECRETS,
 }
+
+
+class FakeEmailSender:
+    """Answers as Resend does for an account where example.com is verified, and keeps what is sent."""
+
+    name = "fake"
+
+    def __init__(self, report: DomainReport | None = None) -> None:
+        self.report = report or DomainReport((SendingDomain("example.com", "verified", True),))
+        self.sent: list[tuple[str, EmailMessage, str]] = []
+
+    def send(self, sender: str, message: EmailMessage, *, idempotency_key: str) -> str:
+        self.sent.append((sender, message, idempotency_key))
+        return "4ef9a417-02e9-4d39-ad75-9611e0fcc33c"
+
+    def domains(self) -> DomainReport:
+        return self.report
 
 
 class FakeErrorReporter:
@@ -95,6 +116,7 @@ def _portal(**kwargs: Any) -> PortalConfiguration:
 def sandbox(make_harness: Callable[..., Harness]) -> Callable[..., Harness]:
     def factory(settings: dict[str, Any] | None = None, **overrides: Any) -> Harness:
         overrides.setdefault("error_reporter", FakeErrorReporter())
+        overrides.setdefault("email_sender", FakeEmailSender())
         h = make_harness({**SANDBOX, **(settings or {})}, **overrides)
         h.billing.set_price(_price(PRICE_MONTHLY, "month"))
         h.billing.set_price(_price(PRICE_YEARLY, "year"))
@@ -132,6 +154,7 @@ def test_report_lists_every_integration_without_secrets(sandbox: Callable[..., H
         "database": "local",
         "identity": "sandbox",
         "billing": "sandbox",
+        "email": "sandbox",
         "llm": "sandbox",
         "analytics": "sandbox",
         "error_reporting": "sandbox",
@@ -592,3 +615,67 @@ def test_diagnostics_default_off_in_production_only() -> None:
     for env in (AppEnv.LOCAL, AppEnv.PREVIEW, AppEnv.TEST):
         other = s(app_env=env, diagnostics_enabled=None)
         assert diagnostics_active(other, other) is True
+
+
+# --- Resend (DEC-015) ----------------------------------------------------------------------------------------
+
+
+def test_the_email_check_reads_the_domain_then_sends_one_email_to_resends_test_inbox(
+    sandbox: Callable[..., Harness],
+) -> None:
+    sender = FakeEmailSender()
+    h = sandbox(email_sender=sender)
+    body = check(h, "email")
+    assert (body["outcome"], body["mode"]) == ("passed", "sandbox")
+    assert "example.com is verified" in body["summary"]
+    assert TEST_RECIPIENT in body["summary"]
+    assert body["reference"] == "4ef9a417-02e9-4d39-ad75-9611e0fcc33c"
+    [(sent_from, message, key)] = sender.sent
+    assert sent_from == "Example <noreply@example.com>"
+    assert message.to == (TEST_RECIPIENT,)
+    assert key.startswith("integration-check-")
+    assert SECRETS["resend_api_key"] not in json.dumps(body)
+
+
+@pytest.mark.parametrize(
+    ("report", "code", "words"),
+    [
+        (DomainReport((SendingDomain("example.com", "not_started"),)), "domain_not_verified", "as not started"),
+        (DomainReport((SendingDomain("other.example", "verified"),)), "domain_missing", "no domain example.com"),
+        (DomainReport((SendingDomain("example.com", "verified", False),)), "sending_disabled", "turned off"),
+    ],
+)
+def test_the_email_check_stops_at_a_domain_that_cannot_send(
+    sandbox: Callable[..., Harness], report: DomainReport, code: str, words: str
+) -> None:
+    sender = FakeEmailSender(report)
+    body = check(sandbox(email_sender=sender), "email")
+    assert (body["outcome"], body["error_code"]) == ("failed", code)
+    assert words in body["summary"]
+    assert sender.sent == []  # nothing is sent from a domain that cannot send
+
+
+def test_resends_testing_domain_is_named_and_sends_nothing(sandbox: Callable[..., Harness]) -> None:
+    """onboarding@resend.dev delivers only to the Resend account's own address: no user could get an email."""
+    sender = FakeEmailSender()
+    body = check(sandbox({"email_from": "Onboarding <onboarding@Resend.dev>"}, email_sender=sender), "email")
+    assert (body["outcome"], body["error_code"]) == ("failed", "testing_domain")
+    assert "Resend accepted the API key" in body["summary"]
+    assert "verify a domain of yours" in body["summary"]
+    assert sender.sent == []
+
+
+def test_a_key_that_may_only_send_still_gets_the_test_email(sandbox: Callable[..., Harness]) -> None:
+    sender = FakeEmailSender(DomainReport(sending_only_key=True))
+    body = check(sandbox(email_sender=sender), "email")
+    assert body["outcome"] == "passed"
+    assert "may only send" in body["summary"]
+    assert len(sender.sent) == 1
+
+
+def test_the_sandbox_check_never_reaches_a_real_inbox(sandbox: Callable[..., Harness]) -> None:
+    """The check's own email goes to Resend's test inbox, which the sandbox policy always allows."""
+    sender = FakeEmailSender()
+    h = sandbox({"email_sandbox_recipients": ""}, email_sender=sender)
+    assert check(h, "email")["outcome"] == "passed"
+    assert all(address.endswith("@resend.dev") for _, message, _ in sender.sent for address in message.to)

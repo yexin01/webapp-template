@@ -26,6 +26,7 @@ class IntegrationKey(StrEnum):
     DATABASE = "database"
     IDENTITY = "identity"
     BILLING = "billing"
+    EMAIL = "email"
     LLM = "llm"
     ANALYTICS = "analytics"
     ERROR_REPORTING = "error_reporting"

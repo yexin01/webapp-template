@@ -27,6 +27,7 @@ flowchart LR
   posthog[PostHog]
   sentry[Sentry]
   llm[LLM provider]
+  resend[Resend<br/>email]
   cron[Vercel Cron]
 
   user -->|HTTPS| web
@@ -42,6 +43,7 @@ flowchart LR
   web -. scrubbed errors .-> sentry
   api -. scrubbed errors .-> sentry
   api -->|connectivity check| llm
+  api -->|emails from outbox handlers| resend
   cron -->|"GET /api/v1/jobs/* + CRON_SECRET"| api
 ```
 
@@ -101,6 +103,7 @@ Dotted arrows are contracts that the composition root passes in. No module impor
 | `identity` | Users, the organization-membership mirror, Clerk token and webhook verification, tenant-context resolution | `/me`, `/webhooks/clerk` | `reconcile-memberships` | publishes `identity.user_deleted` (through its `api.py`) |
 | `billing` | Customers, subscriptions, the entitlement matrix, price catalog, the open Checkout Session per user, Stripe | `/entitlement`, `/billing/*` (status, checkout, portal, sync), `/pro/insight`, `/webhooks/stripe` | `reconcile-billing` | publishes `billing.entitlement_changed`; handles `identity.user_deleted` |
 | `projects` | Example tenant-scoped resource; the generator's reference | `/projects`, `/orgs/{org_id}/projects` | — | publishes `projects.created` |
+| `email` | Sending email through Resend: the sender port, the adapter, the mock, the sandbox recipient rule, and the check. Other modules send through its `api.py` | — | — | — (features send from their own handlers) |
 | `llm` | Provider-agnostic connectivity check with cost bounds, for operators | `/llm/check` | — | — |
 | `diagnostics` | Operator-only integration report and checks, and the answer to "may I use them?" | `/diagnostics/*` (`/diagnostics/access` answers any signed-in caller) | — | — |
 | kernel | Health, readiness, outbox, rate limits | `/health`, `/ready`, `/jobs/{name}` | `drain-outbox`, `prune-expired` | dispatches all |

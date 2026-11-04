@@ -94,6 +94,7 @@ def registered_jobs(api_dir: Path) -> dict[str, str]:
         stripe_price_pro_monthly="price_placeholder_monthly",
         stripe_price_pro_yearly="price_placeholder_yearly",
         llm_mode="mock",
+        email_mode="mock",
     )
     container = build_container(settings, billing_provider=InMemoryBillingProvider())
     try:
