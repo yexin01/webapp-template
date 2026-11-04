@@ -31,7 +31,9 @@ from app.modules.email.domain import DomainReport, EmailMessage, SendingDomain
 logger = logging.getLogger(__name__)
 
 RESEND_API = "https://api.resend.com"
-USER_AGENT = "saas-template-api"
+# Resend refuses a request without one (403). httpx's own default, set here so the rule is visible and tested;
+# it names no project, so a template renamed with `pnpm init-template` has nothing left to rename here.
+USER_AGENT = f"python-httpx/{httpx.__version__}"
 _MAX_RETRIES = 2
 _MAX_BACKOFF_SECONDS = 5.0
 _RETRIED_STATUSES = frozenset({409, 429, 500, 502, 503, 504})
