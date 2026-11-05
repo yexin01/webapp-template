@@ -139,12 +139,11 @@ def test_the_description_names_the_sender_domain_and_never_the_listed_recipients
         email_from=FROM,
         email_sandbox_recipients="me@example.org,@team.example",
     )
-    details = " ".join(describe(sandbox).details)
-    assert "example.com" in details
-    assert "2 EMAIL_SANDBOX_RECIPIENTS entries" in details
-    assert "me@example.org" not in details
-    assert "team.example" not in details
-    assert KEY not in details
+    # The exact lines: no listed address or domain, and no key, can appear in them.
+    assert describe(sandbox).details == (
+        "Sender domain: example.com",
+        "Recipients: Resend's test addresses and 2 EMAIL_SANDBOX_RECIPIENTS entries",
+    )
 
 
 # --- settings ----------------------------------------------------------------------------------------
