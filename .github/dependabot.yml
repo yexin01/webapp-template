@@ -7,6 +7,11 @@ updates:
     groups:
       minor-and-patch:
         update-types: [minor, patch]
+    ignore:
+      # @types/node describes the Node major the apps run (.nvmrc). Its major moves with the runtime, by hand:
+      # types for a newer Node would accept APIs that Node 24 does not have.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: uv
     directory: /apps/api
     schedule: { interval: weekly }
@@ -25,3 +30,8 @@ updates:
   - package-ecosystem: docker-compose
     directory: /
     schedule: { interval: monthly }
+    ignore:
+      # The local database runs Supabase's PostgreSQL major (17, `pnpm test:supabase`). A major moves with
+      # Supabase, by hand, together with the CI service images; its data directory does not carry over.
+      - dependency-name: "postgres"
+        update-types: ["version-update:semver-major"]
