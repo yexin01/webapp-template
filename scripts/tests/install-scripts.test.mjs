@@ -19,6 +19,8 @@ const BLOCKED = {
   "core-js": "posthog-js depends on it; the script prints a funding notice and writes a small file in the temporary folder so that it shows once.",
   esbuild:
     "Reached through the Vercel CLI (tsx, @vercel/node). The script puts the native binary in place of the JavaScript launcher, a speed-up, and fetches the binary from npm when its platform package is missing; the lockfile installs that package.",
+  koffi:
+    "Reached through the Vercel CLI (@vercel/cli-auth), which loads it only to keep a login's credentials in a hardware key (Secure Enclave, TPM). The script builds or checks its native module; `vercel build` (`pnpm test:vercel-build`, CI's deploy-config job) runs without it, and so does everything else here.",
   "unrs-resolver":
     "Reached through eslint-config-next's import resolver. The script checks that the native binding package of the platform is installed, and fetches it if not; the lockfile installs it, and `pnpm --filter web lint` passes without the script.",
 };
