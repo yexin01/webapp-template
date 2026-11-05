@@ -3,7 +3,7 @@
 # container listens on 127.0.0.1 only.
 services:
   postgres:
-    image: postgres:17.6-alpine
+    image: postgres:17.11-alpine
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
