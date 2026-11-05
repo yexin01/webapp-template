@@ -156,6 +156,17 @@ def test_safe_session_passes() -> None:
     assert "The login role cannot skip row-level security." in result.summary
 
 
+def test_a_database_nothing_was_migrated_into_fails_whatever_else_it_reports() -> None:
+    """With no tables, "row-level security is enforced on every table" is true of nothing: say what is missing."""
+    description = dataclasses.replace(SAFE, missing_tables=("job_runs", "outbox"))
+    for restricted_login in (False, True):
+        result = service(description, restricted_login=restricted_login).run(PERSONAL, IntegrationKey.DATABASE, None)
+        assert (result.outcome, result.error_code) == (Outcome.FAILED, "not_migrated")
+        assert "schema app lacks job_runs, outbox" in result.summary
+        assert "pnpm db:migrate" in result.summary
+        assert "enforced on every app table" not in result.summary
+
+
 UNSAFE_LOGINS = [
     (LoginRole(superuser=True), "the login role is a superuser"),
     (LoginRole(bypass_rls=True), "the login role has BYPASSRLS"),

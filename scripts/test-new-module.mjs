@@ -55,7 +55,7 @@ import {
 import { devNull } from "node:os";
 import path from "node:path";
 
-import { resultCounts } from "./lib/steps.mjs";
+import { plainText, resultCounts } from "./lib/steps.mjs";
 import { ORIGINAL_SLUG } from "./lib/template.mjs";
 import { copyTrackedFiles, requireGitRepository, untrackedFilesProblem } from "./lib/tracked-copy.mjs";
 
@@ -109,7 +109,8 @@ function run(dir, cwd, cmd, args, label, extraEnv = {}) {
     const output = `${result.stdout ?? ""}${result.stderr ?? ""}${result.error?.message ?? ""}`;
     failures.push(`${label} failed:\n${output.slice(-3000)}`);
   }
-  return { ...result, stdout: result.stdout ?? "" };
+  // Plain text: in CI the runners color their result lines, which the counts below read.
+  return { ...result, stdout: plainText(result.stdout ?? "") };
 }
 
 // The whole suites have thousands of tests, so a floor on their total holds while a generated module's own

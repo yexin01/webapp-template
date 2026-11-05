@@ -27,6 +27,7 @@ flowchart LR
   posthog[PostHog]
   sentry[Sentry]
   llm[LLM provider]
+  resend[Resend<br/>email]
   cron[Vercel Cron]
 
   user -->|HTTPS| web
@@ -42,6 +43,7 @@ flowchart LR
   web -. scrubbed errors .-> sentry
   api -. scrubbed errors .-> sentry
   api -->|connectivity check| llm
+  api -->|emails from outbox handlers| resend
   cron -->|"GET /api/v1/jobs/* + CRON_SECRET"| api
 ```
 
@@ -101,6 +103,7 @@ Dotted arrows are contracts that the composition root passes in. No module impor
 | `identity` | Users, the organization-membership mirror, Clerk token and webhook verification, tenant-context resolution | `/me`, `/webhooks/clerk` | `reconcile-memberships` | publishes `identity.user_deleted` (through its `api.py`) |
 | `billing` | Customers, subscriptions, the entitlement matrix, price catalog, the open Checkout Session per user, Stripe | `/entitlement`, `/billing/*` (status, checkout, portal, sync), `/pro/insight`, `/webhooks/stripe` | `reconcile-billing` | publishes `billing.entitlement_changed`; handles `identity.user_deleted` |
 | `projects` | Example tenant-scoped resource; the generator's reference | `/projects`, `/orgs/{org_id}/projects` | — | publishes `projects.created` |
+| `email` | Sending email through Resend: the sender port, the adapter, the mock, the sandbox recipient rule, and the check. Other modules send through its `api.py` | — | — | — (features send from their own handlers) |
 | `llm` | Provider-agnostic connectivity check with cost bounds, for operators | `/llm/check` | — | — |
 | `diagnostics` | Operator-only integration report and checks, and the answer to "may I use them?" | `/diagnostics/*` (`/diagnostics/access` answers any signed-in caller) | — | — |
 | kernel | Health, readiness, outbox, rate limits | `/health`, `/ready`, `/jobs/{name}` | `drain-outbox`, `prune-expired` | dispatches all |
@@ -166,7 +169,7 @@ Errors anywhere map to RFC 9457 problem details with a stable `code` and the req
 
 **Roles.** The API logs in as `app_login` (migration `20261030000010`; `pnpm db:api-login` gives it a login and a password). It owns nothing, holds no privilege of its own, and is `NOINHERIT`, so a query that does not switch role reads nothing in schema `app`. Requests run as `app_api` and system work runs as `app_worker`; neither owns tables or has `BYPASSRLS`. Each transaction switches to one of them and sets the statement timeout and the full tenant context (`app.clerk_user_id`, `app.user_id`, `app.org_id`) in **one statement**, which is one round trip. Migrations, seed, reset, and `api-login` connect as the schema owner through `MIGRATION_DATABASE_URL`, which the running API never reads.
 
-**Login identity.** In preview and production the first transaction of each process checks `session_user`. A superuser, a role with `BYPASSRLS` or `CREATEROLE`, a member of such a role, or an owner of a table in schema `app` makes every database transaction fail with a 503 that names the fix, and `/ready` reports not ready; a process that was refused keeps refusing until it restarts. Local and test may log in as a superuser. The limit (DB-11): `app_login` can still `SET ROLE app_worker`, whose policies let every row through on several tables, so code that runs arbitrary SQL can read across tenants. Row-level security does not stop SQL injection.
+**Login identity.** In preview and production the first transaction of each process checks `session_user`. A superuser, a role with `BYPASSRLS` or `CREATEROLE`, a member of such a role, or an owner of a table in schema `app` makes every database transaction fail with a 503 that names the fix, and `/ready` reports not ready; a process that was refused keeps refusing until it restarts. Local and test may log in as a superuser. The limit (DB-11): `app_login` can still `SET ROLE app_worker`, whose policies let every row through on several tables, so code that runs arbitrary SQL can read across tenants and write across them where the worker may write (memberships, subscriptions, users, organizations, the audit log's inserts). Row-level security does not stop SQL injection.
 
 **Faults.** The server enforces the statement timeout, so it cannot end a call when the server, or a pooler in front of it, stops responding. Every round trip, including `COMMIT` and `ROLLBACK`, therefore also has a client-side deadline (statement timeout plus connect timeout); past it, the connection is closed and the call fails with `503`. A `503` from a failed `COMMIT` means the outcome is unknown: the server may have committed before the connection failed. So a client should re-read before it retries a create, and a mutation with external side effects takes an idempotency key (API-05). A pooled connection that died while idle (after a pooler restart or failover) fails on its first round trip, before any work has run, so the transaction starts again on another connection. TCP keepalives (probing after 30 s idle, about a minute to detect) notice a peer that vanished without closing the connection, so an idle connection to it is also replaced on first use instead of waiting out the deadline. Transaction-mode pooling works because every setting is transaction-local and prepared statements are off. The DEC-001 proof checked this through PgBouncer in transaction mode.
 

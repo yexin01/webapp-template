@@ -48,6 +48,7 @@ from app.kernel.ports import Analytics, Clock, ErrorReporter, KernelStore
 from app.kernel.wiring import Contribution, Kernel, Overrides, pick
 from app.modules.billing.module import BillingModule, build_billing
 from app.modules.diagnostics.module import DiagnosticsModule, build_diagnostics
+from app.modules.email.module import EmailModule, build_email
 from app.modules.identity.module import IdentityModule, build_identity
 from app.modules.llm.module import LLMModule, build_llm
 from app.modules.projects.module import ProjectsModule, build_projects
@@ -66,6 +67,7 @@ class Container:
     kernel: Kernel
     identity: IdentityModule
     billing: BillingModule
+    email: EmailModule
     projects: ProjectsModule
     llm: LLMModule
     # new:module:fields
@@ -76,6 +78,7 @@ class Container:
         return [
             self.identity.contribution,
             self.billing.contribution,
+            self.email.contribution,
             self.projects.contribution,
             self.llm.contribution,
             # new:module:contributions
@@ -167,6 +170,7 @@ def build_container(settings: Settings, **adapters: Any) -> Container:
 
     identity = build_identity(settings, settings, kernel, overrides)
     billing = build_billing(settings, settings, kernel, identity.auth, overrides)
+    email = build_email(settings, overrides)
     projects = build_projects(kernel, identity.auth)
     # new:module:build
     container: Container  # bound below; the checks run only once requests arrive
@@ -183,6 +187,7 @@ def build_container(settings: Settings, **adapters: Any) -> Container:
         kernel=kernel,
         identity=identity,
         billing=billing,
+        email=email,
         projects=projects,
         llm=llm,
         # new:module:container

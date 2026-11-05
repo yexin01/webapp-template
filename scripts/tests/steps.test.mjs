@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import test from "node:test";
 
-import { FAIL, NOT_RUN, PASS, SKIPPED, Tail, annotations, formatDuration, renderTable, resultCounts, runCommand, runSteps, summarizeOutput } from "../lib/steps.mjs";
+import { FAIL, NOT_RUN, PASS, SKIPPED, Tail, annotations, formatDuration, plainText, renderTable, resultCounts, runCommand, runSteps, summarizeOutput } from "../lib/steps.mjs";
 
 const sink = () => {
   const chunks = [];
@@ -52,6 +52,17 @@ test("the outcomes of a pytest or vitest run are counted by word, and a run with
   assert.deepEqual(resultCounts("vitest", ["      Tests  19 skipped (19)"]), { skipped: 19 });
   assert.equal(resultCounts("pytest", ["no tests ran"]), null);
   assert.equal(resultCounts("vitest", ["Error: No test files found"]), null);
+});
+
+test("a runner's colors are no part of its result line: vitest and pytest print them in CI", () => {
+  // As vitest 5 printed them on a GitHub Actions runner (CI set, no terminal), byte for byte.
+  const vitestColored = "\x1b[2m      Tests \x1b[22m \x1b[1m\x1b[32m1096 passed\x1b[39m\x1b[22m\x1b[2m | \x1b[22m\x1b[33m1 skipped\x1b[39m\x1b[90m (1097)\x1b[39m";
+  assert.equal(summarizeOutput("vitest", [vitestColored]), "1096 passed | 1 skipped (1097)");
+  assert.deepEqual(resultCounts("vitest", [vitestColored]), { passed: 1096, skipped: 1 });
+  assert.deepEqual(resultCounts("vitest", ["\x1b[2m      Tests \x1b[22m \x1b[1m\x1b[32m25 passed\x1b[39m\x1b[22m\x1b[90m (25)\x1b[39m"]), { passed: 25 });
+  const pytestColored = "\x1b[32m=========== \x1b[32m\x1b[1m27 passed\x1b[0m, \x1b[33m2 skipped\x1b[0m\x1b[32m in 12.34s\x1b[0m\x1b[32m ===========\x1b[0m";
+  assert.deepEqual(resultCounts("pytest", [pytestColored]), { passed: 27, skipped: 2 });
+  assert.equal(plainText("\x1b[1m\x1b[32mok\x1b[39m\x1b[22m \x1b[2K\x1b[1Adone"), "ok done");
 });
 
 test("a table is as wide as its widest cell, with a rule under the header", () => {

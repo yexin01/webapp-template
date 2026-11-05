@@ -38,9 +38,23 @@ vi.mock("./lib/env.server", () => ({
   }),
 }));
 
-/** The trace context (dynamic sampling context) in each sent envelope's headers. */
-const traceHeaders = () =>
-  sent.map((envelope) => (envelope as [{ trace?: { transaction?: string } }])[0].trace);
+type Envelope = [{ trace?: { transaction?: string } }, Array<[{ type: string }, unknown]>];
+
+/** What the tests below count: an error, a transaction, or a span. */
+const DATA_ITEMS = new Set(["event", "transaction", "span"]);
+
+/**
+ * The envelopes that carry an error or a span. When the SDK finds a release (GITHUB_SHA on GitHub Actions,
+ * VERCEL_GIT_COMMIT_SHA on Vercel, COMMIT_REF, SENTRY_RELEASE) it also sends a release-health `session` envelope
+ * as soon as an error is captured, and finds none on a machine without one: a count of everything sent would
+ * depend on where the test runs (it failed on the first remote run of CI, 2026-11-01). The canary search below
+ * still covers every envelope, session envelopes included.
+ */
+const dataEnvelopes = () =>
+  (sent as Envelope[]).filter(([, items]) => items.some(([header]) => DATA_ITEMS.has(header.type)));
+
+/** The trace context (dynamic sampling context) in the headers of each envelope that carries data. */
+const traceHeaders = () => dataEnvelopes().map(([headers]) => headers.trace);
 
 beforeAll(async () => {
   await import("./sentry.server.config");
@@ -84,7 +98,7 @@ describe("Sentry server transport (real SDK)", () => {
     await Sentry.flush(2000);
 
     // Not vacuous: an error and a span were sent, each naming the root span by its path.
-    expect(sent).toHaveLength(2);
+    expect(dataEnvelopes()).toHaveLength(2);
     expect(traceHeaders().map((trace) => trace?.transaction)).toEqual([
       "GET /billing/success",
       "GET /billing/success",

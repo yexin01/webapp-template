@@ -63,13 +63,21 @@ export function runCommand({ command, args, cwd, env, stdout = process.stdout, s
   });
 }
 
+// ANSI escape sequences (colors, cursor moves). Runners print them when they think a person is reading, which
+// vitest and pytest also think when CI is set (GitHub Actions sets it), terminal or not.
+const ANSI_ESCAPE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
+
+/** `text` without ANSI escape sequences: the words a runner printed, whatever colors it chose. */
+export const plainText = (text) => text.replace(ANSI_ESCAPE, "");
+
 /**
- * The result line of a test runner, from the end of its output, or null when it printed none.
+ * The result line of a test runner, from the end of its output, or null when it printed none. Colors are ignored.
  * pytest: "== 2 failed, 1441 passed, 5 skipped in 224.31s (0:03:44) ==";
  * vitest: "Tests  514 passed | 1 skipped (515)"; Playwright: "40 passed (52.3s)" with "20 skipped" above it;
  * node --test: "# tests 35" with "# pass 35" and "# fail 0".
  */
-export function summarizeOutput(kind, lines) {
+export function summarizeOutput(kind, output) {
+  const lines = output.map(plainText);
   const last = (pattern) => lines.findLast((line) => pattern.test(line));
   switch (kind) {
     case "pytest": {

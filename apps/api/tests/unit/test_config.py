@@ -315,6 +315,18 @@ def test_the_cron_secret_must_be_at_least_32_characters() -> None:
     assert make_settings(cron_secret="x" * 32).cron_secret is not None
 
 
+@pytest.mark.parametrize("pasted", ["{}\n", " {}", "{}\t", "\n{}"])
+def test_a_cron_secret_with_surrounding_whitespace_is_refused_at_startup(pasted: str) -> None:
+    """HTTP trims the Authorization header Vercel Cron sends, so a stored secret that has a pasted newline or space
+    never matches it: every cron call would answer 401, and nothing would say why."""
+    value = pasted.format("x" * 40)
+    with pytest.raises(ConfigError) as excinfo:
+        make_settings(cron_secret=value)
+    assert "CRON_SECRET must not start or end with whitespace" in str(excinfo.value)
+    assert "must be at least 32 characters" not in str(excinfo.value)  # judged without the whitespace
+    assert "x" * 40 not in str(excinfo.value)
+
+
 def test_the_migrate_command_refuses_a_remote_database_unless_told(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

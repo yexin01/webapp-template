@@ -40,6 +40,7 @@ from app.kernel.infrastructure.observability import (
 from app.kernel.tenancy import ContextKind, TenantContext
 from app.modules.billing.module import describe as describe_billing
 from app.modules.diagnostics.service import run_probe
+from app.modules.email.module import describe as describe_email
 from app.modules.identity.module import clerk_not_configured
 from app.modules.identity.module import describe as describe_identity
 from app.modules.llm.module import describe as describe_llm
@@ -101,6 +102,7 @@ def _infos(settings: Settings) -> list[IntegrationInfo]:
         describe_database(settings),
         describe_identity(settings),
         describe_billing(settings),
+        describe_email(settings),
         describe_llm(settings),
         describe_analytics(settings),
         describe_error_reporting(settings),
@@ -186,7 +188,7 @@ def evidence_block(
         if r.outcome is not Outcome.SKIPPED and r.key is not IntegrationKey.DATABASE
     ]
     events = (
-        "one PostHog event and one Sentry issue, for each of them in sandbox mode"
+        "one PostHog event, one Sentry issue and one email to delivered@resend.dev, for each of them in sandbox mode"
         if send_test_events
         else "none (run with --send-test-events to send them)"
     )
@@ -279,6 +281,24 @@ def manual_steps(settings: Settings, results: Sequence[CheckResult], *, send_tes
         )
     elif mode(IntegrationKey.LLM) is not None:
         steps.append("LLM provider: set a spending limit at the provider (not checkable by API).")
+    email_mode = mode(IntegrationKey.EMAIL)
+    if email_mode is IntegrationMode.MOCK:
+        steps.append(
+            "Resend (email, optional): create an account at https://resend.com, add and verify your sending domain "
+            "under Domains, create an API key, then set EMAIL_MODE=sandbox, RESEND_API_KEY and EMAIL_FROM in .env "
+            "(docs/setup.md#resend)."
+        )
+    elif email_mode in (None, IntegrationMode.DISABLED):
+        pass  # turned off on purpose: nothing to set up
+    elif not send_test_events:
+        steps.append(
+            "Resend: run `pnpm check:setup --send-test-events` to send one email to delivered@resend.dev, then find "
+            "it under Emails in the Resend dashboard."
+        )
+    else:
+        steps.append(
+            "Resend: find the test email under Emails in the Resend dashboard (its ID is the reference above)."
+        )
     for key, name, what in (
         (IntegrationKey.ANALYTICS, "PostHog", "that integration_test_sent arrived under Activity"),
         (IntegrationKey.ERROR_REPORTING, "Sentry", "the event ID shown above in Issues"),
@@ -374,7 +394,7 @@ def diagnose(env_file: str | None, send_test_events: bool, out: TextIO | None = 
 
     Exit status 0 when no check failed, 1 when one did or the configuration is invalid, 2 when refused.
     Without ``send_test_events`` the container gets no-op PostHog and Sentry adapters, so even the LLM check's
-    own analytics event stays local.
+    own analytics event stays local, and the Resend check reads the sending domain without sending an email.
     """
     out, err = out or sys.stdout, err or sys.stderr
     try:
@@ -394,7 +414,9 @@ def diagnose(env_file: str | None, send_test_events: bool, out: TextIO | None = 
         init_error_reporting(settings)
         container = build_container(settings)
     else:
-        container = build_container(settings, analytics=NoopAnalytics(), error_reporter=NoopErrorReporter())
+        container = build_container(
+            settings, analytics=NoopAnalytics(), error_reporter=NoopErrorReporter(), email_test_sends=False
+        )
     try:
         return run_diagnose(container, send_test_events=send_test_events, out=out)
     finally:

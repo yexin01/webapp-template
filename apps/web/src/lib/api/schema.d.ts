@@ -463,7 +463,7 @@ export interface components {
          * @description An external service that diagnostics can describe and check.
          * @enum {string}
          */
-        IntegrationKey: "database" | "identity" | "billing" | "llm" | "analytics" | "error_reporting";
+        IntegrationKey: "database" | "identity" | "billing" | "email" | "llm" | "analytics" | "error_reporting";
         /**
          * IntegrationMode
          * @enum {string}

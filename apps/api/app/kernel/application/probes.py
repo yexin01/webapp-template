@@ -29,6 +29,16 @@ class DatabaseProbe:
     def check(self, ctx: TenantContext) -> Verdict:
         with self._tx.as_tenant(ctx) as t:
             conn = t.repo.describe_connection()
+        if conn.missing_tables:
+            # First: on a database nothing was migrated into, "row-level security is enforced on every table" is true of
+            # no table at all, and the checks below would pass on it.
+            return Verdict(
+                Outcome.FAILED,
+                "Connected, but the migrations have not been applied: schema app lacks "
+                + ", ".join(conn.missing_tables)
+                + " (pnpm db:migrate, or the Database migrate workflow for a hosted database).",
+                "not_migrated",
+            )
         problems = []
         if conn.role != _DATABASE_ROLE:
             problems.append(f"queries run as {conn.role}, expected {_DATABASE_ROLE}")

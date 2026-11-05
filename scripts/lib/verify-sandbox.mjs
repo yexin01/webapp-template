@@ -68,6 +68,7 @@ export function configuration(env) {
     clerk,
     billing: env.BILLING_MODE?.trim() || "mock",
     llm: env.LLM_MODE?.trim() || "mock",
+    email: env.EMAIL_MODE?.trim() || "mock",
     analytics: env.ANALYTICS_MODE?.trim() || "disabled",
     errors: env.ERROR_REPORTING_MODE?.trim() || "disabled",
   };
@@ -94,12 +95,12 @@ export async function planParts({ root, env, hasDotenv, options, probe }) {
   const parts = [];
 
   // setup: needs a .env that sets up something beyond the placeholders and mocks.
-  const sandboxModes = Object.entries({ billing: mode.billing, llm: mode.llm, analytics: mode.analytics, errors: mode.errors }).filter(([, value]) => value === "sandbox");
+  const sandboxModes = Object.entries({ billing: mode.billing, email: mode.email, llm: mode.llm, analytics: mode.analytics, errors: mode.errors }).filter(([, value]) => value === "sandbox");
   const setup = { id: "setup", name: "Setup check", command: `pnpm check:setup${options.sendTestEvents ? " --send-test-events" : ""}`, mode: "per integration: mock, sandbox or disabled (the table below says which)" };
   if (options.skip.includes("setup")) Object.assign(setup, { status: SKIPPED, reason: "left out with --skip" });
   else if (!hasDotenv) Object.assign(setup, { status: SKIPPED, need: "env", reason: "there is no .env file yet (pnpm init-template creates one, or cp .env.example .env)" });
   else if (mode.clerk !== "sandbox" && !sandboxModes.length) {
-    Object.assign(setup, { status: SKIPPED, need: "keys", reason: "nothing is in sandbox mode yet: no Clerk development keys, and BILLING_MODE, LLM_MODE, ANALYTICS_MODE and ERROR_REPORTING_MODE are not sandbox" });
+    Object.assign(setup, { status: SKIPPED, need: "keys", reason: "nothing is in sandbox mode yet: no Clerk development keys, and BILLING_MODE, EMAIL_MODE, LLM_MODE, ANALYTICS_MODE and ERROR_REPORTING_MODE are not sandbox" });
   }
   parts.push(setup);
 
@@ -274,7 +275,7 @@ export async function main(
   const effective = effectiveEnv(root, env);
   const config = configuration(effective);
   const parts = await planParts({ root, env: effective, hasDotenv, options, probe });
-  log(`verify:sandbox: ${parts.filter((part) => !part.status).length} of ${parts.length} parts can run (Clerk: ${config.clerk}; billing: ${config.billing}; LLM: ${config.llm}; analytics: ${config.analytics}; error reporting: ${config.errors}).`);
+  log(`verify:sandbox: ${parts.filter((part) => !part.status).length} of ${parts.length} parts can run (Clerk: ${config.clerk}; billing: ${config.billing}; email: ${config.email}; LLM: ${config.llm}; analytics: ${config.analytics}; error reporting: ${config.errors}).`);
 
   const results = [];
   let setupRows = [];

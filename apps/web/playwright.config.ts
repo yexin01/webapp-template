@@ -83,6 +83,7 @@ export default defineConfig({
               process.env.E2E_DATABASE_URL ?? "postgresql://postgres:postgres@127.0.0.1:54329/app_e2e_unused",
             BILLING_MODE: "mock",
             LLM_MODE: "mock",
+            EMAIL_MODE: "mock",
             ANALYTICS_MODE: "disabled",
             ERROR_REPORTING_MODE: "disabled",
           },

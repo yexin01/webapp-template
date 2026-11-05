@@ -159,6 +159,7 @@ def cmd_env(args: argparse.Namespace) -> None:
         "BILLING_MODE": "mock",
         "STRIPE_WEBHOOK_SECRET": proof["webhook_secret"],
         "LLM_MODE": "mock",
+        "EMAIL_MODE": "mock",
         "ANALYTICS_MODE": "disabled",
         "ERROR_REPORTING_MODE": "disabled",
         "CRON_SECRET": proof["cron_secret"],
@@ -321,6 +322,7 @@ def registered_jobs() -> dict[str, str]:
         stripe_price_pro_monthly="price_placeholder_monthly",
         stripe_price_pro_yearly="price_placeholder_yearly",
         llm_mode="mock",
+        email_mode="mock",
     )
     container = build_container(settings, billing_provider=InMemoryBillingProvider())
     try:

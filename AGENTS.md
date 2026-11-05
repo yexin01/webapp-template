@@ -22,7 +22,7 @@ Read it before making changes. Do not restate its requirements in other files; l
 - Vercel deployment proof (DEC-001, local only): [`proofs/dec-001/`](proofs/dec-001/README.md)
 - Quality gates and evidence statuses: §19, §20
 - Requirements traceability matrix: §21
-- Evidence records: [`dev-docs/evidence/`](dev-docs/evidence/2026-10-31-cycle-3-fix-round-3.md) (latest: the cycle 3 review and fix round 3; before it, [round 1b, the cycle 2 review and fix round 2](dev-docs/evidence/2026-10-31-round-1b-cycle-2-fix-round-2.md), and [the cycle 1 fix round](dev-docs/evidence/2026-10-30-cycle-1-fix-round.md))
+- Evidence records: [`dev-docs/evidence/`](dev-docs/evidence/2026-11-04-resend-integration.md) (latest: the Resend email integration; before it, [the readiness audit and the first remote CI run](dev-docs/evidence/2026-11-02-readiness-audit.md), [the cycle 3 review and fix round 3](dev-docs/evidence/2026-10-31-cycle-3-fix-round-3.md), [round 1b, the cycle 2 review and fix round 2](dev-docs/evidence/2026-10-31-round-1b-cycle-2-fix-round-2.md), and [the cycle 1 fix round](dev-docs/evidence/2026-10-30-cycle-1-fix-round.md))
 
 ## Verify before claiming anything works
 

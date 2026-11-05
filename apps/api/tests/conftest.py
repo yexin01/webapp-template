@@ -30,6 +30,7 @@ from app.kernel.infrastructure.observability import AnalyticsEvents
 from app.kernel.tenancy import VerifiedIdentity
 from app.modules.billing.adapters.fakes import InMemoryBillingProvider
 from app.modules.billing.adapters.stripe import StripeWebhookVerifier
+from app.modules.email.adapters import MockEmailSender
 from app.modules.identity.adapters.fakes import StaticMembershipDirectory
 from app.modules.llm.adapters import MockLLMProvider
 from app.settings import Settings, load_settings
@@ -68,6 +69,8 @@ _ENV_PREFIXES = (
     "OUTBOX_",
     "WRITES_",
     "JOB_",
+    "EMAIL_",
+    "RESEND_",
 )
 
 
@@ -296,6 +299,7 @@ def make_settings(**overrides: Any) -> Settings:
         "stripe_product_pro": PRODUCT_PRO,
         "stripe_webhook_secret": TEST_STRIPE_WEBHOOK_SECRET,
         "llm_mode": "mock",
+        "email_mode": "mock",
         "analytics_mode": "disabled",
         "error_reporting_mode": "disabled",
     }
@@ -337,6 +341,7 @@ def make_harness(db: str) -> Iterator[Callable[..., Harness]]:
             "clock": clock,
             "analytics": analytics,
             "llm_provider": MockLLMProvider(),
+            "email_sender": MockEmailSender(),
         }
         overrides.update(container_overrides)
         container = build_container(settings, **overrides)

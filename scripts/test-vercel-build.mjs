@@ -87,6 +87,7 @@ function canaries() {
     MIGRATION_DATABASE_URL: `postgresql://postgres.canary:${hex(12)}@pooler.invalid:5432/postgres`,
     API_DB_PASSWORD: hex(12),
     LLM_API_KEY: hex(16),
+    RESEND_API_KEY: `${"re"}_${hex(16)}`,
     CRON_SECRET: hex(20),
     // A public key nobody holds the private half of. The web build inlines it into the proxy; the scan compares its lines.
     CLERK_JWT_KEY: generateKeyPairSync("rsa", { modulusLength: 2048 }).publicKey.export({ type: "spki", format: "pem" }),
