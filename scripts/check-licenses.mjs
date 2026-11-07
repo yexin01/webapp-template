@@ -75,6 +75,17 @@ const EXCEPTIONS = [
     reason: "unmodified library; weak copyleft",
   },
   {
+    ecosystem: "npm",
+    name: /^lightningcss(-[a-z0-9-]+)?$/,
+    license: "MPL-2.0",
+    // File-level copyleft: Vite's CSS transformer and its per-platform
+    // binaries, used unmodified. They reach the production dependency tree
+    // only through vite, an optional peer of @sentry/cloudflare, which
+    // @sentry/nextjs depends on from 11.10.0; the web app's bundle and traced
+    // server output do not load them. Accepted by the owner on 2026-11-07.
+    reason: "unmodified build-time CSS tool; file-level copyleft; accepted by the owner 2026-11-07",
+  },
+  {
     ecosystem: "pypi",
     name: /^certifi$/,
     license: "MPL-2.0",
