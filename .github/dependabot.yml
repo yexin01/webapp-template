@@ -12,6 +12,13 @@ updates:
       # types for a newer Node would accept APIs that Node 24 does not have.
       - dependency-name: "@types/node"
         update-types: ["version-update:semver-major"]
+      # TypeScript 7 and ESLint 10 wait for the lint toolchain (owner, 2026-11-07): typescript-eslint supports
+      # TypeScript below 6.1, and eslint-plugin-react, eslint-plugin-import and eslint-plugin-jsx-a11y declare
+      # ESLint 9 at most. Remove a rule once those packages support the new major.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "eslint"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: uv
     directory: /apps/api
     schedule: { interval: weekly }
