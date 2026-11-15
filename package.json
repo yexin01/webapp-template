@@ -59,7 +59,7 @@
     "perf:run": "node scripts/perf.mjs"
   },
   "devDependencies": {
-    "vercel": "65.9.0"
+    "vercel": "65.15.0"
   },
   "pnpm": {
     "onlyBuiltDependencies": [],
